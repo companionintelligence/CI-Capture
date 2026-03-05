@@ -2,11 +2,11 @@ use anyhow::{Context, Result, anyhow};
 use base64::{Engine as _, engine::general_purpose};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use crate::config::AnalysisConfig;
 
-const ANALYSIS_MAX_TOKENS: u32 = 10_000;
+const ANALYSIS_MAX_TOKENS: u32 = 1_800;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AnalysisResult {
@@ -46,20 +46,27 @@ impl VisionAnalyzer {
         }
 
         let b64 = general_purpose::STANDARD.encode(png_bytes);
-        let prompt = r#"You are part of a local-first AI assistant that monitors a user's desktop. 
-        Your part of the system is to analyze screenshots taken automatically by an applet that the user has installed.
-Describe the visible work, summarize key activities, and flag anything sensitive. Your responses must be concise and accurate. Do not withold any information.
-Respond with strict JSON matching this schema:
-{
-  "activity_summary": string,
-  "primary_application": string,
-  "activity_category": string,
-  "applications": string[],
-  "ui_elements": string[],
-  "contains_sensitive": boolean,
-  "contains_pii": boolean,
-  "ocr_text": string
-}
+        let prompt = r#"You are part of a local-first AI assistant that monitors a user's desktop.
+Your task is to analyze a screenshot and describe meaningful work activity.
+
+Prioritize:
+1) What the user is actively doing (task/intent),
+2) What happened or changed recently (errors, edits, commands, outcomes),
+3) Why it matters (blocker, progress, next likely step).
+
+Do NOT focus on random or static UI chrome.
+Only include UI elements directly relevant to the current task.
+If uncertain, say so briefly instead of inventing details.
+
+Output requirements:
+- activity_summary: 2-4 concise sentences about workflow, not a UI inventory.
+- primary_application: the main app driving the activity.
+- activity_category: short category like "debugging", "coding", "research", "communication".
+- applications: 1-4 high-signal apps involved.
+- ui_elements: 2-8 task-relevant elements only.
+- contains_sensitive / contains_pii: set true only when there is clear evidence.
+- ocr_text: include only key visible text snippets relevant to the task.
+
 Return ONLY JSON. Do not include markdown, comments, or reasoning.
 "#;
 
@@ -89,6 +96,7 @@ Return ONLY JSON. Do not include markdown, comments, or reasoning.
             ],
             max_tokens: Some(ANALYSIS_MAX_TOKENS),
             temperature: Some(0.0),
+            response_format: Some(ResponseFormat::analysis_json_schema()),
         };
 
         let url = format!("{}/chat/completions", config.endpoint.trim_end_matches('/'));
@@ -132,6 +140,8 @@ struct ChatRequest {
     max_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    response_format: Option<ResponseFormat>,
 }
 
 #[derive(Serialize)]
@@ -150,6 +160,65 @@ enum ContentBlock {
 #[derive(Serialize)]
 struct ImageInput {
     url: String,
+}
+
+#[derive(Serialize)]
+struct ResponseFormat {
+    #[serde(rename = "type")]
+    kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    json_schema: Option<ResponseJsonSchema>,
+}
+
+#[derive(Serialize)]
+struct ResponseJsonSchema {
+    name: String,
+    strict: bool,
+    schema: Value,
+}
+
+impl ResponseFormat {
+    fn analysis_json_schema() -> Self {
+        Self {
+            kind: "json_schema".to_string(),
+            json_schema: Some(ResponseJsonSchema {
+                name: "desktop_analysis".to_string(),
+                strict: true,
+                schema: json!({
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                        "activity_summary",
+                        "primary_application",
+                        "activity_category",
+                        "applications",
+                        "ui_elements",
+                        "contains_sensitive",
+                        "contains_pii",
+                        "ocr_text"
+                    ],
+                    "properties": {
+                        "activity_summary": { "type": "string", "maxLength": 700 },
+                        "primary_application": { "type": "string", "maxLength": 120 },
+                        "activity_category": { "type": "string", "maxLength": 80 },
+                        "applications": {
+                            "type": "array",
+                            "maxItems": 4,
+                            "items": { "type": "string", "maxLength": 80 }
+                        },
+                        "ui_elements": {
+                            "type": "array",
+                            "maxItems": 8,
+                            "items": { "type": "string", "maxLength": 120 }
+                        },
+                        "contains_sensitive": { "type": "boolean" },
+                        "contains_pii": { "type": "boolean" },
+                        "ocr_text": { "type": "string", "maxLength": 1200 }
+                    }
+                }),
+            }),
+        }
+    }
 }
 
 #[derive(Deserialize)]

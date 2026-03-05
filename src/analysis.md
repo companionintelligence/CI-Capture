@@ -8,7 +8,7 @@ Builds screenshot analysis requests for the vision model and normalizes model ou
 ### `VisionAnalyzer::analyze`
 - **Does**: Sends the screenshot + prompt to `/chat/completions`, requests JSON output, and maps the response into `AnalysisResult`.
 - **Interacts with**: `AnalysisConfig` in `config.rs` and `run_analysis_loop` in `worker.rs`.
-- **Rationale**: Keeps all LLM-specific request/response behavior isolated from worker and DB code, including a very large completion budget for OCR-heavy screenshots and provider-compatible JSON prompting.
+- **Rationale**: Keeps all LLM-specific request/response behavior isolated from worker and DB code, using schema constraints plus workflow-focused prompt rules so outputs describe user intent/progress instead of random UI chrome.
 
 ### `extract_content_text`
 - **Does**: Pulls assistant text from OpenAI-compatible `choices[0].message.content` shapes (string or typed content array).
@@ -25,4 +25,4 @@ Builds screenshot analysis requests for the vision model and normalizes model ou
 |-----------|---------|------------------|
 | `worker.rs` | `analyze()` returns `Result<AnalysisResult>` and errors on invalid/unrecoverable payloads | Changing return type or removing fallback defaults upstream |
 | `db.rs` | `AnalysisResult` fields stay stable enough for current `ci.screen_captures` insert mapping | Renaming/removing core fields like `applications` or `contains_sensitive` |
-| Model providers | Request uses OpenAI-style chat completions and asks for JSON object output | Switching to a different API shape without adapter code |
+| Model providers | Request uses OpenAI-style chat completions with `response_format: json_schema` and bounded field sizes | Removing schema constraints or changing format shape |
