@@ -182,25 +182,22 @@ impl PostgresRecorder {
         metadata: &ScreenshotRecord,
     ) -> Result<Uuid> {
         let timestamp = metadata.captured_at;
-        let file_ext = metadata
-            .filename
-            .rsplit_once('.')
-            .map(|(_, ext)| ext.to_string());
-        let ext_ref = file_ext.as_deref();
+        let file_id = Uuid::new_v4();
         let bucket = Some(self.config.minio.bucket.clone());
+        let object_key = Some(Uuid::new_v4());
+        let variant = "original";
 
         let params: &[&(dyn ToSql + Sync)] = &[
-            &metadata.user_id,
-            &metadata.remote_path,
+            &file_id,
             &metadata.filename,
-            &ext_ref,
-            &bucket,
-            &"cloud",
-            &"minio",
-            &metadata.device_id,
-            &metadata.file_size_bytes,
             &"image/png",
-            &"image",
+            &metadata.file_size_bytes,
+            &variant,
+            &bucket,
+            &object_key,
+            &metadata.user_id,
+            &Some(metadata.remote_path.clone()),
+            &timestamp,
             &timestamp,
             &timestamp,
             &timestamp,
@@ -209,27 +206,26 @@ impl PostgresRecorder {
         let row = client
             .query_one(
                 "INSERT INTO ci.files (
-                    user_id,
-                    file_path,
+                    id,
                     filename,
-                    file_extension,
-                    bucket,
-                    storage_type,
-                    storage_provider,
-                    device_id,
-                    file_size_bytes,
-                    mime_type,
                     content_type,
-                    modified_at_source,
-                    discovered_at,
-                    last_scanned_at
-                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
-                RETURNING file_id",
+                    size,
+                    variant,
+                    bucket,
+                    key,
+                    user_id,
+                    external_id,
+                    external_created_at,
+                    external_updated_at,
+                    created_at,
+                    updated_at
+                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+                RETURNING id",
                 params,
             )
             .await
             .context("executing files insert")?;
-        Ok(row.get("file_id"))
+        Ok(row.get("id"))
     }
 
     async fn insert_screen_capture(

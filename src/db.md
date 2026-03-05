@@ -1,7 +1,7 @@
 # db.rs
 
 ## Purpose
-Owns Postgres writes for CI-Applet. It records both screenshot-derived history and embedded `vizier` event streams through a shared connection pool.
+Owns Postgres writes for CI-Applet. It records both screenshot-derived history and screenshot-aligned embedded `vizier` events through a shared connection pool.
 
 ## Components
 
@@ -12,6 +12,7 @@ Owns Postgres writes for CI-Applet. It records both screenshot-derived history a
 ### `record_capture`
 - **Does**: Persists file metadata plus screen-capture rows for screenshot analysis.
 - **Interacts with**: `ci.files` and `ci.screen_captures`.
+- **Rationale**: Maps applet metadata onto the server's current `ci.files` storage schema before writing `ci.screen_captures`.
 
 ### `record_vizier_event`
 - **Does**: Persists `vizier` snapshots and diff envelopes into `ci.vizier_events`.

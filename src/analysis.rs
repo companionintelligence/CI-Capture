@@ -6,6 +6,8 @@ use serde_json::Value;
 
 use crate::config::AnalysisConfig;
 
+const ANALYSIS_MAX_TOKENS: u32 = 10_000;
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AnalysisResult {
     pub activity_summary: Option<String>,
@@ -58,6 +60,7 @@ Respond with strict JSON matching this schema:
   "contains_pii": boolean,
   "ocr_text": string
 }
+Return ONLY JSON. Do not include markdown, comments, or reasoning.
 "#;
 
         let payload = ChatRequest {
@@ -84,7 +87,8 @@ Respond with strict JSON matching this schema:
                     ],
                 },
             ],
-            max_tokens: Some(400),
+            max_tokens: Some(ANALYSIS_MAX_TOKENS),
+            temperature: Some(0.0),
         };
 
         let url = format!("{}/chat/completions", config.endpoint.trim_end_matches('/'));
@@ -103,9 +107,7 @@ Respond with strict JSON matching this schema:
         let raw_json: Value =
             serde_json::from_str(&body).with_context(|| "parsing analysis response".to_string())?;
         let content = extract_content_text(&raw_json)?;
-        let cleaned = sanitize_json_block(&content);
-        let json: serde_json::Value =
-            serde_json::from_str(&cleaned).context("analysis content is not JSON")?;
+        let json = parse_analysis_json(&content)?;
         let normalized: IntermediateAnalysis = serde_json::from_value(json.clone())
             .context("analysis JSON missing required fields")?;
         Ok(AnalysisResult {
@@ -128,6 +130,8 @@ struct ChatRequest {
     messages: Vec<ChatMessage>,
     #[serde(skip_serializing_if = "Option::is_none")]
     max_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<f32>,
 }
 
 #[derive(Serialize)]
@@ -224,4 +228,67 @@ fn sanitize_json_block(raw: &str) -> String {
         return lines.join("\n").trim().to_string();
     }
     trimmed.to_string()
+}
+
+fn parse_analysis_json(raw_content: &str) -> Result<Value> {
+    let cleaned = sanitize_json_block(raw_content);
+    if let Ok(value) = serde_json::from_str::<Value>(&cleaned) {
+        return Ok(value);
+    }
+
+    if let Some(candidate) = extract_first_json_object(&cleaned) {
+        if let Ok(value) = serde_json::from_str::<Value>(&candidate) {
+            return Ok(value);
+        }
+    }
+
+    Err(anyhow!("analysis content is not JSON"))
+}
+
+fn extract_first_json_object(raw: &str) -> Option<String> {
+    let mut start: Option<usize> = None;
+    let mut depth: i32 = 0;
+    let mut in_string = false;
+    let mut escaped = false;
+
+    for (idx, ch) in raw.char_indices() {
+        if start.is_none() {
+            if ch == '{' {
+                start = Some(idx);
+                depth = 1;
+            }
+            continue;
+        }
+
+        if in_string {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            if ch == '\\' {
+                escaped = true;
+                continue;
+            }
+            if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+
+        match ch {
+            '"' => in_string = true,
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    if let Some(start_idx) = start {
+                        return Some(raw[start_idx..=idx].to_string());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    None
 }

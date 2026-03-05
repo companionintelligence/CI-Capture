@@ -99,7 +99,6 @@ impl Default for CaptureConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VizierConfig {
     pub enabled: bool,
-    pub interval_ms: u64,
     pub watch_path: Option<PathBuf>,
     pub all_connections: bool,
 }
@@ -108,7 +107,6 @@ impl Default for VizierConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            interval_ms: 1000,
             watch_path: None,
             all_connections: false,
         }

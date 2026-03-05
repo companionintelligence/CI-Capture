@@ -10,9 +10,9 @@ Defines persisted application configuration for CI-Applet. It is the schema boun
 - **Interacts with**: `ConfigManager`, `worker.rs`, and the settings UI.
 
 ### `VizierConfig`
-- **Does**: Controls whether embedded `vizier` streaming is enabled, how often it runs, and what it watches.
+- **Does**: Controls whether embedded `vizier` capture is enabled and what it watches.
 - **Interacts with**: `WorkerState` in `worker.rs`.
-- **Rationale**: Keeps machine-state streaming configurable without hard-coding watch cadence or scope.
+- **Rationale**: Keeps machine-state capture configurable without hard-coding watch scope.
 
 ### `ConfigManager`
 - **Does**: Loads and saves `config.json` under the app config directory.

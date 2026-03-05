@@ -18,7 +18,6 @@ use crate::db::{PostgresRecorder, ScreenshotRecord, VizierEventRecord};
 use crate::minio::MinioUploader;
 
 const MIN_INTERVAL_SECS: u64 = 30;
-const MIN_VIZIER_INTERVAL_MS: u64 = 250;
 
 pub struct WorkerHandle {
     tx: UnboundedSender<WorkerCommand>,
@@ -111,12 +110,11 @@ async fn run_worker(
 
     let mut state = WorkerState::new(initial_config, running_flag, analysis_tx, recorder);
     let mut interval = build_interval(state.config.capture.screenshot_interval_secs);
-    let mut vizier_interval = build_vizier_interval(state.config.vizier.interval_ms);
 
     loop {
         tokio::select! {
             Some(cmd) = commands.recv() => {
-                if state.handle_command(cmd, &mut interval, &mut vizier_interval).await? {
+                if state.handle_command(cmd, &mut interval).await? {
                     break;
                 }
             }
@@ -124,16 +122,17 @@ async fn run_worker(
                 if !state.is_active() {
                     continue;
                 }
-                if let Err(err) = state.capture_once().await {
-                    log::error!("screenshot worker error: {err:?}");
-                }
-            }
-            _ = vizier_interval.tick() => {
-                if !state.is_active() || !state.config.vizier.enabled {
-                    continue;
-                }
-                if let Err(err) = state.capture_vizier().await {
-                    log::error!("vizier worker error: {err:?}");
+                match state.capture_once().await {
+                    Ok(captured) => {
+                        if captured && state.config.vizier.enabled {
+                            if let Err(err) = state.capture_vizier().await {
+                                log::error!("vizier worker error: {err:?}");
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        log::error!("screenshot worker error: {err:?}");
+                    }
                 }
             }
         }
@@ -215,13 +214,6 @@ fn build_interval(seconds: u64) -> Interval {
     interval
 }
 
-fn build_vizier_interval(interval_ms: u64) -> Interval {
-    let millis = interval_ms.max(MIN_VIZIER_INTERVAL_MS);
-    let mut interval = time::interval(Duration::from_millis(millis));
-    interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
-    interval
-}
-
 struct WorkerState {
     config: AppConfig,
     paused: bool,
@@ -267,7 +259,6 @@ impl WorkerState {
         &mut self,
         command: WorkerCommand,
         interval: &mut Interval,
-        vizier_interval: &mut Interval,
     ) -> Result<bool> {
         match command {
             WorkerCommand::UpdateConfig(config) => {
@@ -276,7 +267,6 @@ impl WorkerState {
 
                 self.config = config;
                 *interval = build_interval(self.config.capture.screenshot_interval_secs);
-                *vizier_interval = build_vizier_interval(self.config.vizier.interval_ms);
 
                 if previous_watch_path != self.config.vizier.watch_path
                     || previous_all_connections != self.config.vizier.all_connections
@@ -293,8 +283,17 @@ impl WorkerState {
                 self.running_flag.store(true, Ordering::SeqCst);
             }
             WorkerCommand::CaptureNow => {
-                if let Err(err) = self.capture_once().await {
-                    log::error!("manual capture failed: {err:?}");
+                match self.capture_once().await {
+                    Ok(captured) => {
+                        if captured && self.config.vizier.enabled {
+                            if let Err(err) = self.capture_vizier().await {
+                                log::error!("manual vizier capture failed: {err:?}");
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        log::error!("manual capture failed: {err:?}");
+                    }
                 }
             }
             WorkerCommand::Shutdown => {
@@ -377,7 +376,7 @@ impl WorkerState {
         Ok(())
     }
 
-    async fn capture_once(&mut self) -> Result<()> {
+    async fn capture_once(&mut self) -> Result<bool> {
         let (user_id, device_id) = match (
             self.config.identity.user_id,
             self.config.identity.device_id,
@@ -387,7 +386,7 @@ impl WorkerState {
                 log::warn!(
                     "identity not configured; skipping capture (set user and device IDs in settings)"
                 );
-                return Ok(());
+                return Ok(false);
             }
         };
 
@@ -410,7 +409,7 @@ impl WorkerState {
                 diff_percent,
                 self.config.capture.diff_threshold_percent
             );
-            return Ok(());
+            return Ok(false);
         }
 
         let timestamp = Utc::now();
@@ -436,6 +435,6 @@ impl WorkerState {
             log::error!("failed to queue capture for analysis: {e:?}");
         }
 
-        Ok(())
+        Ok(true)
     }
 }
