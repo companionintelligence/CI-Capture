@@ -6,18 +6,18 @@ object storage, runs vision analysis, and writes screenshot plus `vizier` activi
 records to PostgreSQL.
 
 This repository now also includes a **Tauri v2 desktop launcher** in
-`/home/runner/work/CI-Applet/CI-Applet/desktop-launcher` that provides a native
-launcher window and tray icon for Windows, macOS, and Linux.
+`desktop-launcher/` that provides a native launcher window and tray icon for
+Windows, macOS, and Linux.
 
 ## Repository layout
 
-- `/home/runner/work/CI-Applet/CI-Applet/src/main.rs` – legacy monitor entrypoint and tray app
-- `/home/runner/work/CI-Applet/CI-Applet/src/worker.rs` – screenshot loop, upload queue, and analysis pipeline
-- `/home/runner/work/CI-Applet/CI-Applet/src/config.rs` – persisted JSON config model and config paths
-- `/home/runner/work/CI-Applet/CI-Applet/src/db.rs` – PostgreSQL writes for screenshots and vizier events
-- `/home/runner/work/CI-Applet/CI-Applet/src/analysis.rs` – vision model integration
-- `/home/runner/work/CI-Applet/CI-Applet/src/settings_ui.rs` – egui settings window
-- `/home/runner/work/CI-Applet/CI-Applet/desktop-launcher` – Tauri launcher shell, tray icon, and static frontend
+- `src/main.rs` – legacy monitor entrypoint and tray app
+- `src/worker.rs` – screenshot loop, upload queue, and analysis pipeline
+- `src/config.rs` – persisted JSON config model and config paths
+- `src/db.rs` – PostgreSQL writes for screenshots and vizier events
+- `src/analysis.rs` – vision model integration
+- `src/settings_ui.rs` – egui settings window
+- `desktop-launcher/` – Tauri launcher shell, tray icon, and static frontend
 
 The module contract notes in `src/config.md`, `src/worker.md`, `src/analysis.md`, and
 `src/db.md` describe the boundaries for the core app.
@@ -53,14 +53,12 @@ desktop shell that can be used across Windows, macOS, and Linux.
 ### Root monitor
 
 ```bash
-cd /home/runner/work/CI-Applet/CI-Applet
 cargo run
 ```
 
 Open the egui settings UI directly:
 
 ```bash
-cd /home/runner/work/CI-Applet/CI-Applet
 cargo run -- --settings-ui
 ```
 
@@ -69,15 +67,15 @@ cargo run -- --settings-ui
 Run the launcher in development mode:
 
 ```bash
-cd /home/runner/work/CI-Applet/CI-Applet/desktop-launcher
+cd desktop-launcher
 cargo run
 ```
 
 The launcher looks for the root monitor binary in:
 
 1. `CI_APPLET_MONITOR_BIN`
-2. `/home/runner/work/CI-Applet/CI-Applet/target/debug/CI-Applet`
-3. `/home/runner/work/CI-Applet/CI-Applet/target/release/CI-Applet`
+2. `target/debug/CI-Applet`
+3. `target/release/CI-Applet`
 4. A copy of the monitor binary placed next to the launcher executable
 
 If your build output lives elsewhere, set the environment variable explicitly:
@@ -113,10 +111,9 @@ Important sections:
 The most relevant validation commands for this repository are:
 
 ```bash
-cd /home/runner/work/CI-Applet/CI-Applet
 cargo test
 
-cd /home/runner/work/CI-Applet/CI-Applet/desktop-launcher
+cd desktop-launcher
 cargo test
 ```
 

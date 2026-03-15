@@ -174,15 +174,8 @@ fn candidate_monitor_paths(manifest_dir: &Path, current_exe: &Path) -> Vec<PathB
 
     if let Some(exe_dir) = current_exe.parent() {
         paths.push(exe_dir.join(monitor_binary_name()));
-        paths.push(exe_dir.join("binaries").join(sidecar_binary_name()));
 
         if let Some(parent) = exe_dir.parent() {
-            paths.push(
-                parent
-                    .join("Resources")
-                    .join("binaries")
-                    .join(sidecar_binary_name()),
-            );
             paths.push(parent.join("lib").join(monitor_binary_name()));
         }
     }
@@ -198,15 +191,6 @@ fn monitor_binary_name() -> String {
     }
 }
 
-fn sidecar_binary_name() -> String {
-    let target = std::env::var("TARGET").unwrap_or_else(|_| String::from("unknown-target"));
-    if cfg!(windows) {
-        format!("{MONITOR_BIN_STEM}-{target}.exe")
-    } else {
-        format!("{MONITOR_BIN_STEM}-{target}")
-    }
-}
-
 fn missing_binary_message() -> String {
     format!(
         "Unable to find the CI-Applet monitor binary. Build the root crate first or set CI_APPLET_MONITOR_BIN to the full path of {}.",
@@ -218,7 +202,7 @@ fn missing_binary_message() -> String {
 mod tests {
     use std::path::PathBuf;
 
-    use super::{candidate_monitor_paths, monitor_binary_name, sidecar_binary_name};
+    use super::{candidate_monitor_paths, monitor_binary_name};
 
     #[test]
     fn monitor_binary_name_matches_platform() {
@@ -245,10 +229,5 @@ mod tests {
             "/repo/target/release/{}",
             monitor_binary_name()
         ))));
-        assert!(
-            candidates
-                .iter()
-                .any(|candidate| { candidate.ends_with(PathBuf::from(sidecar_binary_name())) })
-        );
     }
 }
