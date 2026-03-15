@@ -5,6 +5,7 @@ mod db;
 mod minio;
 mod settings_ui;
 mod svg_icon;
+mod vizier;
 mod worker;
 
 use std::process::Command;
@@ -200,7 +201,7 @@ impl AppController {
             show_error("Portal URL or device ID not configured.");
             return;
         };
-        if let Err(err) = Command::new("open").arg(&url).status() {
+        if let Err(err) = open_with_system(&url) {
             log::error!("failed to open portal url: {err:?}");
             show_error("Unable to launch the Companion Intelligence portal.");
         }
@@ -429,6 +430,27 @@ fn build_portal_login_url(config: &AppConfig) -> Option<String> {
     Some(format!(
         "{base}{separator}device_id={device}&source=ci-Applet",
     ))
+}
+
+fn open_with_system(target: &str) -> std::io::Result<()> {
+    #[cfg(target_os = "macos")]
+    let mut command = Command::new("open");
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        let mut command = Command::new("cmd");
+        command.args(["/C", "start", "", target]);
+        command
+    };
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut command = {
+        let mut command = Command::new("xdg-open");
+        command.arg(target);
+        command
+    };
+    #[cfg(target_os = "macos")]
+    command.arg(target);
+
+    command.status().map(|_| ())
 }
 
 fn ensure_device_registration(manager: &ConfigManager, config: &mut AppConfig) -> Result<()> {

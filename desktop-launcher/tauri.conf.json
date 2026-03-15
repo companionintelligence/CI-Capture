@@ -1,0 +1,30 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "CI-Applet Launcher",
+  "version": "0.1.0",
+  "identifier": "com.companionintelligence.ci-applet.launcher",
+  "build": {
+    "frontendDist": "dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "CI-Applet Launcher",
+        "width": 920,
+        "height": 700,
+        "minWidth": 760,
+        "minHeight": 620,
+        "resizable": true
+      }
+    ]
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/icon-32.png",
+      "icons/icon-128.png"
+    ]
+  }
+}

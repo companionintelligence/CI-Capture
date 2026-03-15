@@ -1,4 +1,6 @@
 /target
+/desktop-launcher/target
+/desktop-launcher/gen
 
 .specstory/history/.what-is-this.md
 

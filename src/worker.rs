@@ -7,15 +7,15 @@ use chrono::Utc;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::time::{self, Interval, MissedTickBehavior};
 use uuid::Uuid;
-use vizier::diff::create_diff_envelope;
-use vizier::observation::Observation;
-use vizier::observer::{Observer, ObserverConfig, create_observer};
 
 use crate::analysis::{AnalysisResult, VisionAnalyzer};
 use crate::capture::{CapturedImage, capture_primary, diff_percent, save_to_path};
 use crate::config::AppConfig;
 use crate::db::{PostgresRecorder, ScreenshotRecord, VizierEventRecord};
 use crate::minio::MinioUploader;
+use crate::vizier::diff::create_diff_envelope;
+use crate::vizier::observation::Observation;
+use crate::vizier::observer::{Observer, ObserverConfig, create_observer};
 
 const MIN_INTERVAL_SECS: u64 = 30;
 
@@ -175,7 +175,12 @@ async fn run_analysis_loop(
             capture.user_id, capture.device_id, date_path, capture.filename
         );
 
-        let remote_url = match uploader.as_ref().unwrap().upload_png(&key, png_bytes.clone()).await {
+        let remote_url = match uploader
+            .as_ref()
+            .unwrap()
+            .upload_png(&key, png_bytes.clone())
+            .await
+        {
             Ok(url) => url,
             Err(e) => {
                 log::error!("failed to upload screenshot: {e:?}");
@@ -282,20 +287,18 @@ impl WorkerState {
                 self.paused = false;
                 self.running_flag.store(true, Ordering::SeqCst);
             }
-            WorkerCommand::CaptureNow => {
-                match self.capture_once().await {
-                    Ok(captured) => {
-                        if captured && self.config.vizier.enabled {
-                            if let Err(err) = self.capture_vizier().await {
-                                log::error!("manual vizier capture failed: {err:?}");
-                            }
+            WorkerCommand::CaptureNow => match self.capture_once().await {
+                Ok(captured) => {
+                    if captured && self.config.vizier.enabled {
+                        if let Err(err) = self.capture_vizier().await {
+                            log::error!("manual vizier capture failed: {err:?}");
                         }
                     }
-                    Err(err) => {
-                        log::error!("manual capture failed: {err:?}");
-                    }
                 }
-            }
+                Err(err) => {
+                    log::error!("manual capture failed: {err:?}");
+                }
+            },
             WorkerCommand::Shutdown => {
                 return Ok(true);
             }
@@ -313,7 +316,10 @@ impl WorkerState {
     }
 
     async fn capture_vizier(&mut self) -> Result<()> {
-        let (user_id, device_id) = match (self.config.identity.user_id, self.config.identity.device_id) {
+        let (user_id, device_id) = match (
+            self.config.identity.user_id,
+            self.config.identity.device_id,
+        ) {
             (Some(user), Some(device)) => (user, device),
             _ => {
                 log::warn!(

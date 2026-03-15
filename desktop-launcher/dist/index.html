@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CI-Applet Launcher</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="hero">
+        <p class="eyebrow">Desktop launcher</p>
+        <h1>CI-Applet</h1>
+        <p class="lede">
+          A Tauri-based launcher and tray shell for the existing Rust capture engine.
+          Use the tray icon to launch monitoring, open settings, or bring this window
+          back into view.
+        </p>
+      </section>
+
+      <section class="card">
+        <h2>What the launcher does</h2>
+        <ul>
+          <li>Creates a native Tauri tray icon and launcher window.</li>
+          <li>Starts the existing <code>CI-Applet</code> monitor binary on demand.</li>
+          <li>Opens the existing egui settings editor without duplicating config logic.</li>
+          <li>Keeps the background capture and analysis pipeline in the root Rust crate.</li>
+        </ul>
+      </section>
+
+      <section class="grid">
+        <article class="card">
+          <h2>Tray actions</h2>
+          <ul>
+            <li><strong>Show Launcher</strong> re-opens this window.</li>
+            <li><strong>Launch Monitor</strong> starts the background capture binary once.</li>
+            <li><strong>Open Settings</strong> launches the shared <code>--settings-ui</code> flow.</li>
+            <li><strong>Quit Launcher</strong> exits the Tauri shell.</li>
+          </ul>
+        </article>
+
+        <article class="card">
+          <h2>Build targets</h2>
+          <ul>
+            <li>Windows, macOS, and Linux desktop launcher builds use Tauri v2.</li>
+            <li>The monitor binary remains the root Rust package.</li>
+            <li>
+              Set <code>CI_APPLET_MONITOR_BIN</code> to override where the launcher looks
+              for the root binary.
+            </li>
+          </ul>
+        </article>
+      </section>
+
+      <section class="card callout">
+        <h2>Architecture refresh</h2>
+        <p>
+          This keeps the screenshot worker, MinIO uploader, Postgres recorder, and
+          vision analysis code untouched while introducing a packaging-friendly Tauri
+          desktop shell. The tray UX is now split into a launcher layer and the
+          existing capture engine so the monitor can continue to evolve independently.
+        </p>
+      </section>
+    </main>
+  </body>
+  </html>

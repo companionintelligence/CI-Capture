@@ -30,6 +30,5 @@ uuid = { version = "1", features = ["v4", "serde"] }
 egui = "0.33.2"
 eframe = { version = "0.33.2", default-features = false, features = ["glow"] }
 whoami = "1"
-vizier = { path = "../../vizier" }
 resvg = { version = "0.45", default-features = false, features = ["text"] }
 usvg = "0.45"
