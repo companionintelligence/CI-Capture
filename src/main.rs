@@ -3,18 +3,25 @@ mod capture;
 mod config;
 mod db;
 mod minio;
+mod server_auth;
+mod server_common;
+mod server_ingest;
+mod server_upload;
 mod settings_ui;
 mod svg_icon;
+mod upload_ui;
 mod worker;
 
 use std::process::Command;
 use std::sync::Arc;
 use std::thread;
+use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use config::{AppConfig, ConfigManager, PostgresConfig};
 use env_logger::Env;
 use parking_lot::Mutex;
+use server_auth::{start_pairing, wait_for_pairing};
 use tao::event::Event;
 use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy, EventLoopWindowTarget};
 use tinyfiledialogs::{self as dialogs, MessageBoxIcon};
@@ -27,10 +34,12 @@ use whoami;
 
 use crate::worker::WorkerHandle;
 use settings_ui::run_settings_ui;
+use upload_ui::run_upload_ui;
 
 #[derive(Debug, Clone)]
 enum AppEvent {
     ReloadConfig,
+    PairingFinished { success: bool, message: String },
 }
 
 fn main() -> Result<()> {
@@ -39,6 +48,11 @@ fn main() -> Result<()> {
 
     if std::env::args().any(|arg| arg == "--settings-ui") {
         run_settings_ui()?;
+        return Ok(());
+    }
+
+    if std::env::args().any(|arg| arg == "--upload-ui") {
+        run_upload_ui()?;
         return Ok(());
     }
 
@@ -75,6 +89,7 @@ fn main() -> Result<()> {
         tray_icon: Some(tray_icon),
         proxy,
         settings_open: false,
+        pairing_in_progress: false,
     };
 
     let menu_receiver = MenuEvent::receiver().clone();
@@ -112,6 +127,7 @@ struct AppController {
     tray_icon: Option<TrayIcon>,
     proxy: EventLoopProxy<AppEvent>,
     settings_open: bool,
+    pairing_in_progress: bool,
 }
 
 impl AppController {
@@ -126,6 +142,8 @@ impl AppController {
             self.toggle_worker();
         } else if menu_id == *self.menu_state.capture_now_item.id() {
             self.worker.capture_now();
+        } else if menu_id == *self.menu_state.upload_item.id() {
+            self.open_upload_window();
         } else if menu_id == *self.menu_state.settings_item.id() {
             self.open_settings_window();
         } else if menu_id == *self.menu_state.login_item.id() {
@@ -151,6 +169,19 @@ impl AppController {
                 if let Err(err) = self.reload_config_from_disk() {
                     log::error!("failed to reload config: {err:?}");
                     show_error("Unable to reload configuration; see logs for details.");
+                }
+            }
+            AppEvent::PairingFinished { success, message } => {
+                self.pairing_in_progress = false;
+                if success {
+                    if let Err(err) = self.reload_config_from_disk() {
+                        log::error!("failed to reload config after pairing: {err:?}");
+                        show_error("Linked account, but failed to reload configuration.");
+                        return;
+                    }
+                    dialogs::message_box_ok("CI-Applet", &message, MessageBoxIcon::Info);
+                } else {
+                    show_error(&message);
                 }
             }
         }
@@ -183,6 +214,17 @@ impl AppController {
         }
     }
 
+    fn open_upload_window(&self) {
+        let Ok(exe) = std::env::current_exe() else {
+            show_error("Unable to locate executable for upload window.");
+            return;
+        };
+        if let Err(err) = Command::new(exe).arg("--upload-ui").spawn() {
+            log::error!("failed to launch upload window: {err:?}");
+            show_error("Unable to launch upload window. Check logs for details.");
+        }
+    }
+
     fn toggle_worker(&mut self) {
         if self.worker.is_running() {
             self.worker.pause();
@@ -194,16 +236,43 @@ impl AppController {
             .refresh_labels(&snapshot, self.worker.is_running());
     }
 
-    fn launch_portal_login(&self) {
-        let snapshot = self.current_config();
-        let Some(url) = build_portal_login_url(&snapshot) else {
-            show_error("Portal URL or device ID not configured.");
+    fn launch_portal_login(&mut self) {
+        if self.pairing_in_progress {
+            show_error("Portal login is already in progress.");
             return;
-        };
-        if let Err(err) = Command::new("open").arg(&url).status() {
-            log::error!("failed to open portal url: {err:?}");
-            show_error("Unable to launch the Companion Intelligence portal.");
         }
+
+        let snapshot = self.current_config();
+        let portal_url = snapshot.server.portal_url.trim().to_string();
+        if portal_url.is_empty() {
+            show_error("Portal URL is not configured.");
+            return;
+        }
+
+        self.pairing_in_progress = true;
+
+        let proxy = self.proxy.clone();
+        let portal_url_for_error = portal_url.clone();
+        thread::spawn(move || {
+            let result = pair_with_portal(&portal_url);
+            let event = match result {
+                Ok(message) => AppEvent::PairingFinished {
+                    success: true,
+                    message,
+                },
+                Err(err) => {
+                    log::error!("portal pairing failed: {err:?}");
+                    AppEvent::PairingFinished {
+                        success: false,
+                        message: format!(
+                            "Unable to complete portal login against {portal_url_for_error}: {err}. \
+Check Settings > Identity and point Portal URL at the CI-Server web origin that serves both /applet/pair and /api/graphql."
+                        ),
+                    }
+                }
+            };
+            let _ = proxy.send_event(event);
+        });
     }
 
     fn show_config_path(&self) {
@@ -244,6 +313,7 @@ struct MenuState {
     status_item: MenuItem,
     toggle_item: MenuItem,
     capture_now_item: MenuItem,
+    upload_item: MenuItem,
     interval_item: MenuItem,
     threshold_item: MenuItem,
     identity_item: MenuItem,
@@ -264,6 +334,7 @@ impl MenuState {
         status_item.set_enabled(false);
         let toggle_item = MenuItem::new("Pause Captures", true, None);
         let capture_now_item = MenuItem::new("Capture Now", true, None);
+        let upload_item = MenuItem::new("Upload Document…", true, None);
         let interval_item = MenuItem::new("Screenshot Interval", true, None);
         let threshold_item = MenuItem::new("Diff Threshold", true, None);
         let identity_item = MenuItem::new("Set Identity IDs", true, None);
@@ -289,6 +360,7 @@ impl MenuState {
             &PredefinedMenuItem::separator(),
             &toggle_item,
             &capture_now_item,
+            &upload_item,
             &PredefinedMenuItem::separator(),
             &interval_item,
             &threshold_item,
@@ -309,6 +381,7 @@ impl MenuState {
             status_item,
             toggle_item,
             capture_now_item,
+            upload_item,
             interval_item,
             threshold_item,
             identity_item,
@@ -418,19 +491,6 @@ fn short_uuid(id: Option<Uuid>) -> String {
     }
 }
 
-fn build_portal_login_url(config: &AppConfig) -> Option<String> {
-    let device = config.identity.device_id?;
-    let base = config.server.portal_url.trim();
-    if base.is_empty() {
-        return None;
-    }
-    let base = base.trim_end_matches('/');
-    let separator = if base.contains('?') { '&' } else { '?' };
-    Some(format!(
-        "{base}{separator}device_id={device}&source=ci-Applet",
-    ))
-}
-
 fn ensure_device_registration(manager: &ConfigManager, config: &mut AppConfig) -> Result<()> {
     let Some(user_id) = config.identity.user_id else {
         config.identity.device_id = None;
@@ -533,3 +593,37 @@ async fn register_or_create_device(
         .context("inserting device")?;
     Ok(row.get("device_id"))
 }
+
+fn pair_with_portal(portal_url: &str) -> Result<String> {
+    let runtime = Runtime::new().context("creating runtime for portal pairing")?;
+
+    let launch = runtime.block_on(async { start_pairing(portal_url).await })?;
+    if let Err(err) = Command::new("open").arg(&launch.pairing_url).status() {
+        return Err(anyhow!("failed to open pairing URL: {err}"));
+    }
+
+    let completion = runtime.block_on(async {
+        wait_for_pairing(portal_url, &launch, Duration::from_secs(15 * 60)).await
+    })?;
+
+    let manager = ConfigManager::new().context("reloading config manager after pairing")?;
+    let mut config = manager
+        .load_or_default()
+        .context("loading config after pairing")?;
+    config.identity.user_id = Some(completion.user_id);
+    config.identity.device_id = Some(completion.device_id);
+    config.server.applet_auth_token = Some(completion.applet_auth_token);
+    manager
+        .save(&config)
+        .context("saving config after portal pairing")?;
+
+    let display_name = completion
+        .user_name
+        .or(completion.user_email)
+        .unwrap_or_else(|| completion.user_id.to_string());
+
+    Ok(format!(
+        "Linked this computer to {display_name}. CI-Applet will now attribute captures to that account."
+    ))
+}
+

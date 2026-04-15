@@ -128,12 +128,15 @@ pub struct AppConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerConfig {
     pub portal_url: String,
+    #[serde(default)]
+    pub applet_auth_token: Option<String>,
 }
 
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
-            portal_url: "https://dev.companionintelligence.com/login".to_string(),
+            portal_url: "https://memory.ci.localhost".to_string(),
+            applet_auth_token: None,
         }
     }
 }

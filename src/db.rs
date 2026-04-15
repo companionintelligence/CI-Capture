@@ -5,7 +5,10 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use deadpool_postgres::{Client, Config, ManagerConfig, Pool, RecyclingMethod};
 use serde_json::{Value, json};
-use tokio_postgres::{NoTls, types::{Json, ToSql}};
+use tokio_postgres::{
+    NoTls,
+    types::{Json, ToSql},
+};
 use uuid::Uuid;
 
 use crate::analysis::AnalysisResult;
@@ -40,6 +43,7 @@ pub struct VizierEventRecord {
 pub struct PostgresRecorder {
     pool: Pool<NoTls>,
     config: AppConfig,
+    screen_capture_schema_ready: Arc<AtomicBool>,
     vizier_schema_ready: Arc<AtomicBool>,
 }
 
@@ -62,6 +66,7 @@ impl PostgresRecorder {
         Ok(Self {
             pool,
             config: config.clone(),
+            screen_capture_schema_ready: Arc::new(AtomicBool::new(false)),
             vizier_schema_ready: Arc::new(AtomicBool::new(false)),
         })
     }
@@ -71,7 +76,14 @@ impl PostgresRecorder {
         metadata: ScreenshotRecord,
         analysis: &AnalysisResult,
     ) -> Result<()> {
-        let client = self.pool.get().await.context("getting postgres connection")?;
+        let client = self
+            .pool
+            .get()
+            .await
+            .context("getting postgres connection")?;
+        self.ensure_screen_capture_schema(&client)
+            .await
+            .context("ensuring screen capture schema")?;
 
         let file_id = self
             .insert_file_record(&client, &metadata)
@@ -85,8 +97,51 @@ impl PostgresRecorder {
         Ok(())
     }
 
+    async fn ensure_screen_capture_schema(&self, client: &Client<NoTls>) -> Result<()> {
+        if self.screen_capture_schema_ready.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+
+        client
+            .batch_execute(
+                "CREATE SCHEMA IF NOT EXISTS ci;
+                CREATE TABLE IF NOT EXISTS ci.screen_captures (
+                    time timestamptz NOT NULL,
+                    user_id uuid NOT NULL,
+                    device_id uuid NOT NULL,
+                    image_path text NOT NULL,
+                    thumbnail_path text NULL,
+                    ocr_text text NULL,
+                    ui_elements jsonb NOT NULL DEFAULT '[]'::jsonb,
+                    applications jsonb NOT NULL DEFAULT '[]'::jsonb,
+                    activity_summary text NULL,
+                    primary_application text NULL,
+                    activity_category text NULL,
+                    contains_sensitive boolean NOT NULL DEFAULT false,
+                    contains_pii boolean NOT NULL DEFAULT false,
+                    redacted boolean NOT NULL DEFAULT false,
+                    redaction_regions jsonb NOT NULL DEFAULT '[]'::jsonb,
+                    PRIMARY KEY (time, user_id, device_id)
+                );
+                CREATE INDEX IF NOT EXISTS screen_captures_user_time_idx
+                    ON ci.screen_captures (user_id, time DESC);
+                CREATE INDEX IF NOT EXISTS screen_captures_device_time_idx
+                    ON ci.screen_captures (device_id, time DESC);",
+            )
+            .await
+            .context("creating screen capture schema objects")?;
+
+        self.screen_capture_schema_ready
+            .store(true, Ordering::SeqCst);
+        Ok(())
+    }
+
     pub async fn record_vizier_event(&self, event: VizierEventRecord) -> Result<()> {
-        let client = self.pool.get().await.context("getting postgres connection")?;
+        let client = self
+            .pool
+            .get()
+            .await
+            .context("getting postgres connection")?;
         self.ensure_vizier_schema(&client)
             .await
             .context("ensuring vizier schema")?;

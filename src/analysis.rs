@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use anyhow::{Context, Result, anyhow};
 use base64::{Engine as _, engine::general_purpose};
 use reqwest::Client;
@@ -29,6 +31,8 @@ impl Default for VisionAnalyzer {
     fn default() -> Self {
         Self {
             client: Client::builder()
+                .connect_timeout(Duration::from_secs(10))
+                .timeout(Duration::from_secs(120))
                 .build()
                 .expect("failed to build reqwest client"),
         }

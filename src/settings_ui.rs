@@ -166,10 +166,21 @@ impl SettingsApp {
             return;
         }
 
-        let mut updated = self.base_config.lock().clone();
-        let user_id = Uuid::parse_str(self.form.user_id.trim()).unwrap();
-        updated.identity.user_id = Some(user_id);
-        updated.identity.device_id = None;
+        let previous = self.base_config.lock().clone();
+        let mut updated = previous.clone();
+        let previous_user_id = previous.identity.user_id.map(|id| id.to_string());
+        if self.form.user_id.trim().is_empty() {
+            updated.identity.user_id = None;
+            updated.identity.device_id = None;
+            updated.server.applet_auth_token = None;
+        } else {
+            let user_id = Uuid::parse_str(self.form.user_id.trim()).unwrap();
+            updated.identity.user_id = Some(user_id);
+            if previous_user_id.as_deref() != Some(self.form.user_id.trim()) {
+                updated.identity.device_id = None;
+                updated.server.applet_auth_token = None;
+            }
+        }
         updated.server.portal_url = self.form.portal_url.trim().to_string();
         updated.capture.screenshot_interval_secs = self.form.screenshot_interval_secs;
         updated.capture.diff_threshold_percent = self.form.diff_threshold_percent;
@@ -204,11 +215,10 @@ impl SettingsApp {
     }
 
     fn validate(&self) -> Result<(), String> {
-        if self.form.user_id.trim().is_empty() {
-            return Err("User ID is required.".into());
+        if !self.form.user_id.trim().is_empty() {
+            Uuid::parse_str(self.form.user_id.trim())
+                .map_err(|_| "User ID must be a valid UUID.".to_string())?;
         }
-        Uuid::parse_str(self.form.user_id.trim())
-            .map_err(|_| "User ID must be a valid UUID.".to_string())?;
         if self.form.portal_url.trim().is_empty() {
             return Err("Portal URL cannot be empty.".into());
         }
@@ -276,7 +286,11 @@ impl eframe::App for SettingsApp {
 
 fn render_identity_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bool {
     let mut changed = false;
-    ui.label("User ID (UUID)");
+    ui.label("Portal pairing is the primary login flow.");
+    ui.label("Use the tray menu item 'Login to …' to link this computer automatically.");
+    ui.label("Changing the manual user ID clears the current applet login token.");
+    ui.separator();
+    ui.label("Manual User ID Override (optional UUID)");
     changed |= ui
         .add(egui::TextEdit::singleline(&mut form.user_id).hint_text("User UUID"))
         .changed();
@@ -284,13 +298,16 @@ fn render_identity_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bool 
     changed |= ui
         .add(
             egui::TextEdit::singleline(&mut form.portal_url)
-                .hint_text("https://dev.companionintelligence.com/login"),
+                .hint_text("https://memory.ci.localhost"),
         )
         .changed();
     ui.separator();
     ui.label("Device ID (auto-assigned)");
     if form.device_id.is_empty() {
-        ui.label(egui::RichText::new("Device will register after saving user ID").italics());
+        ui.label(
+            egui::RichText::new("Device will be set after portal pairing or manual user save")
+                .italics(),
+        );
     } else {
         ui.monospace(&form.device_id);
     }

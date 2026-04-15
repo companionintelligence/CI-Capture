@@ -12,7 +12,7 @@ Owns Postgres writes for CI-Applet. It records both screenshot-derived history a
 ### `record_capture`
 - **Does**: Persists file metadata plus screen-capture rows for screenshot analysis.
 - **Interacts with**: `ci.files` and `ci.screen_captures`.
-- **Rationale**: Maps applet metadata onto the server's current `ci.files` storage schema before writing `ci.screen_captures`.
+- **Rationale**: Maps applet metadata onto the server's current `ci.files` storage schema and recreates `ci.screen_captures` on demand because the server no longer migrates that table.
 
 ### `record_vizier_event`
 - **Does**: Persists `vizier` snapshots and diff envelopes into `ci.vizier_events`.
@@ -25,4 +25,4 @@ Owns Postgres writes for CI-Applet. It records both screenshot-derived history a
 |-----------|---------|------------------|
 | `worker.rs` | Recorder methods are async and best-effort per event | Changing method names/signatures |
 | Analytics queries | `ci.vizier_events.payload` contains raw JSON for each event | Renaming the table or narrowing payload |
-| Fresh installs | `ci.vizier_events` is created automatically before first write | Removing schema bootstrap |
+| Fresh installs | `ci.vizier_events` and `ci.screen_captures` are created automatically before first write | Removing schema bootstrap |

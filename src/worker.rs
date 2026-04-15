@@ -1,10 +1,13 @@
+use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 use chrono::Utc;
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
+use tokio::sync::mpsc::{
+    Receiver, Sender, UnboundedReceiver, UnboundedSender, channel, unbounded_channel,
+};
 use tokio::time::{self, Interval, MissedTickBehavior};
 use uuid::Uuid;
 use vizier::diff::create_diff_envelope;
@@ -16,8 +19,10 @@ use crate::capture::{CapturedImage, capture_primary, diff_percent, save_to_path}
 use crate::config::AppConfig;
 use crate::db::{PostgresRecorder, ScreenshotRecord, VizierEventRecord};
 use crate::minio::MinioUploader;
+use crate::server_ingest;
 
 const MIN_INTERVAL_SECS: u64 = 30;
+const ANALYSIS_QUEUE_CAPACITY: usize = 2;
 
 pub struct WorkerHandle {
     tx: UnboundedSender<WorkerCommand>,
@@ -30,21 +35,13 @@ impl WorkerHandle {
         let running = Arc::new(AtomicBool::new(true));
         let worker_running = running.clone();
 
-        let recorder = match PostgresRecorder::new(&initial_config) {
-            Ok(r) => Some(r),
-            Err(e) => {
-                log::error!("failed to initialize postgres pool: {e:?}");
-                None
-            }
-        };
-
         std::thread::spawn(move || {
             let runtime = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()
                 .expect("failed to create runtime");
             runtime.block_on(async move {
-                if let Err(err) = run_worker(rx, initial_config, worker_running, recorder).await {
+                if let Err(err) = run_worker(rx, initial_config, worker_running).await {
                     log::error!("worker terminated: {err:?}");
                 }
             });
@@ -90,25 +87,21 @@ struct PendingCapture {
     image: CapturedImage,
     filename: String,
     timestamp: chrono::DateTime<Utc>,
-    user_id: Uuid,
-    device_id: Uuid,
+    config: AppConfig,
 }
 
 async fn run_worker(
     mut commands: UnboundedReceiver<WorkerCommand>,
     initial_config: AppConfig,
     running_flag: Arc<AtomicBool>,
-    recorder: Option<PostgresRecorder>,
 ) -> Result<()> {
-    let (analysis_tx, mut analysis_rx) = unbounded_channel::<PendingCapture>();
+    let (analysis_tx, mut analysis_rx) = channel::<PendingCapture>(ANALYSIS_QUEUE_CAPACITY);
 
-    let analysis_config = initial_config.clone();
-    let analysis_recorder = recorder.clone();
     tokio::spawn(async move {
-        run_analysis_loop(&mut analysis_rx, analysis_config, analysis_recorder).await;
+        run_analysis_loop(&mut analysis_rx).await;
     });
 
-    let mut state = WorkerState::new(initial_config, running_flag, analysis_tx, recorder);
+    let mut state = WorkerState::new(initial_config, running_flag, analysis_tx);
     let mut interval = build_interval(state.config.capture.screenshot_interval_secs);
 
     loop {
@@ -141,25 +134,10 @@ async fn run_worker(
     Ok(())
 }
 
-async fn run_analysis_loop(
-    rx: &mut UnboundedReceiver<PendingCapture>,
-    config: AppConfig,
-    recorder: Option<PostgresRecorder>,
-) {
-    let mut uploader: Option<MinioUploader> = None;
+async fn run_analysis_loop(rx: &mut Receiver<PendingCapture>) {
     let analyzer = VisionAnalyzer::default();
 
     while let Some(capture) = rx.recv().await {
-        if uploader.is_none() {
-            match MinioUploader::new(&config.minio).await {
-                Ok(u) => uploader = Some(u),
-                Err(e) => {
-                    log::error!("failed to create minio uploader: {e:?}");
-                    continue;
-                }
-            }
-        }
-
         let png_bytes = match capture.image.to_png_bytes() {
             Ok(b) => b,
             Err(e) => {
@@ -167,23 +145,8 @@ async fn run_analysis_loop(
                 continue;
             }
         };
-        let file_size = png_bytes.len() as i64;
 
-        let date_path = capture.timestamp.format("%Y/%m/%d");
-        let key = format!(
-            "captures/{}/{}/{}/{}",
-            capture.user_id, capture.device_id, date_path, capture.filename
-        );
-
-        let remote_url = match uploader.as_ref().unwrap().upload_png(&key, png_bytes.clone()).await {
-            Ok(url) => url,
-            Err(e) => {
-                log::error!("failed to upload screenshot: {e:?}");
-                continue;
-            }
-        };
-
-        let analysis = match analyzer.analyze(&config.analysis, &png_bytes).await {
+        let analysis = match analyzer.analyze(&capture.config.analysis, &png_bytes).await {
             Ok(result) => result,
             Err(err) => {
                 log::warn!("vision analysis failed: {err:?}");
@@ -191,18 +154,21 @@ async fn run_analysis_loop(
             }
         };
 
-        if let Some(rec) = &recorder {
-            let record = ScreenshotRecord {
-                captured_at: capture.timestamp,
-                user_id: capture.user_id,
-                device_id: capture.device_id,
-                remote_path: remote_url,
-                filename: capture.filename,
-                file_size_bytes: file_size,
-            };
-            if let Err(err) = rec.record_capture(record, &analysis).await {
-                log::error!("failed to write postgres rows: {err:?}");
+        if server_ingest::is_configured(&capture.config) {
+            if let Err(err) =
+                server_ingest::ingest_capture(&capture.config, &capture.filename, &png_bytes).await
+            {
+                log::error!(
+                    "failed to ingest screenshot: {err:?} (file={}, size={:.1} KB)",
+                    capture.filename,
+                    png_bytes.len() as f64 / 1024.0
+                );
             }
+            continue;
+        }
+
+        if let Err(err) = record_capture_legacy(&capture, &png_bytes, &analysis).await {
+            log::error!("failed to write legacy capture rows: {err:?}");
         }
     }
 }
@@ -217,10 +183,10 @@ fn build_interval(seconds: u64) -> Interval {
 struct WorkerState {
     config: AppConfig,
     paused: bool,
+    capture_blocked: bool,
     last_capture: Option<CapturedImage>,
     running_flag: Arc<AtomicBool>,
-    analysis_tx: UnboundedSender<PendingCapture>,
-    recorder: Option<PostgresRecorder>,
+    analysis_tx: Sender<PendingCapture>,
     vizier_observer: Box<dyn Observer>,
     vizier_previous: Option<Observation>,
     vizier_session_id: Uuid,
@@ -230,8 +196,7 @@ impl WorkerState {
     fn new(
         config: AppConfig,
         running_flag: Arc<AtomicBool>,
-        analysis_tx: UnboundedSender<PendingCapture>,
-        recorder: Option<PostgresRecorder>,
+        analysis_tx: Sender<PendingCapture>,
     ) -> Self {
         let vizier_observer = create_observer(ObserverConfig {
             watch_path: config.vizier.watch_path.clone(),
@@ -241,10 +206,10 @@ impl WorkerState {
         Self {
             config,
             paused: false,
+            capture_blocked: false,
             last_capture: None,
             running_flag,
             analysis_tx,
-            recorder,
             vizier_observer,
             vizier_previous: None,
             vizier_session_id: Uuid::new_v4(),
@@ -282,20 +247,18 @@ impl WorkerState {
                 self.paused = false;
                 self.running_flag.store(true, Ordering::SeqCst);
             }
-            WorkerCommand::CaptureNow => {
-                match self.capture_once().await {
-                    Ok(captured) => {
-                        if captured && self.config.vizier.enabled {
-                            if let Err(err) = self.capture_vizier().await {
-                                log::error!("manual vizier capture failed: {err:?}");
-                            }
+            WorkerCommand::CaptureNow => match self.capture_once().await {
+                Ok(captured) => {
+                    if captured && self.config.vizier.enabled {
+                        if let Err(err) = self.capture_vizier().await {
+                            log::error!("manual vizier capture failed: {err:?}");
                         }
                     }
-                    Err(err) => {
-                        log::error!("manual capture failed: {err:?}");
-                    }
                 }
-            }
+                Err(err) => {
+                    log::error!("manual capture failed: {err:?}");
+                }
+            },
             WorkerCommand::Shutdown => {
                 return Ok(true);
             }
@@ -313,7 +276,10 @@ impl WorkerState {
     }
 
     async fn capture_vizier(&mut self) -> Result<()> {
-        let (user_id, device_id) = match (self.config.identity.user_id, self.config.identity.device_id) {
+        let (user_id, device_id) = match (
+            self.config.identity.user_id,
+            self.config.identity.device_id,
+        ) {
             (Some(user), Some(device)) => (user, device),
             _ => {
                 log::warn!(
@@ -334,38 +300,42 @@ impl WorkerState {
         let fs_event_count = current.fs_events.len() as i32;
         let observed_at = Utc::now();
 
-        if let Some(recorder) = &self.recorder {
-            let (event_kind, monotonic_ms, payload) = match &self.vizier_previous {
-                None => (
-                    "snapshot".to_string(),
-                    current.monotonic_ms as i64,
-                    serde_json::to_value(&current).context("serializing vizier snapshot")?,
-                ),
-                Some(previous) => {
-                    let diff = create_diff_envelope(previous, &current)
-                        .context("building vizier diff envelope")?;
-                    (
-                        "patch".to_string(),
-                        diff.monotonic_ms as i64,
-                        serde_json::to_value(&diff).context("serializing vizier diff")?,
-                    )
-                }
-            };
+        let (event_kind, monotonic_ms, payload) = match &self.vizier_previous {
+            None => (
+                "snapshot".to_string(),
+                current.monotonic_ms as i64,
+                serde_json::to_value(&current).context("serializing vizier snapshot")?,
+            ),
+            Some(previous) => {
+                let diff = create_diff_envelope(previous, &current)
+                    .context("building vizier diff envelope")?;
+                (
+                    "patch".to_string(),
+                    diff.monotonic_ms as i64,
+                    serde_json::to_value(&diff).context("serializing vizier diff")?,
+                )
+            }
+        };
 
-            let event = VizierEventRecord {
-                user_id,
-                device_id,
-                session_id: self.vizier_session_id,
-                event_kind,
-                observed_at,
-                monotonic_ms,
-                payload,
-                focus_app,
-                focus_title,
-                cwd,
-                fs_event_count,
-            };
+        let event = VizierEventRecord {
+            user_id,
+            device_id,
+            session_id: self.vizier_session_id,
+            event_kind,
+            observed_at,
+            monotonic_ms,
+            payload,
+            focus_app,
+            focus_title,
+            cwd,
+            fs_event_count,
+        };
 
+        if server_ingest::is_configured(&self.config) {
+            server_ingest::ingest_vizier_event(&self.config, device_id, &event)
+                .await
+                .context("writing vizier event via CI-Server GraphQL")?;
+        } else if let Some(recorder) = build_legacy_recorder(&self.config) {
             recorder
                 .record_vizier_event(event)
                 .await
@@ -377,18 +347,25 @@ impl WorkerState {
     }
 
     async fn capture_once(&mut self) -> Result<bool> {
-        let (user_id, device_id) = match (
-            self.config.identity.user_id,
-            self.config.identity.device_id,
-        ) {
-            (Some(user), Some(device)) => (user, device),
-            _ => {
-                log::warn!(
-                    "identity not configured; skipping capture (set user and device IDs in settings)"
-                );
-                return Ok(false);
+        if is_capture_blocked() {
+            if !self.capture_blocked {
+                log::info!("screensaver active; skipping capture ticks until desktop is unlocked");
+                self.capture_blocked = true;
             }
-        };
+            return Ok(false);
+        }
+
+        if self.capture_blocked {
+            log::info!("desktop unlocked; resuming capture ticks");
+            self.capture_blocked = false;
+        }
+
+        if self.config.identity.user_id.is_none() || self.config.identity.device_id.is_none() {
+            log::warn!(
+                "identity not configured; skipping capture (set user and device IDs in settings)"
+            );
+            return Ok(false);
+        }
 
         let capture = tokio::task::spawn_blocking(capture_primary)
             .await
@@ -427,14 +404,97 @@ impl WorkerState {
             image: capture,
             filename,
             timestamp,
-            user_id,
-            device_id,
+            config: self.config.clone(),
         };
 
-        if let Err(e) = self.analysis_tx.send(pending) {
-            log::error!("failed to queue capture for analysis: {e:?}");
+        if let Err(e) = self.analysis_tx.try_send(pending) {
+            log::warn!("analysis queue is full or closed; dropping capture: {e}");
         }
 
         Ok(true)
     }
+}
+
+fn build_legacy_recorder(config: &AppConfig) -> Option<PostgresRecorder> {
+    match PostgresRecorder::new(config) {
+        Ok(recorder) => Some(recorder),
+        Err(err) => {
+            log::error!("failed to initialize postgres pool: {err:?}");
+            None
+        }
+    }
+}
+
+async fn record_capture_legacy(
+    capture: &PendingCapture,
+    png_bytes: &[u8],
+    analysis: &AnalysisResult,
+) -> Result<()> {
+    let (user_id, device_id) = match (
+        capture.config.identity.user_id,
+        capture.config.identity.device_id,
+    ) {
+        (Some(user), Some(device)) => (user, device),
+        _ => {
+            log::warn!("identity not configured for legacy capture ingest; dropping capture");
+            return Ok(());
+        }
+    };
+
+    let uploader = MinioUploader::new(&capture.config.minio)
+        .await
+        .context("creating legacy minio uploader")?;
+    let recorder = match build_legacy_recorder(&capture.config) {
+        Some(recorder) => recorder,
+        None => return Ok(()),
+    };
+
+    let file_size = png_bytes.len() as i64;
+    let date_path = capture.timestamp.format("%Y/%m/%d");
+    let key = format!(
+        "captures/{}/{}/{}/{}",
+        user_id, device_id, date_path, capture.filename
+    );
+
+    let remote_url = uploader
+        .upload_png(&key, png_bytes.to_vec())
+        .await
+        .context("uploading screenshot to legacy minio")?;
+
+    let record = ScreenshotRecord {
+        captured_at: capture.timestamp,
+        user_id,
+        device_id,
+        remote_path: remote_url,
+        filename: capture.filename.clone(),
+        file_size_bytes: file_size,
+    };
+
+    recorder
+        .record_capture(record, analysis)
+        .await
+        .context("writing legacy postgres rows")?;
+
+    Ok(())
+}
+
+fn is_capture_blocked() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        return is_macos_screensaver_running();
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        false
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn is_macos_screensaver_running() -> bool {
+    Command::new("pgrep")
+        .args(["-x", "ScreenSaverEngine"])
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
 }

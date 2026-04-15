@@ -8,7 +8,7 @@ Builds screenshot analysis requests for the vision model and normalizes model ou
 ### `VisionAnalyzer::analyze`
 - **Does**: Sends the screenshot + prompt to `/chat/completions`, requests JSON output, and maps the response into `AnalysisResult`.
 - **Interacts with**: `AnalysisConfig` in `config.rs` and `run_analysis_loop` in `worker.rs`.
-- **Rationale**: Keeps all LLM-specific request/response behavior isolated from worker and DB code, using schema constraints plus workflow-focused prompt rules so outputs describe user intent/progress instead of random UI chrome.
+- **Rationale**: Keeps all LLM-specific request/response behavior isolated from worker and DB code, using schema constraints plus workflow-focused prompt rules so outputs describe user intent/progress instead of random UI chrome. The HTTP client applies connection/overall timeouts so analysis stalls do not block the worker indefinitely.
 
 ### `extract_content_text`
 - **Does**: Pulls assistant text from OpenAI-compatible `choices[0].message.content` shapes (string or typed content array).
