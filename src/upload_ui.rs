@@ -334,7 +334,7 @@ impl eframe::App for UploadApp {
 fn render_phase(ui: &mut egui::Ui, phase: &Phase) {
     match phase {
         Phase::Queued => {
-            ui.label(egui::RichText::new("Queued").color(egui::Color32::GRAY));
+            ui.label(egui::RichText::new("Ready to upload").color(egui::Color32::GRAY));
         }
         Phase::Uploading => {
             ui.label(egui::RichText::new("Uploading…").color(egui::Color32::YELLOW));
