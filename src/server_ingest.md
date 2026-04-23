@@ -10,14 +10,14 @@ Wraps the CI-Server GraphQL mutations used after browser pairing so the worker c
 - **Interacts with**: `worker.rs`.
 
 ### `ingest_capture`
-- **Does**: Encodes a screenshot as base64 and calls `ingestAppletCapture`.
-- **Interacts with**: `AnalysisResult` from `analysis.rs` and CI-Server GraphQL.
+- **Does**: Uploads a screenshot to `POST /api/files/upload` with `inventoryCapture=true`.
+- **Interacts with**: `AnalysisResult` from `analysis.rs` and CI-Server file ingestion.
 
 ### `ingest_vizier_event`
-- **Does**: Serializes a `VizierEventRecord` into `ingestAppletVizierEvent`.
+- **Does**: Serializes a `VizierEventRecord` into the generic `ingestUserSnapshot` mutation.
 - **Interacts with**: `db.rs` event types and CI-Server GraphQL.
 
-### `build_client`, `graphql_url`, `graphql`
+### `build_gql_client`, `graphql_url`, `graphql`
 - **Does**: Build the authenticated GraphQL client and normalize transport errors.
 - **Interacts with**: `reqwest`, `server.portal_url`, and `server.applet_auth_token`.
 

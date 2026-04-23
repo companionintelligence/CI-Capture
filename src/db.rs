@@ -44,7 +44,6 @@ pub struct PostgresRecorder {
     pool: Pool<NoTls>,
     config: AppConfig,
     screen_capture_schema_ready: Arc<AtomicBool>,
-    vizier_schema_ready: Arc<AtomicBool>,
 }
 
 impl PostgresRecorder {
@@ -67,7 +66,6 @@ impl PostgresRecorder {
             pool,
             config: config.clone(),
             screen_capture_schema_ready: Arc::new(AtomicBool::new(false)),
-            vizier_schema_ready: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -142,16 +140,13 @@ impl PostgresRecorder {
             .get()
             .await
             .context("getting postgres connection")?;
-        self.ensure_vizier_schema(&client)
-            .await
-            .context("ensuring vizier schema")?;
 
-        let event_id = Uuid::new_v4();
+        let snapshot_id = Uuid::new_v4();
         let payload = Json(event.payload);
         let producer = "ci-applet-vizier";
 
         let params: &[&(dyn ToSql + Sync)] = &[
-            &event_id,
+            &snapshot_id,
             &event.user_id,
             &event.device_id,
             &event.session_id,
@@ -168,14 +163,14 @@ impl PostgresRecorder {
 
         client
             .execute(
-                "INSERT INTO ci.vizier_events (
-                    event_id,
+                "INSERT INTO ci.user_snapshots (
+                    snapshot_id,
+                    observed_at,
                     user_id,
                     device_id,
                     session_id,
                     producer,
-                    event_kind,
-                    observed_at,
+                    snapshot_kind,
                     monotonic_ms,
                     payload,
                     focus_app,
@@ -183,51 +178,13 @@ impl PostgresRecorder {
                     cwd,
                     fs_event_count
                 ) VALUES (
-                    $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13
+                    $1,$7,$2,$3,$4,$5,$6,$8,$9,$10,$11,$12,$13
                 )",
                 params,
             )
             .await
-            .context("executing vizier event insert")?;
+            .context("executing user snapshot insert")?;
 
-        Ok(())
-    }
-
-    async fn ensure_vizier_schema(&self, client: &Client<NoTls>) -> Result<()> {
-        if self.vizier_schema_ready.load(Ordering::SeqCst) {
-            return Ok(());
-        }
-
-        client
-            .batch_execute(
-                "CREATE SCHEMA IF NOT EXISTS ci;
-                CREATE TABLE IF NOT EXISTS ci.vizier_events (
-                    event_id uuid PRIMARY KEY,
-                    user_id uuid NOT NULL,
-                    device_id uuid NOT NULL,
-                    session_id uuid NOT NULL,
-                    producer text NOT NULL,
-                    event_kind text NOT NULL CHECK (event_kind IN ('snapshot', 'patch')),
-                    observed_at timestamptz NOT NULL,
-                    monotonic_ms bigint NOT NULL,
-                    payload jsonb NOT NULL,
-                    focus_app text NULL,
-                    focus_title text NULL,
-                    cwd text NULL,
-                    fs_event_count integer NOT NULL DEFAULT 0,
-                    created_at timestamptz NOT NULL DEFAULT now()
-                );
-                CREATE INDEX IF NOT EXISTS vizier_events_user_time_idx
-                    ON ci.vizier_events (user_id, observed_at DESC);
-                CREATE INDEX IF NOT EXISTS vizier_events_session_time_idx
-                    ON ci.vizier_events (session_id, observed_at DESC);
-                CREATE INDEX IF NOT EXISTS vizier_events_payload_gin_idx
-                    ON ci.vizier_events USING GIN (payload);",
-            )
-            .await
-            .context("creating vizier schema objects")?;
-
-        self.vizier_schema_ready.store(true, Ordering::SeqCst);
         Ok(())
     }
 

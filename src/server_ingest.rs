@@ -8,9 +8,9 @@ use crate::config::AppConfig;
 use crate::db::VizierEventRecord;
 use crate::server_common::{graphql_url, server_origin};
 
-const INGEST_VIZIER_EVENT_MUTATION: &str = r#"
-mutation IngestAppletVizierEvent($input: IngestAppletVizierEventInput!) {
-  ingestAppletVizierEvent(input: $input) {
+const INGEST_USER_SNAPSHOT_MUTATION: &str = r#"
+mutation IngestUserSnapshot($input: IngestUserSnapshotInput!) {
+  ingestUserSnapshot(input: $input) {
     success
     errorMessage
   }
@@ -47,7 +47,7 @@ struct VizierVariables {
 struct VizierEventInput {
     device_id: String,
     session_id: String,
-    event_kind: String,
+    snapshot_kind: String,
     observed_at: String,
     monotonic_ms: i64,
     payload: Value,
@@ -60,7 +60,7 @@ struct VizierEventInput {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct VizierEnvelope {
-    ingest_applet_vizier_event: VizierIngestPayload,
+    ingest_user_snapshot: VizierIngestPayload,
 }
 
 #[derive(Debug, Deserialize)]
@@ -160,12 +160,12 @@ pub async fn ingest_vizier_event(
     let response = graphql::<_, VizierEnvelope>(
         &client,
         GraphqlRequest {
-            query: INGEST_VIZIER_EVENT_MUTATION,
+            query: INGEST_USER_SNAPSHOT_MUTATION,
             variables: VizierVariables {
                 input: VizierEventInput {
                     device_id: device_id.to_string(),
                     session_id: event.session_id.to_string(),
-                    event_kind: event.event_kind.clone(),
+                    snapshot_kind: event.event_kind.clone(),
                     observed_at: event.observed_at.to_rfc3339(),
                     monotonic_ms: event.monotonic_ms,
                     payload: event.payload.clone(),
@@ -179,7 +179,7 @@ pub async fn ingest_vizier_event(
     )
     .await?;
 
-    let payload = response.ingest_applet_vizier_event;
+    let payload = response.ingest_user_snapshot;
     if !payload.success {
         return Err(anyhow!(
             "{}",
