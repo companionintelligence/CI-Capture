@@ -22,9 +22,25 @@ pub fn load_svg_icon(data: &[u8], size: u32) -> Result<Icon> {
     let mut surface = pixmap.as_mut();
     resvg::render(&tree, transform, &mut surface);
 
-    let data = pixmap.take();
-    // Removed the loop that forced pixels to white.
-    // Now we just pass the RGBA data directly to the Icon.
+    let mut data = pixmap.take();
+
+    #[cfg(target_os = "macos")]
+    normalize_template_icon(&mut data);
 
     Icon::from_rgba(data, size, size).map_err(|e| anyhow!(e))
+}
+
+#[cfg(target_os = "macos")]
+fn normalize_template_icon(data: &mut [u8]) {
+    for pixel in data.chunks_exact_mut(4) {
+        if pixel[3] == 0 {
+            continue;
+        }
+
+        // macOS template status-bar icons render most reliably as a
+        // monochrome alpha mask rather than preserving source RGB values.
+        pixel[0] = 255;
+        pixel[1] = 255;
+        pixel[2] = 255;
+    }
 }
