@@ -3,6 +3,14 @@ name = "CI-Applet"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+name = "ci_applet"
+path = "src/lib.rs"
+
+[[bin]]
+name = "CI-Applet"
+path = "src/main.rs"
+
 [dependencies]
 anyhow = "1"
 aws-config = "1"

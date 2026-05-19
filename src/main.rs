@@ -1,27 +1,17 @@
-mod analysis;
-mod capture;
-mod config;
-mod db;
-mod minio;
-mod server_auth;
-mod server_common;
-mod server_ingest;
-mod server_upload;
-mod settings_ui;
-mod svg_icon;
-mod upload_ui;
-mod worker;
-
 use std::process::Command;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
-use config::{AppConfig, ConfigManager, PostgresConfig};
+use ci_applet::config::{AppConfig, ConfigManager, PostgresConfig};
+use ci_applet::server_auth::{start_pairing, wait_for_pairing};
+use ci_applet::settings_ui::run_settings_ui;
+use ci_applet::svg_icon;
+use ci_applet::upload_ui::run_upload_ui;
+use ci_applet::worker::WorkerHandle;
 use env_logger::Env;
 use parking_lot::Mutex;
-use server_auth::{start_pairing, wait_for_pairing};
 use tao::event::Event;
 use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy, EventLoopWindowTarget};
 use tinyfiledialogs::{self as dialogs, MessageBoxIcon};
@@ -31,10 +21,6 @@ use tray_icon::menu::{MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use uuid::Uuid;
 use whoami;
-
-use crate::worker::WorkerHandle;
-use settings_ui::run_settings_ui;
-use upload_ui::run_upload_ui;
 
 #[derive(Debug, Clone)]
 enum AppEvent {
