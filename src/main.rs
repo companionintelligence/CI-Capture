@@ -51,14 +51,35 @@ fn main() -> Result<()> {
     let env = Env::default().default_filter_or("info");
     env_logger::Builder::from_env(env).init();
 
-    if std::env::args().any(|arg| arg == "--settings-ui") {
+    let args: Vec<String> = std::env::args().collect();
+
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        print_help();
+        return Ok(());
+    }
+
+    if args.iter().any(|a| a == "--settings-ui") {
         run_settings_ui()?;
         return Ok(());
     }
 
-    if std::env::args().any(|arg| arg == "--upload-ui") {
+    if args.iter().any(|a| a == "--upload-ui") {
         run_upload_ui()?;
         return Ok(());
+    }
+
+    if let Some(idx) = args.iter().position(|a| a == "--extract") {
+        let path = args.get(idx + 1).ok_or_else(|| {
+            anyhow!("--extract requires a path argument; see --help")
+        })?;
+        return run_extract(path);
+    }
+
+    if let Some(idx) = args.iter().position(|a| a == "--watch") {
+        let path = args.get(idx + 1).ok_or_else(|| {
+            anyhow!("--watch requires a path argument; see --help")
+        })?;
+        return run_watch(path);
     }
 
     let manager = ConfigManager::new().context("building config manager")?;
@@ -632,3 +653,105 @@ fn pair_with_portal(portal_url: &str) -> Result<String> {
     ))
 }
 
+
+
+// ── CLI subcommands ──────────────────────────────────────────────────────────
+
+fn print_help() {
+    println!("CI-Applet — Companion Intelligence desktop sensor
+
+USAGE:
+    CI-Applet [OPTIONS]
+
+OPTIONS:
+    --help, -h                Print this help
+    --settings-ui             Open the settings window only
+    --upload-ui               Open the upload window only
+    --extract <PATH>          Run one file through the conversion pipeline
+                              and print the resulting Markdown to stdout.
+                              Supports: .txt .md .json .csv .tsv .html .htm
+                              .xhtml .eml .epub (and family extensions).
+    --watch <PATH>            Watch <PATH> recursively in dry-run mode:
+                              log every normalized file event to the
+                              console. Does NOT enqueue or send anywhere.
+
+If no subcommand is given, the tray app launches normally.
+
+See docs/testing-plan.md for a full on-device testing walkthrough.");
+}
+
+
+fn run_extract(path: &str) -> Result<()> {
+    use std::path::Path;
+
+    use crate::extractors::classify;
+    use crate::extractors::traits::ExtractOptions;
+
+    let path = Path::new(path);
+    if !path.exists() {
+        return Err(anyhow!("not found: {}", path.display()));
+    }
+
+    let extractor = classify(path, None).ok_or_else(|| {
+        anyhow!(
+            "unsupported file type: {} — see --help for the supported set",
+            path.display()
+        )
+    })?;
+
+    let doc = extractor.extract(
+        path,
+        ExtractOptions {
+            metadata_only: false,
+            allow_heavy_models: false,
+        },
+    )?;
+
+    eprintln!(
+        "--- {} ({}) ---",
+        doc.diagnostics.extractor,
+        doc.content_type
+    );
+    eprintln!(
+        "extraction_time_ms={}  ocr_used={}  transcription_used={}",
+        doc.diagnostics.extraction_time_ms,
+        doc.diagnostics.ocr_used,
+        doc.diagnostics.transcription_used
+    );
+    if !doc.diagnostics.warnings.is_empty() {
+        eprintln!("warnings: {:?}", doc.diagnostics.warnings);
+    }
+    eprintln!("--- markdown ({} bytes) ---", doc.markdown.len());
+    print!("{}", doc.markdown);
+    if !doc.markdown.ends_with('\n') {
+        println!();
+    }
+    Ok(())
+}
+
+fn run_watch(path: &str) -> Result<()> {
+    use std::path::PathBuf;
+
+    use crate::watcher::ignore::IgnoreRules;
+    use crate::watcher::run_dry_pipeline;
+
+    let root = PathBuf::from(path);
+    if !root.exists() {
+        return Err(anyhow!("not found: {}", root.display()));
+    }
+
+    let runtime = Runtime::new().context("building tokio runtime")?;
+    runtime.block_on(async move {
+        let ignore = IgnoreRules::with_defaults().context("building default ignore rules")?;
+        log::info!("watching {} (dry-run)", root.display());
+        log::info!("ignore defaults active; sensitive paths always blocked");
+        log::info!("press Ctrl-C to stop");
+
+        let (_pipeline, mut rx) = run_dry_pipeline(vec![root], ignore)?;
+
+        while let Some(decision) = rx.recv().await {
+            log::info!("decision: {decision:?}");
+        }
+        Ok::<(), anyhow::Error>(())
+    })
+}

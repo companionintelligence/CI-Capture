@@ -4,10 +4,14 @@
 //! [`classify`] picks an extractor based on file extension (plus an
 //! optional MIME hint).
 //!
-//! Today only the text family ([`text::TextExtractor`]) ships with a
-//! working implementation. Every other format slot exists as a doc-
-//! comment stub waiting for its sub-PR per
-//! [`docs/plan/03-conversion.md`](../../../docs/plan/03-conversion.md).
+//! Currently shipping (testable on-device):
+//! - Text family ([`text::TextExtractor`]): txt, md, json, csv, tsv
+//! - HTML ([`html::HtmlExtractor`]): html, htm, xhtml
+//! - Email ([`eml::EmlExtractor`]): eml
+//! - EPUB ([`epub::EpubExtractor`]): epub
+//!
+//! Deferred (heavier dep / sidecar): docx, pptx, xlsx, pdf, image, audio,
+//! zip — see [`docs/plan/03-conversion.md`](../../../docs/plan/03-conversion.md).
 
 #![allow(dead_code)]
 
@@ -26,6 +30,9 @@ pub mod zip;
 
 use std::path::Path;
 
+use self::eml::EmlExtractor;
+use self::epub::EpubExtractor;
+use self::html::HtmlExtractor;
 use self::text::{TextExtractor, TextKind};
 use self::traits::Extractor;
 
@@ -46,14 +53,17 @@ pub fn classify(path: &Path, _mime_hint: Option<&str>) -> Option<Box<dyn Extract
         .map(|e| e.to_ascii_lowercase())
         .unwrap_or_default();
 
-    // Text family (txt/md/json/csv/tsv) is the only family with a working
-    // extractor today. The other modules will plug in here as their
-    // sub-PRs land.
+    // Text family (txt, md, json, csv, tsv, log, jsonl, ndjson, markdown).
     if let Some(kind) = TextKind::from_extension(&ext) {
         return Some(Box::new(TextExtractor::new(kind)));
     }
 
-    None
+    match ext.as_str() {
+        "html" | "htm" | "xhtml" => Some(Box::new(HtmlExtractor::new())),
+        "eml" => Some(Box::new(EmlExtractor::new())),
+        "epub" => Some(Box::new(EpubExtractor::new())),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -73,9 +83,34 @@ mod tests {
     }
 
     #[test]
+    fn classifies_html_family() {
+        let html = classify(Path::new("/tmp/page.html"), None).unwrap();
+        assert_eq!(html.name(), "html-extractor/0.1");
+        assert!(classify(Path::new("/tmp/page.HTM"), None).is_some());
+        assert!(classify(Path::new("/tmp/page.xhtml"), None).is_some());
+    }
+
+    #[test]
+    fn classifies_eml() {
+        let eml = classify(Path::new("/tmp/inbox.eml"), None).unwrap();
+        assert_eq!(eml.name(), "eml-extractor/0.1");
+    }
+
+    #[test]
+    fn classifies_epub() {
+        let epub = classify(Path::new("/tmp/book.epub"), None).unwrap();
+        assert_eq!(epub.name(), "epub-extractor/0.1");
+    }
+
+    #[test]
     fn unsupported_returns_none() {
+        // Formats not yet shipping — these become Some(_) when their
+        // extractors land.
         assert!(classify(Path::new("/tmp/song.mp3"), None).is_none());
         assert!(classify(Path::new("/tmp/deck.pptx"), None).is_none());
+        assert!(classify(Path::new("/tmp/doc.docx"), None).is_none());
+        assert!(classify(Path::new("/tmp/sheet.xlsx"), None).is_none());
+        assert!(classify(Path::new("/tmp/scan.pdf"), None).is_none());
         assert!(classify(Path::new("/tmp/whatever"), None).is_none());
     }
 
@@ -83,6 +118,7 @@ mod tests {
     fn extension_is_case_insensitive() {
         assert!(classify(Path::new("/tmp/Notes.TXT"), None).is_some());
         assert!(classify(Path::new("/tmp/Data.JSON"), None).is_some());
+        assert!(classify(Path::new("/tmp/Page.HTML"), None).is_some());
     }
 
     #[test]
