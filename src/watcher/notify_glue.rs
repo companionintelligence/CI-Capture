@@ -335,9 +335,13 @@ mod tests {
             vec![PathBuf::from("/tmp/onlyone")],
         );
         let obs = event_to_observations(&e, &defaults());
-        // Only one path → can't build a real rename; falls into the
-        // "_ => Modified" arm. Acceptable: the normalizer's rename
-        // inference still has a chance via inode pairing.
-        assert!(obs.is_empty(), "single-path Rename(Both) is not emitted: {obs:?}");
+        // Only one path → can't build a Renamed; we fall through to the
+        // catch-all arm and emit a Modified, so the normalizer's rename
+        // inference can still pair via inode if it happens to match.
+        assert_eq!(obs.len(), 1);
+        assert!(
+            matches!(&obs[0], RawObservation::Modified { .. }),
+            "single-path Rename(Both) should fall back to Modified: {obs:?}"
+        );
     }
 }

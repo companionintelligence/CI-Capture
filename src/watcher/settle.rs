@@ -12,7 +12,7 @@
 use std::path::Path;
 use std::time::{Duration, SystemTime};
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use tokio::time::sleep;
 
 pub const POLL_INTERVAL: Duration = Duration::from_millis(500);

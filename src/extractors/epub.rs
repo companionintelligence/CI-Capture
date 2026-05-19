@@ -17,7 +17,7 @@
 use std::path::Path;
 use std::time::Instant;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Result, anyhow};
 use uuid::Uuid;
 
 use super::traits::{
@@ -66,7 +66,8 @@ impl Extractor for EpubExtractor {
 
         let title = doc
             .mdata("title")
-            .filter(|s| !s.trim().is_empty())
+            .map(|m| m.value.trim().to_string())
+            .filter(|s| !s.is_empty())
             .unwrap_or_else(|| stem_title.clone());
         metadata.insert(
             "title".to_string(),
@@ -79,8 +80,8 @@ impl Extractor for EpubExtractor {
             ("date", "date"),
             ("description", "description"),
         ] {
-            if let Some(v) = doc.mdata(epub_key) {
-                let v = v.trim();
+            if let Some(item) = doc.mdata(epub_key) {
+                let v = item.value.trim();
                 if !v.is_empty() {
                     metadata.insert(
                         our_key.to_string(),
@@ -95,8 +96,10 @@ impl Extractor for EpubExtractor {
         let mut warnings: Vec<String> = Vec::new();
 
         for i in 0..total_pages {
-            if let Err(e) = doc.set_current_page(i) {
-                warnings.push(format!("set_current_page({i}): {e}"));
+            // `set_current_page` returns `bool` (false on out-of-range);
+            // it doesn't error. We log + skip on failure.
+            if !doc.set_current_page(i) {
+                warnings.push(format!("set_current_page({i}): out of range"));
                 continue;
             }
             let (raw, _mime) = match doc.get_current_str() {

@@ -20,21 +20,35 @@ use globset::{Glob, GlobSet, GlobSetBuilder};
 
 /// Default ignore patterns — shipped on by default. Each entry is a glob
 /// the user can individually disable from the settings UI.
+///
+/// For directory-shaped ignores we list **two** patterns: `**/name`
+/// catches the directory itself (so its mkdir doesn't leak as a
+/// `Created` event) and `**/name/**` catches everything inside.
 pub const DEFAULT_IGNORES: &[&str] = &[
     // Source control
+    "**/.git",
     "**/.git/**",
+    "**/.hg",
     "**/.hg/**",
+    "**/.svn",
     "**/.svn/**",
     // Build artifacts
+    "**/node_modules",
     "**/node_modules/**",
+    "**/target",
     "**/target/**",
+    "**/dist",
     "**/dist/**",
+    "**/build",
     "**/build/**",
+    "**/.next",
     "**/.next/**",
+    "**/__pycache__",
     "**/__pycache__/**",
     // OS / tool caches
     "**/.DS_Store",
     "**/Thumbs.db",
+    "**/.Trash",
     "**/.Trash/**",
     "**/Library/Caches/**",
     "**/AppData/Local/Temp/**",
@@ -53,12 +67,19 @@ pub const DEFAULT_IGNORES: &[&str] = &[
 /// Hard-wired sensitive patterns. The user **cannot** disable these — they
 /// catch credential stores, key material, and password vaults. The applet
 /// has no business shipping any of these to a memory server.
+///
+/// Directory-shaped patterns are listed twice — once bare to catch the
+/// directory itself, once with `/**` to catch contents.
 pub const SENSITIVE_PATTERNS: &[&str] = &[
+    "**/Library/Keychains",
     "**/Library/Keychains/**",
+    "**/.ssh",
     "**/.ssh/**",
     "**/.aws/credentials",
     "**/.aws/config",
+    "**/.gnupg",
     "**/.gnupg/**",
+    "**/.config/gcloud",
     "**/.config/gcloud/**",
     "**/.kube/config",
     "**/.netrc",
@@ -66,6 +87,7 @@ pub const SENSITIVE_PATTERNS: &[&str] = &[
     // Common password-manager vaults
     "**/*.1pif",
     "**/*.kdbx",
+    "**/*.agilekeychain",
     "**/*.agilekeychain/**",
 ];
 
@@ -252,5 +274,28 @@ mod tests {
     fn ds_store_is_ignored() {
         let r = defaults();
         assert!(r.is_ignored("/Users/x/Documents/.DS_Store"));
+    }
+
+    #[test]
+    fn bare_directories_are_ignored_not_just_contents() {
+        // Regression: `**/.git/**` and `**/node_modules/**` only match
+        // *contents*. The bare directory creation needs its own pattern.
+        let r = defaults();
+        assert!(r.is_ignored("/Users/x/proj/.git"));
+        assert!(r.is_ignored("/Users/x/proj/node_modules"));
+        assert!(r.is_ignored("/Users/x/proj/target"));
+        assert!(r.is_ignored("/Users/x/proj/__pycache__"));
+        assert!(r.is_ignored("/Users/x/proj/dist"));
+    }
+
+    #[test]
+    fn bare_sensitive_directories_are_blocked() {
+        // Same regression as above, but for the SENSITIVE_PATTERNS layer.
+        // Use an empty user list so we only exercise the sensitive layer.
+        let r = IgnoreRules::empty().unwrap();
+        assert!(r.is_sensitive("/Users/x/.ssh"));
+        assert!(r.is_sensitive("/Users/x/Library/Keychains"));
+        assert!(r.is_sensitive("/Users/x/.gnupg"));
+        assert!(r.is_sensitive("/Users/x/.config/gcloud"));
     }
 }

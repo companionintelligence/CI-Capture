@@ -16,7 +16,7 @@ use std::path::Path;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
-use mail_parser::{HeaderName, HeaderValue, MessageParser, MimeHeaders};
+use mail_parser::{HeaderName, HeaderValue, MessageParser};
 use uuid::Uuid;
 
 use super::traits::{
@@ -331,9 +331,15 @@ Are you free for lunch on Friday?\r\n\
         // Date round-trips to RFC3339.
         let date = doc.metadata.get("date").and_then(|v| v.as_str()).unwrap();
         assert!(date.starts_with("2026-05-18"));
-        assert_eq!(
-            doc.metadata.get("message_id"),
-            Some(&serde_json::Value::String("<abc@example.com>".to_string()))
+        // mail-parser strips the angle brackets from Message-ID.
+        let mid = doc
+            .metadata
+            .get("message_id")
+            .and_then(|v| v.as_str())
+            .unwrap();
+        assert!(
+            mid.contains("abc@example.com"),
+            "message_id should contain the address: {mid:?}"
         );
     }
 

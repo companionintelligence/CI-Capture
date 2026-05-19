@@ -306,18 +306,35 @@ mod tests {
 
     #[test]
     fn overlap_carries_tail_of_previous_chunk() {
+        // Two paragraphs both larger than the target → hard-split. The
+        // overlap rule says: every subsequent chunk includes the
+        // trailing `overlap_tokens` chars of the previous chunk as its
+        // prefix.
         let p1 = "ALPHA_PARAGRAPH_FILLER_FILLER_FILLER ".repeat(20);
         let p2 = "BRAVO_PARAGRAPH_FILLER_FILLER_FILLER ".repeat(20);
         let body = format!("{p1}\n\n{p2}");
         let secs = vec![section("two", &body)];
         let chunks = chunk_sections_with(&secs, 100, 30);
         assert!(chunks.len() >= 2);
+
+        // Every chunk after the first should carry overlap from the
+        // previous one. We verify by finding the first chunk that
+        // contains BRAVO (it's later in the stream) and asserting it
+        // also still carries the ALPHA tail forward.
+        let first_bravo_idx = chunks
+            .iter()
+            .position(|c| c.markdown.contains("BRAVO_PARAGRAPH_FILLER"))
+            .expect("some chunk should contain BRAVO");
         assert!(
-            chunks[1].markdown.contains("ALPHA_PARAGRAPH_FILLER"),
-            "overlap not carried; chunk[1] = {:?}",
-            chunks[1].markdown
+            first_bravo_idx > 0,
+            "BRAVO should not appear in the very first chunk; got idx {first_bravo_idx}"
         );
-        assert!(chunks[1].markdown.contains("BRAVO_PARAGRAPH_FILLER"));
+        let bravo_chunk = &chunks[first_bravo_idx];
+        assert!(
+            bravo_chunk.markdown.contains("ALPHA_PARAGRAPH_FILLER"),
+            "ALPHA overlap not carried into the first BRAVO chunk: {:?}",
+            bravo_chunk.markdown
+        );
     }
 
     #[test]
