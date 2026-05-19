@@ -1,12 +1,11 @@
-//! Plain-text family: txt, json, md.
+//! Plain-text family: txt, markdown, json, csv, tsv.
 //!
-//! Three of the formats listed in [`docs/plan/03-conversion.md`](../../../docs/plan/03-conversion.md) § 4
+//! Five of the formats listed in [`docs/plan/03-conversion.md`](../../../docs/plan/03-conversion.md) § 4
 //! land in this module because they share the same shape — the file body
-//! becomes the Markdown body, with light per-format wrapping. CSV / XML
-//! arrive in follow-up sub-PRs (they need extra crates).
+//! becomes the Markdown body, with light per-format wrapping. XML arrives
+//! in a follow-up sub-PR.
 //!
-//! All three extractors are pure-Rust, dep-free beyond `serde_json` (already
-//! in the workspace) and `chrono` (already in the workspace).
+//! Runtime deps: `serde_json` (workspace), `csv` (added for CSV/TSV).
 
 use std::fs;
 use std::path::Path;
@@ -26,6 +25,8 @@ pub enum TextKind {
     Txt,
     Markdown,
     Json,
+    Csv,
+    Tsv,
 }
 
 impl TextKind {
@@ -36,6 +37,8 @@ impl TextKind {
             "txt" | "log" => Some(Self::Txt),
             "md" | "markdown" => Some(Self::Markdown),
             "json" | "ndjson" | "jsonl" => Some(Self::Json),
+            "csv" => Some(Self::Csv),
+            "tsv" => Some(Self::Tsv),
             _ => None,
         }
     }
@@ -45,6 +48,8 @@ impl TextKind {
             Self::Txt => "text/plain",
             Self::Markdown => "text/markdown",
             Self::Json => "application/json",
+            Self::Csv => "text/csv",
+            Self::Tsv => "text/tab-separated-values",
         }
     }
 
@@ -53,6 +58,26 @@ impl TextKind {
             Self::Txt => "text-extractor/txt/0.1",
             Self::Markdown => "text-extractor/markdown/0.1",
             Self::Json => "text-extractor/json/0.1",
+            Self::Csv => "text-extractor/csv/0.1",
+            Self::Tsv => "text-extractor/tsv/0.1",
+        }
+    }
+
+    fn format_tag(self) -> &'static str {
+        match self {
+            Self::Txt => "txt",
+            Self::Markdown => "markdown",
+            Self::Json => "json",
+            Self::Csv => "csv",
+            Self::Tsv => "tsv",
+        }
+    }
+
+    fn csv_delimiter(self) -> Option<u8> {
+        match self {
+            Self::Csv => Some(b','),
+            Self::Tsv => Some(b'\t'),
+            _ => None,
         }
     }
 }
@@ -92,6 +117,10 @@ impl Extractor for TextExtractor {
             TextKind::Txt => render_txt(&title, &raw),
             TextKind::Markdown => render_markdown_passthrough(&title, &raw),
             TextKind::Json => render_json(&title, &raw),
+            TextKind::Csv | TextKind::Tsv => {
+                let delim = self.kind.csv_delimiter().unwrap_or(b',');
+                render_csv(&title, &raw, delim)
+            }
         };
 
         Ok(ExtractedDocument {
@@ -161,6 +190,121 @@ fn render_json(title: &str, body: &str) -> (String, Vec<Section>) {
     (markdown, sections)
 }
 
+/// Maximum rows to render in a CSV table. Larger files are sampled:
+/// first half + last half, with a `…` row in the middle.
+const CSV_MAX_RENDERED_ROWS: usize = 100;
+
+fn render_csv(title: &str, body: &str, delim: u8) -> (String, Vec<Section>) {
+    let mut reader = csv::ReaderBuilder::new()
+        .delimiter(delim)
+        .has_headers(true)
+        .flexible(true)
+        .from_reader(body.as_bytes());
+
+    // Headers — fall back to numeric column labels if the file has none
+    // (or the first record was unreadable).
+    let headers: Vec<String> = match reader.headers() {
+        Ok(rec) => rec.iter().map(|s| s.to_string()).collect(),
+        Err(_) => Vec::new(),
+    };
+
+    // Collect all rows up to a sane upper bound so we know whether to
+    // sample.
+    let mut rows: Vec<Vec<String>> = Vec::new();
+    for result in reader.records() {
+        match result {
+            Ok(rec) => {
+                rows.push(rec.iter().map(|s| s.to_string()).collect());
+                // Avoid blowing memory on multi-GB CSVs. The conversion
+                // pool already gates total file size, but defense in
+                // depth is cheap.
+                if rows.len() > CSV_MAX_RENDERED_ROWS * 10 {
+                    break;
+                }
+            }
+            Err(_) => continue, // skip malformed row, keep going
+        }
+    }
+
+    let total_rows = rows.len();
+    let sampled = total_rows > CSV_MAX_RENDERED_ROWS;
+    let cols = headers.len().max(rows.iter().map(|r| r.len()).max().unwrap_or(0));
+
+    // Synthesize column headers if the file had none.
+    let header_cells: Vec<String> = if !headers.is_empty() {
+        headers
+    } else {
+        (1..=cols).map(|i| format!("col_{i}")).collect()
+    };
+
+    let mut md = String::new();
+    md.push_str(&format!("# {title}\n\n"));
+    if sampled {
+        md.push_str(&format!(
+            "_{total_rows} rows total; showing first/last {} each._\n\n",
+            CSV_MAX_RENDERED_ROWS / 2
+        ));
+    }
+
+    // Header line
+    md.push('|');
+    for h in &header_cells {
+        md.push(' ');
+        md.push_str(&escape_table_cell(h));
+        md.push_str(" |");
+    }
+    md.push('\n');
+    md.push('|');
+    for _ in &header_cells {
+        md.push_str(" --- |");
+    }
+    md.push('\n');
+
+    let render_row = |out: &mut String, row: &[String]| {
+        out.push('|');
+        for i in 0..header_cells.len() {
+            out.push(' ');
+            out.push_str(&escape_table_cell(row.get(i).map(String::as_str).unwrap_or("")));
+            out.push_str(" |");
+        }
+        out.push('\n');
+    };
+
+    if sampled {
+        let half = CSV_MAX_RENDERED_ROWS / 2;
+        for row in rows.iter().take(half) {
+            render_row(&mut md, row);
+        }
+        md.push('|');
+        for _ in &header_cells {
+            md.push_str(" … |");
+        }
+        md.push('\n');
+        for row in rows.iter().skip(total_rows.saturating_sub(half)) {
+            render_row(&mut md, row);
+        }
+    } else {
+        for row in &rows {
+            render_row(&mut md, row);
+        }
+    }
+
+    let sections = vec![Section {
+        heading: title.to_string(),
+        anchor: anchorize(title),
+        markdown: md.clone(),
+        order: 0,
+    }];
+    (md, sections)
+}
+
+fn escape_table_cell(s: &str) -> String {
+    s.replace('\\', "\\\\")
+        .replace('|', "\\|")
+        .replace('\n', " ")
+        .replace('\r', " ")
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 fn filename_stem(path: &Path) -> String {
@@ -181,12 +325,7 @@ fn base_metadata(
     );
     m.insert(
         "format".to_string(),
-        serde_json::Value::String(match kind {
-            TextKind::Txt => "txt",
-            TextKind::Markdown => "markdown",
-            TextKind::Json => "json",
-        }
-        .to_string()),
+        serde_json::Value::String(kind.format_tag().to_string()),
     );
     m
 }
@@ -274,7 +413,132 @@ mod tests {
         assert_eq!(TextKind::from_extension("markdown"), Some(TextKind::Markdown));
         assert_eq!(TextKind::from_extension("json"), Some(TextKind::Json));
         assert_eq!(TextKind::from_extension("jsonl"), Some(TextKind::Json));
+        assert_eq!(TextKind::from_extension("csv"), Some(TextKind::Csv));
+        assert_eq!(TextKind::from_extension("tsv"), Some(TextKind::Tsv));
         assert_eq!(TextKind::from_extension("pdf"), None);
+    }
+
+    #[test]
+    fn csv_renders_gfm_table_with_header() {
+        let body = "name,age\nAlice,30\nBob,25\n";
+        let f = write_named("csv", body.as_bytes());
+        let ex = TextExtractor::new(TextKind::Csv);
+        let doc = ex
+            .extract(
+                f.path(),
+                ExtractOptions {
+                    metadata_only: false,
+                    allow_heavy_models: false,
+                },
+            )
+            .unwrap();
+        assert_eq!(doc.content_type, "text/csv");
+        assert!(doc.markdown.starts_with("# "));
+        assert!(doc.markdown.contains("| name | age |"));
+        assert!(doc.markdown.contains("| --- | --- |"));
+        assert!(doc.markdown.contains("| Alice | 30 |"));
+        assert!(doc.markdown.contains("| Bob | 25 |"));
+        assert_eq!(
+            doc.metadata.get("format"),
+            Some(&serde_json::Value::String("csv".to_string()))
+        );
+    }
+
+    #[test]
+    fn tsv_uses_tab_delimiter() {
+        let body = "name\tage\nAlice\t30\nBob\t25\n";
+        let f = write_named("tsv", body.as_bytes());
+        let ex = TextExtractor::new(TextKind::Tsv);
+        let doc = ex
+            .extract(
+                f.path(),
+                ExtractOptions {
+                    metadata_only: false,
+                    allow_heavy_models: false,
+                },
+            )
+            .unwrap();
+        assert!(doc.markdown.contains("| name | age |"));
+        assert!(doc.markdown.contains("| Alice | 30 |"));
+        // Content type is the TSV one, not CSV.
+        assert_eq!(doc.content_type, "text/tab-separated-values");
+    }
+
+    #[test]
+    fn csv_escapes_pipes_and_newlines_in_cells() {
+        // Quoted cell with embedded newline + pipe.
+        let body = "h\n\"line1\nline2 | mid\"\n";
+        let f = write_named("csv", body.as_bytes());
+        let ex = TextExtractor::new(TextKind::Csv);
+        let doc = ex
+            .extract(
+                f.path(),
+                ExtractOptions {
+                    metadata_only: false,
+                    allow_heavy_models: false,
+                },
+            )
+            .unwrap();
+        assert!(doc.markdown.contains("line1 line2 \\| mid"));
+        // Body remains a single Markdown row.
+        let body_rows: Vec<&str> = doc
+            .markdown
+            .lines()
+            .filter(|l| l.starts_with("| ") && !l.contains("---"))
+            .collect();
+        // header + 1 data row = 2.
+        assert_eq!(body_rows.len(), 2);
+    }
+
+    #[test]
+    fn csv_large_file_is_sampled() {
+        // Build a 250-row CSV: more than CSV_MAX_RENDERED_ROWS (100).
+        let mut body = String::from("n,v\n");
+        for i in 0..250 {
+            body.push_str(&format!("{i},x\n"));
+        }
+        let f = write_named("csv", body.as_bytes());
+        let ex = TextExtractor::new(TextKind::Csv);
+        let doc = ex
+            .extract(
+                f.path(),
+                ExtractOptions {
+                    metadata_only: false,
+                    allow_heavy_models: false,
+                },
+            )
+            .unwrap();
+        // Sampling banner is present.
+        assert!(doc.markdown.contains("250 rows total"));
+        // Sampling separator row appears.
+        assert!(doc.markdown.contains("| … |"));
+        // First few and last few rows are present.
+        assert!(doc.markdown.contains("| 0 | x |"));
+        assert!(doc.markdown.contains("| 249 | x |"));
+    }
+
+    #[test]
+    fn csv_with_only_header_renders_empty_body() {
+        let body = "h1,h2\n";
+        let f = write_named("csv", body.as_bytes());
+        let ex = TextExtractor::new(TextKind::Csv);
+        let doc = ex
+            .extract(
+                f.path(),
+                ExtractOptions {
+                    metadata_only: false,
+                    allow_heavy_models: false,
+                },
+            )
+            .unwrap();
+        assert!(doc.markdown.contains("| h1 | h2 |"));
+        // No data rows beyond the separator.
+        let data_rows: Vec<&str> = doc
+            .markdown
+            .lines()
+            .filter(|l| l.starts_with("| ") && !l.contains("---"))
+            .collect();
+        assert_eq!(data_rows.len(), 1);
     }
 
     #[test]
