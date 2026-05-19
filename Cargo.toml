@@ -34,5 +34,8 @@ vizier = { path = "../../vizier" }
 resvg = { version = "0.45", default-features = false, features = ["text"] }
 usvg = "0.45"
 
+# Phase 3 — Markdown conversion. See docs/plan/03-conversion.md.
+epub = "2"
+
 [dev-dependencies]
 tempfile = "3"
