@@ -3,13 +3,16 @@ mod capture;
 mod config;
 mod db;
 mod minio;
+mod queue;
 mod server_auth;
 mod server_common;
 mod server_ingest;
 mod server_upload;
 mod settings_ui;
 mod svg_icon;
+mod sync;
 mod upload_ui;
+mod watcher;
 mod worker;
 
 use std::process::Command;
