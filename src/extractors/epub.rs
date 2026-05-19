@@ -91,15 +91,15 @@ impl Extractor for EpubExtractor {
             }
         }
 
-        let total_pages = doc.get_num_pages();
+        let total_chapters = doc.get_num_chapters();
         let mut sections: Vec<Section> = Vec::new();
         let mut warnings: Vec<String> = Vec::new();
 
-        for i in 0..total_pages {
-            // `set_current_page` returns `bool` (false on out-of-range);
+        for i in 0..total_chapters {
+            // `set_current_chapter` returns `bool` (false on out-of-range);
             // it doesn't error. We log + skip on failure.
-            if !doc.set_current_page(i) {
-                warnings.push(format!("set_current_page({i}): out of range"));
+            if !doc.set_current_chapter(i) {
+                warnings.push(format!("set_current_chapter({i}): out of range"));
                 continue;
             }
             let (raw, _mime) = match doc.get_current_str() {
