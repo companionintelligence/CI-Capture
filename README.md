@@ -12,13 +12,33 @@ A lightweight macOS menu‑bar (tray) applet that grows your **Companion Memory*
 
 All three streams go to your CI‑Server's Companion Memory portal over a paired bearer token.
 
+```mermaid
+flowchart LR
+    subgraph A["CI‑Applet (tray)"]
+        SHOT["📸 Screenshots"]
+        VIZ["🧭 vizier activity"]
+        FILE["📄 File edits"]
+    end
+    SHOT -->|"/api/files/upload"| CI[("CI‑Server<br/>Companion Memory")]
+    VIZ  -->|"ingestUserSnapshot"| CI
+    FILE -->|"ingestUserSnapshot (file_event)"| CI
+```
+
 ## File tracking
 
 The file‑tracking lane is the answer to *"track the important files I edit and let my AI remember them."* It runs alongside the screenshot + vizier lanes:
 
-```
-notify → normalize (debounce, atomic‑save & rename inference) → settle
-       → sha256 fingerprint → durable SQLite queue → Markdown conversion → CI‑Server
+```mermaid
+flowchart LR
+    OS["OS file events"] --> N["normalize<br/>debounce · atomic‑save<br/>· rename inference"]
+    N --> IG{"ignore?"}
+    IG -->|sensitive/default| D(["drop"])
+    IG -->|allowed| S["settle"]
+    S --> F["sha256 fingerprint"]
+    F --> Q[("durable<br/>SQLite queue")]
+    Q --> M["Markdown<br/>conversion"]
+    M --> SY["sync<br/>batch + backoff"]
+    SY -->|"ingestUserSnapshot<br/>(file_event)"| CI[("CI‑Server")]
 ```
 
 - **Off until you opt in.** Nothing is watched until you add a folder to `file_tracker.watched_paths`.
@@ -26,7 +46,7 @@ notify → normalize (debounce, atomic‑save & rename inference) → settle
 - **Durable.** Events persist in a local SQLite queue (`file-tracker-queue.db`) and drain with exponential backoff — a network outage or hard kill never loses a tracked change.
 - **Markdown conversion.** Text, Markdown, JSON, CSV/TSV, and **source‑code/config** files are converted to language‑aware Markdown so the content (not just "a file changed") reaches your memory. HTML/EML/EPUB are available with `--features rich-extractors`.
 
-Events ride the existing `ingestUserSnapshot` GraphQL channel as `snapshot_kind = "file_event"` — no new server endpoints required. See [`docs/plan/00-overview.md`](docs/plan/00-overview.md) for the full design.
+Events ride the existing `ingestUserSnapshot` GraphQL channel as `snapshot_kind = "file_event"` — no new server endpoints required. See [`docs/architecture.md`](docs/architecture.md) for diagrams (pipeline, sequence, lifecycle) and [`docs/plan/00-overview.md`](docs/plan/00-overview.md) for the rollout plan.
 
 ### Check the server connection
 

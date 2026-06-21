@@ -103,7 +103,7 @@ async fn run_worker(
     });
 
     let mut state = WorkerState::new(initial_config, running_flag, analysis_tx);
-    state.restart_file_tracker();
+    state.restart_file_tracker().await;
     let mut interval = build_interval(state.config.capture.screenshot_interval_secs);
 
     loop {
@@ -225,10 +225,15 @@ impl WorkerState {
         !self.paused
     }
 
-    /// Abort the file-tracking lane if it's running.
-    fn stop_file_tracker(&mut self) {
+    /// Abort the file-tracking lane if it's running, and wait for it to
+    /// actually stop. Awaiting the aborted task guarantees its `Queue`
+    /// connection and `WatcherHandle` are dropped before any replacement
+    /// opens the same SQLite file — otherwise an in-flight POST in the old
+    /// task could double-send or race acks against the new one.
+    async fn stop_file_tracker(&mut self) {
         if let Some(handle) = self.file_tracker.take() {
             handle.abort();
+            let _ = handle.await; // returns promptly with a Cancelled error
             log::info!("file tracker stopped");
         }
     }
@@ -236,8 +241,8 @@ impl WorkerState {
     /// (Re)start the file-tracking lane to match the current config. No-op
     /// (after stopping any prior task) when the lane isn't runnable —
     /// identity unset, no watched folders, or no server token.
-    fn restart_file_tracker(&mut self) {
-        self.stop_file_tracker();
+    async fn restart_file_tracker(&mut self) {
+        self.stop_file_tracker().await;
         if !file_tracker::is_runnable(&self.config) {
             log::debug!(
                 "file tracker idle (enabled={}, folders={}, identity={}, server={})",
@@ -283,17 +288,17 @@ impl WorkerState {
                 }
 
                 // Pick up new watched folders / identity / server token.
-                self.restart_file_tracker();
+                self.restart_file_tracker().await;
             }
             WorkerCommand::Pause => {
                 self.paused = true;
                 self.running_flag.store(false, Ordering::SeqCst);
-                self.stop_file_tracker();
+                self.stop_file_tracker().await;
             }
             WorkerCommand::Resume => {
                 self.paused = false;
                 self.running_flag.store(true, Ordering::SeqCst);
-                self.restart_file_tracker();
+                self.restart_file_tracker().await;
             }
             WorkerCommand::CaptureNow => match self.capture_once().await {
                 Ok(captured) => {
@@ -308,7 +313,7 @@ impl WorkerState {
                 }
             },
             WorkerCommand::Shutdown => {
-                self.stop_file_tracker();
+                self.stop_file_tracker().await;
                 return Ok(true);
             }
         }
