@@ -63,3 +63,42 @@ legacy-minio = ["dep:aws-config", "dep:aws-credential-types", "dep:aws-sdk-s3"]
 
 [dev-dependencies]
 tempfile = "3"
+
+# Native installers (.dmg / .msi / .nsis / .deb / .AppImage) via cargo-packager
+# — https://github.com/crabnebula-dev/cargo-packager. Produces the same kind of
+# distributables a Tauri app does, without making this a Tauri app.
+[package.metadata.packager]
+product-name = "CI-Applet"
+identifier = "com.compint.CI-Applet"
+description = "Companion Intelligence capture applet — screen, activity & file capture for CI-Server"
+long-description = "A lightweight cross-platform menu-bar / system-tray applet that grows your Companion Memory by capturing screen activity and the files you edit, and streaming them to your CI-Server."
+authors = ["LifeScope Inc."]
+publisher = "LifeScope Inc."
+homepage = "https://github.com/companionintelligence/CI-Applet"
+license-file = "LICENSE.md"
+icons = [
+  "packaging/icons/32x32.png",
+  "packaging/icons/128x128.png",
+  "packaging/icons/128x128@2x.png",
+  "packaging/icons/icon.icns",
+  "packaging/icons/icon.ico",
+]
+# Build the release binary (with rich extractors) before packaging.
+before-packaging-command = "cargo build --release --features rich-extractors"
+
+[package.metadata.packager.deb]
+depends = [
+  "libgtk-3-0",
+  "libayatana-appindicator3-1",
+  "libxdo3",
+  "libxcb1",
+]
+
+[package.metadata.packager.macos]
+minimum-system-version = "11.0"
+# Inject LSUIElement (menu-bar accessory, no Dock icon) into the bundle plist.
+info-plist-path = "packaging/macos/Info.plist"
+
+[package.metadata.packager.nsis]
+# Per-user install so no admin elevation is needed.
+installer-mode = "currentUser"
