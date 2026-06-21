@@ -3,3 +3,6 @@
 .specstory/history/.what-is-this.md
 
 .DS_Store
+
+# vendored vizier crate build artifacts
+/vizier/target
