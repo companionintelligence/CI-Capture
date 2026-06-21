@@ -1,8 +1,11 @@
+<p align="center"><img src="assets/icon.svg" alt="CI-Applet" width="80" height="80"></p>
+
 # CI-Applet — Architecture
 
 > **Companion Intelligence — Capture layer.** This document describes how the
 > applet is structured today, after the file-tracking lane landed. For the
-> rollout plan and design records see [`plan/00-overview.md`](plan/00-overview.md).
+> rollout plan and design records see [`plan/00-overview.md`](plan/00-overview.md);
+> for visual identity see [`assets/brand.md`](assets/brand.md).
 
 CI-Applet is a macOS menu-bar (tray) applet that grows your **Companion
 Memory** by perceiving your desktop and streaming it to your CI-Server. It runs
