@@ -457,6 +457,36 @@ mod tests {
         assert!(is_duplicate(&cache, p, "sha256:bbb"));
     }
 
+    fn event_name(ev: &NormalizedEvent) -> Option<String> {
+        ev.new_path
+            .as_ref()
+            .or(ev.old_path.as_ref())
+            .and_then(|p| p.file_name())
+            .and_then(|n| n.to_str())
+            .map(|s| s.to_string())
+    }
+
+    /// Drain events until one is for `name`, or `within` elapses. Filters out
+    /// unrelated churn — the OS temp dir is shared across parallel tests, so
+    /// the watcher can legitimately see other files first.
+    async fn next_event_for(
+        rx: &mut Receiver<NormalizedEvent>,
+        name: &str,
+        within: TDur,
+    ) -> Option<NormalizedEvent> {
+        timeout(within, async {
+            loop {
+                let ev = rx.recv().await?;
+                if event_name(&ev).as_deref() == Some(name) {
+                    return Some(ev);
+                }
+            }
+        })
+        .await
+        .ok()
+        .flatten()
+    }
+
     /// End-to-end smoke test of the whole glue: a real `notify` watcher on a
     /// temp dir → normalizer → settle → fingerprint → emitted event. Uses a
     /// generous timeout because FSEvents/inotify delivery + settle polling is
@@ -477,10 +507,9 @@ mod tests {
             f.flush().expect("flush");
         }
 
-        let event = timeout(TDur::from_secs(20), handle.events.recv())
+        let event = next_event_for(&mut handle.events, "notes.md", TDur::from_secs(20))
             .await
-            .expect("timed out waiting for a file event")
-            .expect("event channel closed unexpectedly");
+            .expect("expected a notes.md event within the timeout");
 
         assert!(
             matches!(
@@ -490,8 +519,6 @@ mod tests {
             "unexpected event type: {:?}",
             event.event_type
         );
-        let p = event.new_path.as_ref().expect("event carries a path");
-        assert!(p.ends_with("notes.md"), "unexpected path: {p:?}");
 
         let fp = event.file.expect("created file carries a fingerprint");
         assert!(fp.content_hash.starts_with("sha256:"));
@@ -515,14 +542,22 @@ mod tests {
         tokio::time::sleep(TDur::from_millis(200)).await;
         std::fs::write(dir.path().join("keep.txt"), b"track me").unwrap();
 
-        let event = timeout(TDur::from_secs(20), handle.events.recv())
-            .await
-            .expect("timed out")
-            .expect("channel closed");
-        let p = event.new_path.as_ref().unwrap();
-        assert!(
-            p.ends_with("keep.txt"),
-            "should only see the tracked file, got {p:?}"
-        );
+        // Drain until the tracked file appears (filtering unrelated temp
+        // churn); the ignored file — created first — must never surface.
+        let saw_keep = timeout(TDur::from_secs(20), async {
+            loop {
+                let Some(ev) = handle.events.recv().await else {
+                    return false;
+                };
+                match event_name(&ev).as_deref() {
+                    Some("creds.secret") => panic!("ignored sensitive file produced an event"),
+                    Some("keep.txt") => return true,
+                    _ => continue,
+                }
+            }
+        })
+        .await
+        .expect("timed out waiting for the tracked file");
+        assert!(saw_keep, "watcher channel closed before keep.txt arrived");
     }
 }
