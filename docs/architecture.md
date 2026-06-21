@@ -40,9 +40,11 @@ flowchart LR
     class SHOT,VIZ,FILE lane;
 ```
 
-All three lanes authenticate with the same paired bearer token and target the
-same portal origin. Pairing is a GraphQL handshake (`startAppletPairing` →
-poll `appletPairingStatus`).
+All three lanes authenticate with the same bearer token and target the same
+CI-Server origin. Sign-in is **OpenID Connect (Authorization Code + PKCE)**
+against the portal issuer — discovery-driven, with a loopback redirect (see
+[`src/oidc.rs`](../src/oidc.rs)). The portal-issued `id_token` is the bearer
+CI-Server validates; the applet best-effort registers the device after sign-in.
 
 ## 2. The file-tracking lane
 

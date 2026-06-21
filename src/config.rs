@@ -162,6 +162,49 @@ pub struct AppConfig {
     pub vizier: VizierConfig,
     #[serde(default)]
     pub file_tracker: FileTrackerConfig,
+    #[serde(default)]
+    pub oidc: OidcConfig,
+    /// Tokens + claims captured from the last successful portal sign-in.
+    #[serde(default)]
+    pub oidc_session: Option<OidcSession>,
+}
+
+/// OpenID Connect client config for portal sign-in (Authorization Code +
+/// PKCE). Discovery-driven, so only the issuer + client id usually change.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OidcConfig {
+    /// Issuer base; the applet fetches `<issuer>/.well-known/openid-configuration`.
+    pub issuer: String,
+    /// Registered public client id for the applet.
+    pub client_id: String,
+    /// Space-delimited scopes (`offline_access` requests a refresh token).
+    pub scopes: String,
+    /// Loopback redirect the portal sends the code back to. Must be one of the
+    /// client's registered redirect URIs and include a port.
+    pub redirect_uri: String,
+}
+
+impl Default for OidcConfig {
+    fn default() -> Self {
+        Self {
+            issuer: "https://hub.companionintelligence.com/api/auth".to_string(),
+            client_id: "ci-applet".to_string(),
+            scopes: "openid profile email offline_access".to_string(),
+            redirect_uri: "http://127.0.0.1:49473/callback".to_string(),
+        }
+    }
+}
+
+/// Tokens + identity from the last portal sign-in.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct OidcSession {
+    pub id_token: Option<String>,
+    pub access_token: Option<String>,
+    pub refresh_token: Option<String>,
+    pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub subject: Option<String>,
+    pub email: Option<String>,
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

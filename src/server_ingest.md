@@ -29,4 +29,4 @@ Wraps the CI-Server GraphQL mutations used after browser pairing so the worker c
 | CI-Server GraphQL | Inputs stay camelCase and accept RFC3339 timestamps/base64 PNGs | Renaming input fields or changing payload encoding |
 
 ## Notes
-- This module intentionally keeps GraphQL transport separate from the pairing client in `server_auth.rs` because the auth model is different after pairing.
+- This module keeps GraphQL transport separate from the OIDC sign-in client in `oidc.rs`: `oidc.rs` obtains the bearer `id_token`, and this module spends it on ingest.

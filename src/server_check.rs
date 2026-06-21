@@ -88,6 +88,28 @@ async fn report(config: &AppConfig) -> Result<()> {
         }
     );
 
+    println!("\nPortal sign-in (OIDC)");
+    println!("---------------------");
+    println!("issuer     : {}", config.oidc.issuer);
+    println!("client_id  : {}", config.oidc.client_id);
+    println!("redirect   : {}", config.oidc.redirect_uri);
+    match &config.oidc_session {
+        Some(s) => {
+            let who = s
+                .name
+                .clone()
+                .or_else(|| s.email.clone())
+                .or_else(|| s.subject.clone())
+                .unwrap_or_else(|| "unknown".to_string());
+            let expiry = s
+                .expires_at
+                .map(|e| e.to_rfc3339())
+                .unwrap_or_else(|| "n/a".to_string());
+            println!("signed in  : {who} (token expires {expiry})");
+        }
+        None => println!("signed in  : ✗ not signed in (run “Login to Portal”)"),
+    }
+
     println!("\nLive probe");
     println!("----------");
     let client = Client::builder()
@@ -137,8 +159,8 @@ async fn report(config: &AppConfig) -> Result<()> {
         Err(err) => println!("POST /api/graphql     : ✗ {err}"),
     }
 
-    println!("\nNote: a fully working applet needs CI-Server running the");
-    println!("applet-pairing GraphQL (startAppletPairing + ingestUserSnapshot).");
+    println!("\nNote: sign in via the portal OIDC issuer above, then captures");
+    println!("stream to CI-Server (files/upload + ingestUserSnapshot) as the id_token bearer.");
     Ok(())
 }
 
