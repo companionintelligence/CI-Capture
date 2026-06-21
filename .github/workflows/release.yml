@@ -1,0 +1,93 @@
+name: Release
+
+# Cut a release by pushing a tag:
+#   git tag v0.1.0 && git push origin v0.1.0
+#
+# Or run manually (Actions → Release → Run workflow) to dry-run the full
+# build + bundle: it produces the artifacts but does NOT create a Release.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build universal .app (macOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: ver
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            echo "version=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=v0.0.0-dev.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install Rust (both macOS arches)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build (Apple Silicon)
+        run: cargo build --release --locked --features rich-extractors --target aarch64-apple-darwin
+
+      - name: Build (Intel)
+        run: cargo build --release --locked --features rich-extractors --target x86_64-apple-darwin
+
+      - name: Make universal binary
+        run: |
+          lipo -create -output CI-Applet \
+            target/aarch64-apple-darwin/release/CI-Applet \
+            target/x86_64-apple-darwin/release/CI-Applet
+          lipo -info CI-Applet
+
+      - name: Bundle CI-Applet.app
+        run: packaging/bundle-macos.sh CI-Applet "${{ steps.ver.outputs.version }}"
+
+      - name: Package artifacts
+        run: |
+          V="${{ steps.ver.outputs.version }}"
+          # .app zip (ditto preserves the bundle + code signature)
+          ditto -c -k --sequesterRsrc --keepParent CI-Applet.app "CI-Applet-${V}-macos-universal.zip"
+          # raw universal CLI binary
+          tar -czf "CI-Applet-${V}-macos-universal-bin.tar.gz" CI-Applet
+          shasum -a 256 CI-Applet-${V}-macos-universal.zip CI-Applet-${V}-macos-universal-bin.tar.gz > "CI-Applet-${V}-SHA256SUMS.txt"
+          ls -la CI-Applet-*
+
+      # Tag push → publish a GitHub Release.
+      - name: Create GitHub Release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          name: CI-Applet ${{ steps.ver.outputs.version }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            CI-Applet-*-macos-universal.zip
+            CI-Applet-*-macos-universal-bin.tar.gz
+            CI-Applet-*-SHA256SUMS.txt
+
+      # Manual dispatch → just upload the build as a workflow artifact (no Release).
+      - name: Upload dry-run artifacts
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: CI-Applet-${{ steps.ver.outputs.version }}-macos
+          path: |
+            CI-Applet-*-macos-universal.zip
+            CI-Applet-*-macos-universal-bin.tar.gz
+            CI-Applet-*-SHA256SUMS.txt
+          if-no-files-found: error
