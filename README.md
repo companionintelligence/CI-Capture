@@ -59,32 +59,24 @@ flowchart LR
 
 ## Install
 
-Grab the build for your OS from the [**Releases**](https://github.com/companionintelligence/CI-Applet/releases) page.
+Download the installer for your OS from the [**Releases**](https://github.com/companionintelligence/CI-Applet/releases) page — a real `.dmg` / `.exe` / `.deb` / `.AppImage`, like CI-Hub.
 
 <details open>
-<summary><b>macOS</b> — <code>CI-Applet-…-macos-universal.zip</code></summary>
+<summary><b>macOS</b> — <code>CI-Applet_*_aarch64.dmg</code> (Apple Silicon) · <code>CI-Applet_*_x64.dmg</code> (Intel)</summary>
 
-Unzip and drag **CI-Applet.app** to `/Applications`. The build is **universal** (Apple Silicon + Intel) and **ad‑hoc signed**, so on first launch Gatekeeper warns it's from an unidentified developer — **right‑click → Open** once. It lives in the menu bar (no Dock icon). Grant **Screen Recording** and **Accessibility** in *System Settings → Privacy & Security* when prompted.
+Open the `.dmg` and drag **CI-Applet** to **Applications**. The build is **ad‑hoc signed**, so on first launch Gatekeeper warns it's from an unidentified developer — **right‑click → Open** once. It lives in the menu bar (no Dock icon). Grant **Screen Recording** and **Accessibility** in *System Settings → Privacy & Security* when prompted.
 </details>
 
 <details>
-<summary><b>Windows</b> — <code>CI-Applet-…-windows-x86_64.zip</code></summary>
+<summary><b>Windows</b> — <code>CI-Applet_*_x64-setup.exe</code></summary>
 
-Unzip and run **`CI-Applet.exe`** — it appears in the system tray (notification area). SmartScreen may warn about an unrecognized app; choose **More info → Run anyway**. Screen capture uses the Desktop Duplication API.
+Run the installer (**per‑user**, no admin needed). SmartScreen may warn about an unrecognized app — choose **More info → Run anyway**. The applet then appears in the system tray; screen capture uses the Desktop Duplication API.
 </details>
 
 <details>
-<summary><b>Linux</b> — <code>CI-Applet-…-linux-x86_64.tar.gz</code></summary>
+<summary><b>Linux</b> — <code>ci-applet_*_amd64.deb</code> · <code>CI-Applet_*_x86_64.AppImage</code></summary>
 
-Needs an **X11** session and an AppIndicator/StatusNotifier tray host (GNOME needs the *AppIndicator* extension). Extract and follow the bundled `INSTALL.md`:
-
-```bash
-tar xzf CI-Applet-*-linux-x86_64.tar.gz
-install -Dm755 CI-Applet ~/.local/bin/CI-Applet
-~/.local/bin/CI-Applet --check-server   # quick connectivity test
-```
-
-Runtime libs: GTK 3, `libayatana-appindicator3`, `libxdo`, X11/xcb.
+Debian/Ubuntu: `sudo apt install ./ci-applet_*_amd64.deb`. Any distro: `chmod +x CI-Applet_*.AppImage && ./CI-Applet_*.AppImage`. Needs an **X11** session and an AppIndicator/StatusNotifier tray host (GNOME needs the *AppIndicator* extension). The `.deb` pulls in GTK 3, `libayatana-appindicator3`, `libxdo`, and xcb.
 </details>
 
 > Prefer building from source? See [Build](#build).
@@ -190,15 +182,16 @@ Every push and PR is built and tested on macOS by [`.github/workflows/ci.yml`](.
 
 ### Cutting a release
 
-[`.github/workflows/release.yml`](.github/workflows/release.yml) builds a **universal** (`arm64` + `x86_64`), `--features rich-extractors` binary on GitHub's macOS runners and bundles it into `CI-Applet.app`. Tag to publish:
+[`.github/workflows/release.yml`](.github/workflows/release.yml) builds **native installers** with [`cargo-packager`](https://github.com/crabnebula-dev/cargo-packager) on each OS's runner — `.dmg` (macOS arm64 + Intel), `.exe` NSIS installer (Windows), and `.deb` + `.AppImage` (Linux), all `--features rich-extractors`. Tag to publish:
 
 ```bash
-# bump version in Cargo.toml, commit, then:
+# 1. bump `version` in Cargo.toml, commit
+# 2. tag and push:
 git tag v0.1.0
 git push origin v0.1.0
 ```
 
-The tag triggers a GitHub Release with the `.app` zip, a raw universal binary, and `SHA256SUMS`. To dry‑run the full build without publishing, run it manually: **Actions → Release → Run workflow** (uploads the artifacts, creates no Release). Proper Developer ID signing + notarization needs Apple secrets; the workflow ad‑hoc signs until those are added.
+The tag triggers a GitHub Release with every installer + `SHA256SUMS`. To dry‑run the full build without publishing, run it manually: **Actions → Release → Run workflow** (uploads the installers as artifacts, creates no Release). Installer config lives in `[package.metadata.packager]` in [`Cargo.toml`](Cargo.toml); icons are in `packaging/icons/`. macOS builds are **ad‑hoc signed** — proper Developer ID signing + notarization is a drop‑in once Apple secrets exist.
 
 ## Configure & pair
 

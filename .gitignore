@@ -6,3 +6,6 @@
 
 # vendored vizier crate build artifacts
 /vizier/target
+
+# cargo-packager output
+/dist

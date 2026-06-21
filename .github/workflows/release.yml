@@ -1,10 +1,15 @@
 name: Release
 
-# Cut a release by pushing a tag:
-#   git tag v0.1.0 && git push origin v0.1.0
+# Builds native installers for every platform with cargo-packager — the same
+# kind of distributables a Tauri app produces (.dmg / .deb / .AppImage /
+# .exe installer) — and publishes them to a GitHub Release.
 #
-# Or run manually (Actions → Release → Run workflow) to dry-run the full
-# build on all platforms: it produces the artifacts but does NOT publish.
+# Cut a release:
+#   1. bump `version` in Cargo.toml, commit
+#   2. git tag v0.1.0 && git push origin v0.1.0
+#
+# Or run manually (Actions → Release → Run workflow) to dry-run the full build
+# on all platforms: it produces the installers as artifacts but doesn't publish.
 
 on:
   push:
@@ -18,28 +23,19 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
-    name: build ${{ matrix.target_name }}
+  package:
+    name: ${{ matrix.label }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { os: macos-latest,   target_name: macos-universal }
-          - { os: ubuntu-latest,  target_name: linux-x86_64 }
-          - { os: windows-latest, target_name: windows-x86_64 }
+          - { os: macos-latest,   label: macOS (Apple Silicon), formats: dmg }
+          - { os: macos-13,       label: macOS (Intel),         formats: dmg }
+          - { os: ubuntu-22.04,   label: Linux (x86_64),        formats: "deb appimage" }
+          - { os: windows-latest, label: Windows (x86_64),      formats: nsis }
     steps:
       - uses: actions/checkout@v4
-
-      - name: Resolve version
-        id: ver
-        shell: bash
-        run: |
-          if [ "${{ github.ref_type }}" = "tag" ]; then
-            echo "version=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "version=v0.0.0-dev.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
-          fi
 
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'
@@ -48,71 +44,47 @@ jobs:
           sudo apt-get install -y \
             libgtk-3-dev libxdo-dev libayatana-appindicator3-dev \
             libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxcb-randr0-dev \
-            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev
+            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
+            libfuse2
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Add macOS targets
-        if: runner.os == 'macOS'
-        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
-
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
 
-      # ── macOS: universal .app ─────────────────────────────────────────────
-      - name: Build & bundle (macOS)
-        if: runner.os == 'macOS'
-        shell: bash
-        run: |
-          V="${{ steps.ver.outputs.version }}"
-          cargo build --release --locked --features rich-extractors --target aarch64-apple-darwin
-          cargo build --release --locked --features rich-extractors --target x86_64-apple-darwin
-          lipo -create -output CI-Applet \
-            target/aarch64-apple-darwin/release/CI-Applet \
-            target/x86_64-apple-darwin/release/CI-Applet
-          packaging/bundle-macos.sh CI-Applet "$V"
-          mkdir -p dist
-          ditto -c -k --sequesterRsrc --keepParent CI-Applet.app "dist/CI-Applet-${V}-macos-universal.zip"
-          tar -czf "dist/CI-Applet-${V}-macos-universal-bin.tar.gz" CI-Applet
+      - name: Install cargo-packager
+        uses: cargo-bins/cargo-binstall@main
+      - run: cargo binstall -y cargo-packager
 
-      # ── Linux: tarball (binary + .desktop + icon) ─────────────────────────
-      - name: Build & package (Linux)
-        if: runner.os == 'Linux'
+      - name: Build installers
         shell: bash
-        run: |
-          V="${{ steps.ver.outputs.version }}"
-          cargo build --release --locked --features rich-extractors
-          mkdir -p dist stage
-          cp target/release/CI-Applet stage/
-          cp packaging/linux/CI-Applet.desktop stage/
-          cp "2024 CI Logo Mark.svg" stage/CI-Applet.svg
-          cp packaging/linux/INSTALL.md stage/
-          tar -czf "dist/CI-Applet-${V}-linux-x86_64.tar.gz" -C stage .
+        env:
+          # Ad-hoc sign on macOS (real Developer ID needs Apple secrets).
+          APPLE_SIGNING_IDENTITY: ${{ runner.os == 'macOS' && '-' || '' }}
+          # Let appimagetool run without a FUSE kernel module on the runner.
+          APPIMAGE_EXTRACT_AND_RUN: '1'
+        run: cargo packager --release --formats ${{ matrix.formats }} --out-dir dist --verbose
 
-      # ── Windows: zip ──────────────────────────────────────────────────────
-      - name: Build (Windows)
-        if: runner.os == 'Windows'
+      - name: Collect artifacts
         shell: bash
-        run: cargo build --release --locked --features rich-extractors
-      - name: Package (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
         run: |
-          $V = "${{ steps.ver.outputs.version }}"
-          New-Item -ItemType Directory -Force -Path dist | Out-Null
-          Compress-Archive -Path target/release/CI-Applet.exe -DestinationPath "dist/CI-Applet-$V-windows-x86_64.zip" -Force
+          mkdir -p out
+          find dist -maxdepth 1 -type f \
+            \( -name '*.dmg' -o -name '*.deb' -o -name '*.AppImage' -o -name '*.exe' -o -name '*.msi' \) \
+            -exec cp {} out/ \;
+          ls -la out
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ci-applet-${{ matrix.target_name }}
-          path: dist/*
+          name: installers-${{ matrix.os }}
+          path: out/*
           if-no-files-found: error
 
   release:
     name: publish
-    needs: build
+    needs: package
     runs-on: ubuntu-latest
     steps:
       - name: Resolve version
@@ -124,7 +96,7 @@ jobs:
             echo "version=v0.0.0-dev.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Download all artifacts
+      - name: Download all installers
         uses: actions/download-artifact@v4
         with:
           path: artifacts
@@ -149,6 +121,6 @@ jobs:
         if: github.ref_type != 'tag'
         uses: actions/upload-artifact@v4
         with:
-          name: CI-Applet-${{ steps.ver.outputs.version }}-all-platforms
+          name: CI-Applet-${{ steps.ver.outputs.version }}-installers
           path: artifacts/*
           if-no-files-found: error
