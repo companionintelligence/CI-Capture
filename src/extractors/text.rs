@@ -383,8 +383,7 @@ fn render_csv(title: &str, body: &str, delim: u8) -> (String, Vec<Section>) {
 fn escape_table_cell(s: &str) -> String {
     s.replace('\\', "\\\\")
         .replace('|', "\\|")
-        .replace('\n', " ")
-        .replace('\r', " ")
+        .replace(['\n', '\r'], " ")
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

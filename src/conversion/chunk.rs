@@ -170,7 +170,7 @@ pub fn chunk_sections_with(
 /// The current chars/4 heuristic matches cl100k_base to within ~10% on
 /// English prose — good enough for chunking, not for billing.
 pub fn count_tokens(s: &str) -> usize {
-    (s.len() + 3) / 4
+    s.len().div_ceil(4)
 }
 
 fn split_paragraphs(body: &str) -> Vec<String> {

@@ -63,6 +63,23 @@ pub const SENSITIVE_PATTERNS: &[&str] = &[
     "**/.kube/config",
     "**/.netrc",
     "**/.pgpass",
+    // Dotenv files — routinely hold DB passwords and API keys.
+    "**/.env",
+    "**/.env.*",
+    // Private keys, certificates, and keystores anywhere (not just ~/.ssh).
+    // `*.key` can in theory match a flat Keynote export, but modern Keynote
+    // files are bundles whose inner files don't end in `.key`; the risk of
+    // leaking a TLS/SSH private key outweighs that rare false positive.
+    "**/*.pem",
+    "**/*.key",
+    "**/*.p12",
+    "**/*.pfx",
+    "**/*.jks",
+    "**/*.keystore",
+    "**/id_rsa*",
+    "**/id_dsa*",
+    "**/id_ecdsa*",
+    "**/id_ed25519*",
     // Common password-manager vaults
     "**/*.1pif",
     "**/*.kdbx",
@@ -190,6 +207,24 @@ mod tests {
         let r = IgnoreRules::empty().unwrap();
         assert!(r.is_ignored("/Users/x/.aws/credentials"));
         assert!(r.is_sensitive("/Users/x/.aws/credentials"));
+    }
+
+    #[test]
+    fn dotenv_and_private_keys_are_sensitive() {
+        let r = IgnoreRules::empty().unwrap();
+        // Dotenv secrets.
+        assert!(r.is_sensitive("/Users/x/proj/.env"));
+        assert!(r.is_sensitive("/Users/x/proj/.env.production"));
+        // Private keys / certs / keystores outside ~/.ssh.
+        assert!(r.is_sensitive("/Users/x/Downloads/server.pem"));
+        assert!(r.is_sensitive("/Users/x/Downloads/tls.key"));
+        assert!(r.is_sensitive("/Users/x/certs/bundle.p12"));
+        assert!(r.is_sensitive("/Users/x/app/release.keystore"));
+        assert!(r.is_sensitive("/Users/x/keys/id_ed25519"));
+        assert!(r.is_sensitive("/Users/x/keys/id_rsa_backup"));
+        // Ordinary documents are not.
+        assert!(!r.is_sensitive("/Users/x/Documents/notes.md"));
+        assert!(!r.is_sensitive("/Users/x/Documents/budget.csv"));
     }
 
     #[test]

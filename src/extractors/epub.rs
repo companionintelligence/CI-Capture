@@ -17,7 +17,7 @@
 use std::path::Path;
 use std::time::Instant;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Result, anyhow};
 use uuid::Uuid;
 
 use super::traits::{

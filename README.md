@@ -59,7 +59,7 @@ Reports resolved endpoints, local identity/token state, and a live reachability 
 
 ## `vizier` — the perception engine
 
-The applet depends on the **`vizier`** crate (vendored at `../../vizier`), a Rust system‑perception library (CLI binary: `vz`) that emits structured JSON observations for two modes:
+The applet depends on the **`vizier`** crate (vendored in‑tree at `vizier/`), a Rust system‑perception library (CLI binary: `vz`) that emits structured JSON observations for two modes:
 
 - **`wake`** — cold‑start machine/user/environment orientation (`WakeObservation`)
 - **`snapshot` / `watch`** — live state tracking (`Observation`), with `watch --diff` streaming an initial full snapshot followed by **RFC‑6902 JSON‑Patch** diff envelopes
@@ -85,14 +85,14 @@ The applet consumes vizier's `create_observer`, `Observation`, and `diff::create
 
 ## Build
 
-Requires the **`vizier`** crate at `../../vizier` (a sibling of the `ci/` workspace, i.e. `/Users/<you>/devel/vizier`). Without it `cargo` fails at dependency resolution.
+The **`vizier`** crate is vendored in‑tree at `vizier/`, so the applet builds standalone — no external checkout required.
 
 ```bash
 cargo build                            # debug
 cargo build --release                  # optimized
 cargo run                              # launch the tray applet
-cargo test                             # 112 tests
-cargo build --features rich-extractors # + HTML/EML/EPUB extractors (139 tests)
+cargo test                             # 117 tests
+cargo build --features rich-extractors # + HTML/EML/EPUB extractors (144 tests)
 ```
 
 ## Configure & pair
