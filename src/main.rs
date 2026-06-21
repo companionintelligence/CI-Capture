@@ -491,6 +491,30 @@ fn show_error(message: &str) {
     dialogs::message_box_ok("CI-Applet", message, MessageBoxIcon::Error);
 }
 
+/// Open a URL in the user's default browser, cross-platform.
+fn open_url(url: &str) -> std::io::Result<std::process::ExitStatus> {
+    #[cfg(target_os = "macos")]
+    let mut cmd = {
+        let mut c = Command::new("open");
+        c.arg(url);
+        c
+    };
+    #[cfg(target_os = "windows")]
+    let mut cmd = {
+        let mut c = Command::new("cmd");
+        // The empty "" is `start`'s window-title argument.
+        c.args(["/C", "start", "", url]);
+        c
+    };
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut cmd = {
+        let mut c = Command::new("xdg-open");
+        c.arg(url);
+        c
+    };
+    cmd.status()
+}
+
 /// Parse an optional `--portal <url>` / `--portal=<url>` override used by
 /// `--check-server` to probe an arbitrary endpoint without mutating config.
 fn parse_portal_override() -> Option<String> {
@@ -625,7 +649,7 @@ fn pair_with_portal(portal_url: &str) -> Result<String> {
     let runtime = Runtime::new().context("creating runtime for portal pairing")?;
 
     let launch = runtime.block_on(async { start_pairing(portal_url).await })?;
-    if let Err(err) = Command::new("open").arg(&launch.pairing_url).status() {
+    if let Err(err) = open_url(&launch.pairing_url) {
         return Err(anyhow!("failed to open pairing URL: {err}"));
     }
 

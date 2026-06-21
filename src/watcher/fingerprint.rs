@@ -84,12 +84,12 @@ fn file_id(meta: &std::fs::Metadata) -> Option<u64> {
 }
 
 #[cfg(windows)]
-fn file_id(meta: &std::fs::Metadata) -> Option<u64> {
-    use std::os::windows::fs::MetadataExt;
-    // `file_index()` returns Option<u64> on the nightly API, but is stable
-    // via `file_index()` on Metadata as of recent stables. Fall back to
-    // `None` if unavailable.
-    meta.file_index()
+fn file_id(_meta: &std::fs::Metadata) -> Option<u64> {
+    // A stable Windows file ID needs the unstable `windows_by_handle` API
+    // (`MetadataExt::file_index`). Until it stabilizes we skip inode-based
+    // rename inference on Windows; the normalizer falls back gracefully to
+    // treating a rename as a delete + create.
+    None
 }
 
 #[cfg(not(any(unix, windows)))]

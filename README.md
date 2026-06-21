@@ -2,11 +2,11 @@
   <img src="docs/assets/banner.svg" alt="CI-Applet — Companion Desktop Applet" width="820">
 </p>
 
-<p align="center"><b>Companion Desktop Applet — tested for macOS</b></p>
+<p align="center"><b>Companion Desktop Applet — macOS · Windows · Linux</b></p>
 
 <p align="center">
   <a href="https://github.com/companionintelligence/CI-Applet/actions/workflows/ci.yml"><img src="https://github.com/companionintelligence/CI-Applet/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <img src="https://img.shields.io/badge/platform-macOS-1A1A1A?logo=apple&logoColor=white" alt="platform macOS">
+  <img src="https://img.shields.io/badge/platform-macOS%20%C2%B7%20Linux%20%C2%B7%20Windows-1A1A1A" alt="platform macOS, Linux, Windows">
   <img src="https://img.shields.io/badge/Rust-edition%202024-5C8DFF?logo=rust&logoColor=white" alt="Rust edition 2024">
   <img src="https://img.shields.io/badge/tests-117%20passing-2DD4BF" alt="117 tests passing">
   <img src="https://img.shields.io/badge/license-CI--Commercial--1.0-7C6BFF" alt="license CI-Commercial-1.0">
@@ -14,7 +14,7 @@
 
 > **Companion Intelligence — Capture layer.** Licensed under CI-Commercial-1.0. © 2019–2026 LifeScope Inc.
 
-A lightweight macOS menu‑bar (tray) applet that grows your **Companion Memory** by perceiving your desktop and streaming it to your CI‑Server.
+A lightweight **cross‑platform** menu‑bar / system‑tray applet (macOS, Windows, Linux) that grows your **Companion Memory** by perceiving your desktop and streaming it to your CI‑Server.
 
 ## What it captures
 
@@ -59,11 +59,35 @@ flowchart LR
 
 ## Install
 
-Download the latest **`CI-Applet-…-macos-universal.zip`** from the [**Releases**](https://github.com/companionintelligence/CI-Applet/releases) page, unzip, and drag **CI-Applet.app** to `/Applications`.
+Grab the build for your OS from the [**Releases**](https://github.com/companionintelligence/CI-Applet/releases) page.
 
-The build is **universal** (Apple Silicon + Intel) and **ad‑hoc signed**, so on first launch macOS Gatekeeper warns it's from an unidentified developer — **right‑click the app → Open** once to allow it. It lives in the menu bar (no Dock icon).
+<details open>
+<summary><b>macOS</b> — <code>CI-Applet-…-macos-universal.zip</code></summary>
 
-> Grant **Screen Recording** (screenshots) and **Accessibility** (activity capture) in *System Settings → Privacy & Security* when prompted. Prefer source? See [Build](#build).
+Unzip and drag **CI-Applet.app** to `/Applications`. The build is **universal** (Apple Silicon + Intel) and **ad‑hoc signed**, so on first launch Gatekeeper warns it's from an unidentified developer — **right‑click → Open** once. It lives in the menu bar (no Dock icon). Grant **Screen Recording** and **Accessibility** in *System Settings → Privacy & Security* when prompted.
+</details>
+
+<details>
+<summary><b>Windows</b> — <code>CI-Applet-…-windows-x86_64.zip</code></summary>
+
+Unzip and run **`CI-Applet.exe`** — it appears in the system tray (notification area). SmartScreen may warn about an unrecognized app; choose **More info → Run anyway**. Screen capture uses the Desktop Duplication API.
+</details>
+
+<details>
+<summary><b>Linux</b> — <code>CI-Applet-…-linux-x86_64.tar.gz</code></summary>
+
+Needs an **X11** session and an AppIndicator/StatusNotifier tray host (GNOME needs the *AppIndicator* extension). Extract and follow the bundled `INSTALL.md`:
+
+```bash
+tar xzf CI-Applet-*-linux-x86_64.tar.gz
+install -Dm755 CI-Applet ~/.local/bin/CI-Applet
+~/.local/bin/CI-Applet --check-server   # quick connectivity test
+```
+
+Runtime libs: GTK 3, `libayatana-appindicator3`, `libxdo`, X11/xcb.
+</details>
+
+> Prefer building from source? See [Build](#build).
 
 ## File tracking
 
@@ -126,7 +150,14 @@ The applet consumes vizier's `create_observer`, `Observation`, and `diff::create
 
 ## Build
 
-The **`vizier`** crate is vendored in‑tree at `vizier/`, so the applet builds standalone — no external checkout required.
+The **`vizier`** crate is vendored in‑tree at `vizier/`, so the applet builds standalone — no external checkout required. macOS and Windows build with just a Rust toolchain; **Linux** also needs the GTK/AppIndicator/X11 dev headers:
+
+```bash
+# Debian/Ubuntu build deps (Linux only)
+sudo apt-get install -y libgtk-3-dev libxdo-dev libayatana-appindicator3-dev \
+  libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxcb-randr0-dev \
+  libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev
+```
 
 ```bash
 cargo build                            # debug

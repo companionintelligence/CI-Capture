@@ -7,10 +7,10 @@
 > rollout plan and design records see [`plan/00-overview.md`](plan/00-overview.md);
 > for visual identity see [`assets/brand.md`](assets/brand.md).
 
-CI-Applet is a macOS menu-bar (tray) applet that grows your **Companion
-Memory** by perceiving your desktop and streaming it to your CI-Server. It runs
-**three capture lanes** on one shared worker runtime, config, identity, and
-server connection.
+CI-Applet is a **cross-platform** menu-bar / system-tray applet (macOS, Windows,
+Linux) that grows your **Companion Memory** by perceiving your desktop and
+streaming it to your CI-Server. It runs **three capture lanes** on one shared
+worker runtime, config, identity, and server connection.
 
 ## 1. System context
 
