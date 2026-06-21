@@ -28,6 +28,7 @@ use crate::server_ingest;
 const MIN_INTERVAL_SECS: u64 = 30;
 const ANALYSIS_QUEUE_CAPACITY: usize = 2;
 
+#[derive(Clone)]
 pub struct WorkerHandle {
     tx: UnboundedSender<WorkerCommand>,
     running: Arc<AtomicBool>,

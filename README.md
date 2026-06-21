@@ -211,10 +211,15 @@ Configuration lives in the app config directory as `config.json`. Key fields:
 - `file_tracker.watched_paths` — folders to watch recursively (**empty = file tracking off**); plus `ignore_globs`, `max_file_bytes`, `send_content`, `max_content_bytes`
 
 After sign-in the applet stores the tokens + identity, best-effort registers the
-device (`POST /devices`, bearer-authed), and streams:
+device (`POST {portal}/api/devices`, bearer-authed), and streams:
 
 - screenshots → `POST {portal}/api/files/upload` (multipart, bearer `id_token`)
 - activity + file snapshots → `ingestUserSnapshot` GraphQL mutation (bearer `id_token`)
+
+A background task keeps the session alive: it **refreshes the `id_token`** with
+the stored `refresh_token` before it expires (honouring rotation) and retries
+device registration if CI‑Server was unreachable at sign-in — persisting both to
+`config.json` and pushing them to the capture worker live.
 
 > **Portal setup:** the `ci-applet` client must be registered with the portal's
 > OIDC provider, allowing the loopback redirect above. Point `oidc.issuer` /
