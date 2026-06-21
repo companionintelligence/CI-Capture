@@ -5,6 +5,7 @@
 <p align="center"><b>Companion Desktop Applet — tested for macOS</b></p>
 
 <p align="center">
+  <a href="https://github.com/companionintelligence/CI-Applet/actions/workflows/ci.yml"><img src="https://github.com/companionintelligence/CI-Applet/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <img src="https://img.shields.io/badge/platform-macOS-1A1A1A?logo=apple&logoColor=white" alt="platform macOS">
   <img src="https://img.shields.io/badge/Rust-edition%202024-5C8DFF?logo=rust&logoColor=white" alt="Rust edition 2024">
   <img src="https://img.shields.io/badge/tests-117%20passing-2DD4BF" alt="117 tests passing">
@@ -55,6 +56,14 @@ flowchart LR
 </td>
 </tr>
 </table>
+
+## Install
+
+Download the latest **`CI-Applet-…-macos-universal.zip`** from the [**Releases**](https://github.com/companionintelligence/CI-Applet/releases) page, unzip, and drag **CI-Applet.app** to `/Applications`.
+
+The build is **universal** (Apple Silicon + Intel) and **ad‑hoc signed**, so on first launch macOS Gatekeeper warns it's from an unidentified developer — **right‑click the app → Open** once to allow it. It lives in the menu bar (no Dock icon).
+
+> Grant **Screen Recording** (screenshots) and **Accessibility** (activity capture) in *System Settings → Privacy & Security* when prompted. Prefer source? See [Build](#build).
 
 ## File tracking
 
@@ -126,6 +135,20 @@ cargo run                              # launch the tray applet
 cargo test                             # 117 tests
 cargo build --features rich-extractors # + HTML/EML/EPUB extractors (144 tests)
 ```
+
+Every push and PR is built and tested on macOS by [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
+
+### Cutting a release
+
+[`.github/workflows/release.yml`](.github/workflows/release.yml) builds a **universal** (`arm64` + `x86_64`), `--features rich-extractors` binary on GitHub's macOS runners and bundles it into `CI-Applet.app`. Tag to publish:
+
+```bash
+# bump version in Cargo.toml, commit, then:
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+The tag triggers a GitHub Release with the `.app` zip, a raw universal binary, and `SHA256SUMS`. To dry‑run the full build without publishing, run it manually: **Actions → Release → Run workflow** (uploads the artifacts, creates no Release). Proper Developer ID signing + notarization needs Apple secrets; the workflow ad‑hoc signs until those are added.
 
 ## Configure & pair
 

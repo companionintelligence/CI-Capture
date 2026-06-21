@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key>
+  <string>CI-Applet</string>
+  <key>CFBundleDisplayName</key>
+  <string>CI-Applet</string>
+  <key>CFBundleIdentifier</key>
+  <string>com.compint.CI-Applet</string>
+  <key>CFBundleExecutable</key>
+  <string>CI-Applet</string>
+  <key>CFBundleIconFile</key>
+  <string>AppIcon</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>0.0.0</string>
+  <key>CFBundleVersion</key>
+  <string>0.0.0</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>11.0</string>
+  <key>NSHighResolutionCapable</key>
+  <true/>
+  <!-- Menu-bar accessory app: no Dock icon, no main window. -->
+  <key>LSUIElement</key>
+  <true/>
+  <!-- Purpose strings shown if/when the OS prompts for access. Screen
+       Recording and Accessibility are granted in System Settings rather than
+       via a plist key, but these clarify intent for any AppleEvents use. -->
+  <key>NSAppleEventsUsageDescription</key>
+  <string>CI-Applet opens your pairing URL and reads window/activity context to grow your Companion Memory.</string>
+</dict>
+</plist>
