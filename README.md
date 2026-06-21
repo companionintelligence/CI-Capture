@@ -1,4 +1,15 @@
-# Companion Desktop Applet - tested for MacOS
+<p align="center">
+  <img src="docs/assets/banner.svg" alt="CI-Applet — Companion Desktop Applet" width="820">
+</p>
+
+<p align="center"><b>Companion Desktop Applet — tested for macOS</b></p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/platform-macOS-1A1A1A?logo=apple&logoColor=white" alt="platform macOS">
+  <img src="https://img.shields.io/badge/Rust-edition%202024-5C8DFF?logo=rust&logoColor=white" alt="Rust edition 2024">
+  <img src="https://img.shields.io/badge/tests-117%20passing-2DD4BF" alt="117 tests passing">
+  <img src="https://img.shields.io/badge/license-CI--Commercial--1.0-7C6BFF" alt="license CI-Commercial-1.0">
+</p>
 
 > **Companion Intelligence — Capture layer.** Licensed under CI-Commercial-1.0. © 2019–2026 LifeScope Inc.
 
@@ -23,6 +34,27 @@ flowchart LR
     VIZ  -->|"ingestUserSnapshot"| CI
     FILE -->|"ingestUserSnapshot (file_event)"| CI
 ```
+
+## Screenshots
+
+<table>
+<tr>
+<td width="40%" valign="top">
+
+**Menu‑bar tray** — live status across the three lanes, with quick actions one click away.
+
+<img src="docs/assets/tray-menu.svg" alt="CI-Applet macOS tray menu" width="300">
+
+</td>
+<td valign="top">
+
+**`--check-server`** — a built‑in connectivity self‑test, shown here verified live against a running CI‑Server gateway.
+
+<img src="docs/assets/check-server.svg" alt="cargo run -- --check-server output" width="470">
+
+</td>
+</tr>
+</table>
 
 ## File tracking
 
@@ -115,6 +147,19 @@ A **legacy fallback** (no token configured) writes screenshots straight to MinIO
 
 Capture is local‑first and streamed only to the CI‑Server you pair with. Screenshots are diff‑gated and suppressed while the macOS screensaver is running; nothing is captured until an identity is configured.
 
+## Documentation
+
+- [**Architecture**](docs/architecture.md) — diagrams: system context, file pipeline, edit sequence, lane lifecycle, server contract
+- [**Rollout plan**](docs/plan/00-overview.md) — what shipped, the design records, and what's next
+- [**Brand & assets**](docs/assets/brand.md) — logo, palette, and the screenshots above
+
 ## Multi-agent safety
 
 Multiple AI agents work these repos in parallel. Never use `git reset --hard`, `git clean -f`, or any destructive git command without explicit confirmation from the user.
+
+---
+
+<p align="center">
+  <img src="docs/assets/icon.svg" width="44" height="44"><br>
+  <sub><b>Companion Intelligence</b> · Capture layer · © 2019–2026 LifeScope Inc.</sub>
+</p>
