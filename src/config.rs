@@ -113,7 +113,59 @@ impl Default for VizierConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+/// File-activity tracking lane. Watches a user-selected set of folders,
+/// fingerprints changed files, converts the ones it can to Markdown, and
+/// streams the result to CI-Server so the user's AI can remember them.
+///
+/// Capture is **off until `watched_paths` is non-empty** — the applet never
+/// watches anything the user didn't explicitly add.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileTrackerConfig {
+    pub enabled: bool,
+    /// Folders to watch recursively. Empty = lane is a no-op.
+    pub watched_paths: Vec<PathBuf>,
+    /// Extra user-defined ignore globs, stacked on top of the built-in
+    /// defaults + non-disableable sensitive list.
+    pub ignore_globs: Vec<String>,
+    /// Per-file size cap in bytes; larger files record an event but no hash.
+    pub max_file_bytes: u64,
+    /// When true, converted Markdown content is included in the synced
+    /// payload. When false, only metadata (path/size/hash) is sent.
+    pub send_content: bool,
+    /// Max bytes of converted Markdown to embed per event (keeps ingest
+    /// payloads bounded; the full blob upload is a separate concern).
+    pub max_content_bytes: usize,
+}
+
+impl Default for FileTrackerConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            watched_paths: Vec::new(),
+            ignore_globs: Vec::new(),
+            max_file_bytes: 100 * 1024 * 1024,
+            send_content: true,
+            max_content_bytes: 256 * 1024,
+        }
+    }
+}
+
+impl Default for AppConfig {
+    fn default() -> Self {
+        Self {
+            capture: CaptureConfig::default(),
+            minio: MinioConfig::default(),
+            postgres: PostgresConfig::default(),
+            analysis: AnalysisConfig::default(),
+            identity: IdentityConfig::default(),
+            server: ServerConfig::default(),
+            vizier: VizierConfig::default(),
+            file_tracker: FileTrackerConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     pub capture: CaptureConfig,
     pub minio: MinioConfig,
@@ -123,6 +175,8 @@ pub struct AppConfig {
     pub server: ServerConfig,
     #[serde(default)]
     pub vizier: VizierConfig,
+    #[serde(default)]
+    pub file_tracker: FileTrackerConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -190,6 +244,17 @@ fn ensure_config_dir() -> Result<PathBuf> {
     fs::create_dir_all(dir)
         .with_context(|| format!("creating config directory {}", dir.display()))?;
     Ok(dir.to_path_buf())
+}
+
+/// Path to the durable file-event queue database (SQLite). Lives next to
+/// the other applet data so it survives restarts and network outages.
+pub fn queue_db_path() -> Result<PathBuf> {
+    let dirs = ProjectDirs::from(APP_QUALIFIER, APP_QUALIFIER, APP_NAME)
+        .context("locating data directory")?;
+    let data_dir = dirs.data_dir();
+    fs::create_dir_all(data_dir)
+        .with_context(|| format!("creating data dir {}", data_dir.display()))?;
+    Ok(data_dir.join("file-tracker-queue.db"))
 }
 
 pub fn default_storage_dir() -> Result<PathBuf> {

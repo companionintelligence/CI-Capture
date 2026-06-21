@@ -18,6 +18,7 @@ use crate::analysis::{AnalysisResult, VisionAnalyzer};
 use crate::capture::{CapturedImage, capture_primary, diff_percent, save_to_path};
 use crate::config::AppConfig;
 use crate::db::{PostgresRecorder, ScreenshotRecord, VizierEventRecord};
+use crate::file_tracker;
 use crate::minio::MinioUploader;
 use crate::server_ingest;
 
@@ -102,6 +103,7 @@ async fn run_worker(
     });
 
     let mut state = WorkerState::new(initial_config, running_flag, analysis_tx);
+    state.restart_file_tracker();
     let mut interval = build_interval(state.config.capture.screenshot_interval_secs);
 
     loop {
@@ -190,6 +192,8 @@ struct WorkerState {
     vizier_observer: Box<dyn Observer>,
     vizier_previous: Option<Observation>,
     vizier_session_id: Uuid,
+    /// Background task running the file-tracking lane, when active.
+    file_tracker: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl WorkerState {
@@ -213,11 +217,50 @@ impl WorkerState {
             vizier_observer,
             vizier_previous: None,
             vizier_session_id: Uuid::new_v4(),
+            file_tracker: None,
         }
     }
 
     fn is_active(&self) -> bool {
         !self.paused
+    }
+
+    /// Abort the file-tracking lane if it's running.
+    fn stop_file_tracker(&mut self) {
+        if let Some(handle) = self.file_tracker.take() {
+            handle.abort();
+            log::info!("file tracker stopped");
+        }
+    }
+
+    /// (Re)start the file-tracking lane to match the current config. No-op
+    /// (after stopping any prior task) when the lane isn't runnable —
+    /// identity unset, no watched folders, or no server token.
+    fn restart_file_tracker(&mut self) {
+        self.stop_file_tracker();
+        if !file_tracker::is_runnable(&self.config) {
+            log::debug!(
+                "file tracker idle (enabled={}, folders={}, identity={}, server={})",
+                self.config.file_tracker.enabled,
+                self.config.file_tracker.watched_paths.len(),
+                self.config.identity.device_id.is_some(),
+                server_ingest::is_configured(&self.config),
+            );
+            return;
+        }
+        let queue_path = match crate::config::queue_db_path() {
+            Ok(p) => p,
+            Err(err) => {
+                log::error!("cannot locate file-event queue path: {err:?}");
+                return;
+            }
+        };
+        let config = self.config.clone();
+        self.file_tracker = Some(tokio::spawn(async move {
+            if let Err(err) = file_tracker::run(config, queue_path).await {
+                log::error!("file tracker terminated: {err:?}");
+            }
+        }));
     }
 
     async fn handle_command(
@@ -238,14 +281,19 @@ impl WorkerState {
                 {
                     self.reset_vizier_observer();
                 }
+
+                // Pick up new watched folders / identity / server token.
+                self.restart_file_tracker();
             }
             WorkerCommand::Pause => {
                 self.paused = true;
                 self.running_flag.store(false, Ordering::SeqCst);
+                self.stop_file_tracker();
             }
             WorkerCommand::Resume => {
                 self.paused = false;
                 self.running_flag.store(true, Ordering::SeqCst);
+                self.restart_file_tracker();
             }
             WorkerCommand::CaptureNow => match self.capture_once().await {
                 Ok(captured) => {
@@ -260,6 +308,7 @@ impl WorkerState {
                 }
             },
             WorkerCommand::Shutdown => {
+                self.stop_file_tracker();
                 return Ok(true);
             }
         }

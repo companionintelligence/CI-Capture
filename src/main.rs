@@ -1,15 +1,22 @@
 mod analysis;
 mod capture;
 mod config;
+mod conversion;
 mod db;
+mod extractors;
+mod file_tracker;
 mod minio;
+mod queue;
 mod server_auth;
+mod server_check;
 mod server_common;
 mod server_ingest;
 mod server_upload;
 mod settings_ui;
 mod svg_icon;
+mod sync;
 mod upload_ui;
+mod watcher;
 mod worker;
 
 use std::process::Command;
@@ -53,6 +60,11 @@ fn main() -> Result<()> {
 
     if std::env::args().any(|arg| arg == "--upload-ui") {
         run_upload_ui()?;
+        return Ok(());
+    }
+
+    if std::env::args().any(|arg| arg == "--check-server") {
+        server_check::run(parse_portal_override())?;
         return Ok(());
     }
 
@@ -477,6 +489,21 @@ fn fallback_icon() -> Icon {
 
 fn show_error(message: &str) {
     dialogs::message_box_ok("CI-Applet", message, MessageBoxIcon::Error);
+}
+
+/// Parse an optional `--portal <url>` / `--portal=<url>` override used by
+/// `--check-server` to probe an arbitrary endpoint without mutating config.
+fn parse_portal_override() -> Option<String> {
+    let args: Vec<String> = std::env::args().collect();
+    for (i, arg) in args.iter().enumerate() {
+        if let Some(rest) = arg.strip_prefix("--portal=") {
+            return Some(rest.to_string());
+        }
+        if arg == "--portal" {
+            return args.get(i + 1).cloned();
+        }
+    }
+    None
 }
 
 fn short_uuid(id: Option<Uuid>) -> String {
