@@ -1,4 +1,4 @@
-# CI-Applet
+# Companion Desktop Applet - tested for MacOS
 
 > **Companion Intelligence — Capture layer.** Licensed under CI-Commercial-1.0. © 2019–2026 LifeScope Inc.
 
