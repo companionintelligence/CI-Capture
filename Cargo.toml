@@ -5,9 +5,12 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1"
-aws-config = "1"
-aws-credential-types = "1"
-aws-sdk-s3 = { version = "1", features = ["behavior-version-latest"] }
+# Legacy MinIO upload path — heavy (pulls aws-lc-sys, which doesn't build on
+# some MSVC toolchains) and rarely used. Off by default; enable with
+# `--features legacy-minio`.
+aws-config = { version = "1", optional = true }
+aws-credential-types = { version = "1", optional = true }
+aws-sdk-s3 = { version = "1", features = ["behavior-version-latest"], optional = true }
 base64 = "0.21"
 chrono = { version = "0.4", features = ["serde"] }
 directories = "5"
@@ -15,7 +18,8 @@ env_logger = "0.11"
 image = { version = "0.25", default-features = false, features = ["png"] }
 log = "0.4"
 parking_lot = "0.12"
-reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls"] }
+# rustls + ring (not aws-lc-rs) so it builds cleanly on every platform.
+reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls-webpki-roots-no-provider", "__rustls-ring"] }
 screenshots = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -28,7 +32,7 @@ deadpool-postgres = "0.8"
 tray-icon = "0.11"
 uuid = { version = "1", features = ["v4", "serde"] }
 egui = "0.33.2"
-eframe = { version = "0.33.2", default-features = false, features = ["glow"] }
+eframe = { version = "0.33.2", default-features = false, features = ["glow", "x11", "wayland"] }
 whoami = "1"
 vizier = { path = "vizier" }
 resvg = { version = "0.45", default-features = false, features = ["text"] }
@@ -53,6 +57,9 @@ epub = { version = "2", optional = true }
 [features]
 default = []
 rich-extractors = ["dep:html2md", "dep:mail-parser", "dep:epub"]
+# Legacy screenshot upload straight to MinIO/S3 (bypasses CI-Server). Off by
+# default — the server ingest path is the supported one.
+legacy-minio = ["dep:aws-config", "dep:aws-credential-types", "dep:aws-sdk-s3"]
 
 [dev-dependencies]
 tempfile = "3"

@@ -17,8 +17,11 @@ use vizier::observer::{Observer, ObserverConfig, create_observer};
 use crate::analysis::{AnalysisResult, VisionAnalyzer};
 use crate::capture::{CapturedImage, capture_primary, diff_percent, save_to_path};
 use crate::config::AppConfig;
-use crate::db::{PostgresRecorder, ScreenshotRecord, VizierEventRecord};
+use crate::db::{PostgresRecorder, VizierEventRecord};
+#[cfg(feature = "legacy-minio")]
+use crate::db::ScreenshotRecord;
 use crate::file_tracker;
+#[cfg(feature = "legacy-minio")]
 use crate::minio::MinioUploader;
 use crate::server_ingest;
 
@@ -87,6 +90,8 @@ enum WorkerCommand {
 struct PendingCapture {
     image: CapturedImage,
     filename: String,
+    // Only read by the legacy MinIO path.
+    #[cfg_attr(not(feature = "legacy-minio"), allow(dead_code))]
     timestamp: chrono::DateTime<Utc>,
     config: AppConfig,
 }
@@ -169,8 +174,16 @@ async fn run_analysis_loop(rx: &mut Receiver<PendingCapture>) {
             continue;
         }
 
+        #[cfg(feature = "legacy-minio")]
         if let Err(err) = record_capture_legacy(&capture, &png_bytes, &analysis).await {
             log::error!("failed to write legacy capture rows: {err:?}");
+        }
+        #[cfg(not(feature = "legacy-minio"))]
+        {
+            let _ = &analysis;
+            log::warn!(
+                "no CI-Server token configured; screenshot dropped (rebuild with --features legacy-minio for the MinIO fallback)"
+            );
         }
     }
 }
@@ -479,6 +492,7 @@ fn build_legacy_recorder(config: &AppConfig) -> Option<PostgresRecorder> {
     }
 }
 
+#[cfg(feature = "legacy-minio")]
 async fn record_capture_legacy(
     capture: &PendingCapture,
     png_bytes: &[u8],
