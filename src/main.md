@@ -7,7 +7,7 @@ Owns the tray application lifecycle, menu actions, configuration reloads, worker
 
 ### `AppController`
 - **Does**: Handles tray actions, settings reloads, worker state, and portal pairing completion events.
-- **Interacts with**: `WorkerHandle`, `ConfigManager`, `server_auth.rs`, and `settings_ui.rs`.
+- **Interacts with**: `WorkerHandle`, `ConfigManager`, `oidc.rs`, and `settings_ui.rs`.
 
 ### `launch_portal_login`
 - **Does**: Starts a GraphQL pairing session, opens the browser to the pairing URL, and waits for the authenticated browser to claim the applet.
@@ -15,7 +15,7 @@ Owns the tray application lifecycle, menu actions, configuration reloads, worker
 
 ### `pair_with_portal`
 - **Does**: Runs the end-to-end pairing workflow and persists the resulting `user_id` / `device_id` plus the applet bearer token.
-- **Interacts with**: `server_auth.rs` and `ConfigManager`.
+- **Interacts with**: `oidc.rs` and `ConfigManager`.
 
 ### `ensure_device_registration`
 - **Does**: Preserves the legacy manual-UUID fallback by direct-registering a device in Postgres when a user ID exists but no device ID is set.

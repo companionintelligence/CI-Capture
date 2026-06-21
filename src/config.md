@@ -11,7 +11,7 @@ Defines persisted application configuration for CI-Applet. It is the schema boun
 
 ### `ServerConfig`
 - **Does**: Stores the CI-Server portal URL and the applet-scoped bearer token issued during browser pairing.
-- **Interacts with**: `main.rs`, `server_auth.rs`, and `server_ingest.rs`.
+- **Interacts with**: `main.rs`, `oidc.rs`, and `server_ingest.rs`.
 - **Rationale**: Keeps human login/bootstrap separate from infrastructure credentials while still letting the worker reuse the paired applet session.
 
 ### `VizierConfig`

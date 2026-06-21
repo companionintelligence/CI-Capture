@@ -22,7 +22,7 @@ A lightweight **cross‑platform** menu‑bar / system‑tray applet (macOS, Win
 - **System activity** via the embedded **`vizier`** perception engine — structured snapshots of the machine/user/environment: foreground app & window, working directory, network connections, and live filesystem deltas.
 - **File edits** in folders you choose — the applet watches them, fingerprints changed files, converts the ones it can to Markdown, and streams the result so **your AI can remember the files you work on**. See [File tracking](#file-tracking).
 
-All three streams go to your CI‑Server's Companion Memory portal over a paired bearer token.
+All three streams go to your CI‑Server's Companion Memory portal over an OIDC‑issued bearer token.
 
 ```mermaid
 flowchart LR
@@ -193,25 +193,37 @@ git push origin v0.1.0
 
 The tag triggers a GitHub Release with every installer + `SHA256SUMS`. To dry‑run the full build without publishing, run it manually: **Actions → Release → Run workflow** (uploads the installers as artifacts, creates no Release). Installer config lives in `[package.metadata.packager]` in [`Cargo.toml`](Cargo.toml); icons are in `packaging/icons/`. macOS builds are **ad‑hoc signed** — proper Developer ID signing + notarization is a drop‑in once Apple secrets exist.
 
-## Configure & pair
+## Sign in & configure
+
+Click **Login to Portal** from the tray. The applet runs the standard **OpenID
+Connect Authorization Code + PKCE** flow — the same one CI-Import-Tools and
+CI-Server use — opening your browser to the portal and capturing the redirect on
+a loopback listener. The portal-issued **`id_token`** becomes the bearer the
+applet sends on every capture.
 
 Configuration lives in the app config directory as `config.json`. Key fields:
 
-- `server.portal_url` — your CI‑Server Companion Memory portal (default `https://memory.ci.localhost`)
-- `identity.user_id` + `identity.device_id` — **capture is a no‑op until both are set**
+- `oidc.issuer` — portal OIDC issuer (default `https://hub.companionintelligence.com/api/auth`; discovery-driven)
+- `oidc.client_id` — registered client (default `ci-applet`)
+- `oidc.redirect_uri` — loopback callback (default `http://127.0.0.1:49473/callback`)
+- `server.portal_url` — CI‑Server origin that receives captures (files upload + `ingestUserSnapshot`)
 - `screenshot_interval_secs` (default 300, floored to 30) and `diff_threshold_percent` (default 10)
 - `file_tracker.watched_paths` — folders to watch recursively (**empty = file tracking off**); plus `ignore_globs`, `max_file_bytes`, `send_content`, `max_content_bytes`
 
-**Pairing:** the applet runs a GraphQL pairing handshake (`startAppletPairing` → poll `appletPairingStatus`) to obtain a bearer token, then sends:
+After sign-in the applet stores the tokens + identity, best-effort registers the
+device (`POST /devices`, bearer-authed), and streams:
 
-- screenshots → `POST {portal}/api/files/upload` (multipart, bearer auth)
-- activity snapshots → `ingestUserSnapshot` GraphQL mutation (bearer auth)
+- screenshots → `POST {portal}/api/files/upload` (multipart, bearer `id_token`)
+- activity + file snapshots → `ingestUserSnapshot` GraphQL mutation (bearer `id_token`)
 
-A **legacy fallback** (no token configured) writes screenshots straight to MinIO and rows into Postgres.
+> **Portal setup:** the `ci-applet` client must be registered with the portal's
+> OIDC provider, allowing the loopback redirect above. Point `oidc.issuer` /
+> `oidc.client_id` at any deployment; run `--check-server` to see the resolved
+> issuer, client, and sign-in state.
 
 ## Privacy
 
-Capture is local‑first and streamed only to the CI‑Server you pair with. Screenshots are diff‑gated and suppressed while the macOS screensaver is running; nothing is captured until an identity is configured.
+Capture is local‑first and streamed only to the CI‑Server you sign in to. Screenshots are diff‑gated and suppressed while the macOS screensaver is running; nothing is captured until an identity is configured.
 
 ## Documentation
 
