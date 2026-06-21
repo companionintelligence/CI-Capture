@@ -151,6 +151,84 @@ pub async fn ingest_capture(
     Ok(file_id)
 }
 
+/// Content extracted from a changed file, attached to a file event so the
+/// user's AI can remember the file body — not just that it changed.
+#[derive(Debug, Default, Serialize)]
+pub struct FileEventContent {
+    pub markdown: Option<String>,
+    pub section_count: usize,
+    pub extractor: Option<String>,
+    pub content_truncated: bool,
+}
+
+/// Ship a single file-activity event to CI-Server.
+///
+/// CI-Server has no dedicated file-event endpoint today, so we ride the
+/// proven `ingestUserSnapshot` channel the vizier lane already uses:
+/// `snapshot_kind = "file_event"` with the normalized event (and any
+/// converted Markdown) carried in `payload`. This keeps the applet working
+/// against the same server it already talks to — when a first-class
+/// `/history/file-events` endpoint lands, only this function changes.
+pub async fn ingest_file_event(
+    config: &AppConfig,
+    device_id: Uuid,
+    session_id: Uuid,
+    event: &crate::watcher::types::NormalizedEvent,
+    content: &FileEventContent,
+) -> Result<()> {
+    let client = build_gql_client(config)?;
+
+    let path = event
+        .new_path
+        .as_ref()
+        .or(event.old_path.as_ref())
+        .map(|p| p.display().to_string());
+    let cwd = event
+        .new_path
+        .as_ref()
+        .and_then(|p| p.parent())
+        .map(|p| p.display().to_string());
+
+    let payload = serde_json::json!({
+        "event": serde_json::to_value(event).unwrap_or(Value::Null),
+        "content": serde_json::to_value(content).unwrap_or(Value::Null),
+    });
+
+    let response = graphql::<_, VizierEnvelope>(
+        &client,
+        GraphqlRequest {
+            query: INGEST_USER_SNAPSHOT_MUTATION,
+            variables: VizierVariables {
+                input: VizierEventInput {
+                    device_id: device_id.to_string(),
+                    session_id: session_id.to_string(),
+                    snapshot_kind: "file_event".to_string(),
+                    observed_at: event.observed_at.to_rfc3339(),
+                    monotonic_ms: 0,
+                    payload,
+                    focus_app: Some("ci-applet/file-tracker".to_string()),
+                    focus_title: path,
+                    cwd,
+                    fs_event_count: 1,
+                },
+            },
+        },
+    )
+    .await?;
+
+    let payload = response.ingest_user_snapshot;
+    if !payload.success {
+        return Err(anyhow!(
+            "{}",
+            payload
+                .error_message
+                .unwrap_or_else(|| "Applet file-event ingest failed.".to_string())
+        ));
+    }
+
+    Ok(())
+}
+
 pub async fn ingest_vizier_event(
     config: &AppConfig,
     device_id: Uuid,
@@ -209,6 +287,7 @@ fn build_gql_client(config: &AppConfig) -> Result<GraphqlClient> {
         .context("server applet auth token is not configured")?;
     let client = Client::builder()
         .use_rustls_tls()
+        .timeout(std::time::Duration::from_secs(30))
         .build()
         .context("building ingest GraphQL client")?;
 
