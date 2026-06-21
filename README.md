@@ -89,6 +89,25 @@ Runtime libs: GTK 3, `libayatana-appindicator3`, `libxdo`, X11/xcb.
 
 > Prefer building from source? See [Build](#build).
 
+### Container image (GitHub Packages)
+
+A Linux image is published to **[GitHub Packages](https://github.com/orgs/companionintelligence/packages?repo_name=CI-Applet)** at `ghcr.io/companionintelligence/ci-applet`. The CLI works headless:
+
+```bash
+docker run --rm ghcr.io/companionintelligence/ci-applet:latest --check-server
+```
+
+For the tray GUI, forward an X11 display and persist config:
+
+```bash
+docker run --rm \
+  -e DISPLAY="$DISPLAY" -v /tmp/.X11-unix:/tmp/.X11-unix \
+  -v ~/.config/com.compint:/home/app/.config/com.compint \
+  ghcr.io/companionintelligence/ci-applet:latest
+```
+
+> For desktop use, prefer the native installers above — the container targets `linux/amd64` and headless/automation use.
+
 ## File tracking
 
 The file‑tracking lane is the answer to *"track the important files I edit and let my AI remember them."* It runs alongside the screenshot + vizier lanes:
