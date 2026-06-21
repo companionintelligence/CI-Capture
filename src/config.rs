@@ -150,22 +150,7 @@ impl Default for FileTrackerConfig {
     }
 }
 
-impl Default for AppConfig {
-    fn default() -> Self {
-        Self {
-            capture: CaptureConfig::default(),
-            minio: MinioConfig::default(),
-            postgres: PostgresConfig::default(),
-            analysis: AnalysisConfig::default(),
-            identity: IdentityConfig::default(),
-            server: ServerConfig::default(),
-            vizier: VizierConfig::default(),
-            file_tracker: FileTrackerConfig::default(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AppConfig {
     pub capture: CaptureConfig,
     pub minio: MinioConfig,

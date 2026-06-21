@@ -120,10 +120,10 @@ pub async fn run(config: AppConfig, queue_path: PathBuf) -> Result<()> {
                 }
             }
             _ = sync_tick.tick() => {
-                if let Some(until) = backoff_until {
-                    if Instant::now() < until {
-                        continue; // still backing off
-                    }
+                if let Some(until) = backoff_until
+                    && Instant::now() < until
+                {
+                    continue; // still backing off
                 }
 
                 let want = batch.batch_size();
@@ -216,25 +216,32 @@ async fn build_content(config: &AppConfig, event: &NormalizedEvent) -> FileEvent
     };
     let max = config.file_tracker.max_content_bytes;
 
-    let extracted = tokio::task::spawn_blocking(move || {
-        let extractor = extractors::classify(&path, None)?;
-        let doc = extractor
-            .extract(
-                &path,
-                ExtractOptions {
-                    metadata_only: false,
-                    allow_heavy_models: false,
-                },
-            )
-            .ok()?;
-        Some((extractor.name().to_string(), doc.markdown, doc.sections.len()))
+    let outcome = tokio::task::spawn_blocking(move || match extractors::classify(&path, None) {
+        None => Extraction::Unsupported,
+        Some(extractor) => match extractor.extract(
+            &path,
+            ExtractOptions {
+                metadata_only: false,
+                allow_heavy_models: false,
+            },
+        ) {
+            Ok(doc) => Extraction::Ok {
+                name: extractor.name().to_string(),
+                markdown: doc.markdown,
+                sections: doc.sections.len(),
+            },
+            Err(err) => Extraction::Failed(err.to_string()),
+        },
     })
     .await
-    .ok()
-    .flatten();
+    .unwrap_or_else(|join_err| Extraction::Failed(format!("extraction task panicked: {join_err}")));
 
-    match extracted {
-        Some((name, markdown, section_count)) => {
+    match outcome {
+        Extraction::Ok {
+            name,
+            markdown,
+            sections,
+        } => {
             let truncated = markdown.len() > max;
             let body = if truncated {
                 truncate_on_char_boundary(&markdown, max)
@@ -243,13 +250,37 @@ async fn build_content(config: &AppConfig, event: &NormalizedEvent) -> FileEvent
             };
             FileEventContent {
                 markdown: Some(body),
-                section_count,
+                section_count: sections,
                 extractor: Some(name),
                 content_truncated: truncated,
+                extraction_error: None,
             }
         }
-        None => FileEventContent::default(),
+        // Unsupported format: no content, no error — a legitimate empty body.
+        Extraction::Unsupported => FileEventContent::default(),
+        // Supported format that failed: surface the error instead of shipping
+        // a silently-empty body that looks identical to "unsupported".
+        Extraction::Failed(err) => {
+            log::debug!("content extraction failed: {err}");
+            FileEventContent {
+                extraction_error: Some(err),
+                ..Default::default()
+            }
+        }
     }
+}
+
+/// Result of trying to extract a changed file's content.
+enum Extraction {
+    /// No extractor for this format — metadata-only, not an error.
+    Unsupported,
+    Ok {
+        name: String,
+        markdown: String,
+        sections: usize,
+    },
+    /// A supported format whose extraction failed.
+    Failed(String),
 }
 
 fn describe(event: &NormalizedEvent) -> String {

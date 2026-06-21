@@ -55,10 +55,10 @@ pub async fn wait_for_settle_with(
             Err(SnapshotError::Other(e)) => return Err(e),
         };
 
-        if let Some(p) = prev {
-            if p == snap {
-                return Ok(SettleStatus::Settled);
-            }
+        if let Some(p) = prev
+            && p == snap
+        {
+            return Ok(SettleStatus::Settled);
         }
 
         if deadline_start.elapsed() + poll_interval > max_wait {

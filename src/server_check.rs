@@ -58,10 +58,10 @@ async fn report(config: &AppConfig) -> Result<()> {
         Ok(u) => println!("GraphQL    : {u}"),
         Err(err) => println!("GraphQL    : ✗ {err}"),
     }
-    if let Some(o) = &origin {
-        if let Ok(u) = o.join("/api/files/upload") {
-            println!("File upload: {u}");
-        }
+    if let Some(o) = &origin
+        && let Ok(u) = o.join("/api/files/upload")
+    {
+        println!("File upload: {u}");
     }
 
     println!("\nLocal config");
@@ -97,12 +97,12 @@ async fn report(config: &AppConfig) -> Result<()> {
         .context("building probe client")?;
 
     // Health endpoint (unauthenticated).
-    if let Some(o) = &origin {
-        if let Ok(health) = o.join("/health") {
-            match client.get(health.clone()).send().await {
-                Ok(resp) => println!("GET /health           : HTTP {}", resp.status().as_u16()),
-                Err(err) => println!("GET /health           : ✗ {}", short_err(&err)),
-            }
+    if let Some(o) = &origin
+        && let Ok(health) = o.join("/health")
+    {
+        match client.get(health.clone()).send().await {
+            Ok(resp) => println!("GET /health           : HTTP {}", resp.status().as_u16()),
+            Err(err) => println!("GET /health           : ✗ {}", short_err(&err)),
         }
     }
 

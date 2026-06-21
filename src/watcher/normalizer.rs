@@ -200,21 +200,20 @@ impl Normalizer {
     fn on_created(&mut self, path: PathBuf, inode: Option<u64>, now: Instant) {
         // Rename inference: if a recent Delete matches our inode, treat
         // this Created as the second half of a rename.
-        if let Some(inode) = inode {
-            if let Some(idx) = self
+        if let Some(inode) = inode
+            && let Some(idx) = self
                 .recent_deletes
                 .iter()
                 .position(|d| d.inode == inode && d.path != path)
-            {
-                let prior = self.recent_deletes.remove(idx);
-                // Tear down the pending Delete entry (if still around).
-                self.pending.remove(&prior.path);
-                self.immediate.push(NormalizedDecision::Renamed {
-                    old_path: prior.path,
-                    new_path: path,
-                });
-                return;
-            }
+        {
+            let prior = self.recent_deletes.remove(idx);
+            // Tear down the pending Delete entry (if still around).
+            self.pending.remove(&prior.path);
+            self.immediate.push(NormalizedDecision::Renamed {
+                old_path: prior.path,
+                new_path: path,
+            });
+            return;
         }
 
         match self.pending.get(&path).map(|p| p.kind) {
@@ -247,14 +246,11 @@ impl Normalizer {
     }
 
     fn on_deleted(&mut self, path: PathBuf, inode: Option<u64>, now: Instant) {
-        match self.pending.get(&path).map(|p| p.kind) {
-            Some(PendingKind::Created) => {
-                // Created + Deleted cancels — the file never existed
-                // from the outside world's perspective.
-                self.pending.remove(&path);
-                return;
-            }
-            _ => {}
+        if let Some(PendingKind::Created) = self.pending.get(&path).map(|p| p.kind) {
+            // Created + Deleted cancels — the file never existed from the
+            // outside world's perspective.
+            self.pending.remove(&path);
+            return;
         }
 
         if let Some(inode) = inode {

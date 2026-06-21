@@ -149,8 +149,7 @@ where
 fn escape_cell(s: &str) -> String {
     s.replace('\\', "\\\\")
         .replace('|', "\\|")
-        .replace('\n', " ")
-        .replace('\r', " ")
+        .replace(['\n', '\r'], " ")
 }
 
 /// YAML frontmatter block from a JSON-shaped metadata map.

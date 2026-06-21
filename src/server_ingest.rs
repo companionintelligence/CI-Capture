@@ -159,6 +159,10 @@ pub struct FileEventContent {
     pub section_count: usize,
     pub extractor: Option<String>,
     pub content_truncated: bool,
+    /// Set when extraction of a *supported* format failed, so the server can
+    /// tell "no content because unsupported" (this is `None`) from "no
+    /// content because extraction broke" (this carries the error).
+    pub extraction_error: Option<String>,
 }
 
 /// Ship a single file-activity event to CI-Server.

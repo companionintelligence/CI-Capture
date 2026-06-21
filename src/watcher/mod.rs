@@ -21,18 +21,26 @@ pub mod notify_glue;
 pub mod settle;
 pub mod types;
 
-use std::path::PathBuf;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
 use chrono::Utc;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
+use parking_lot::Mutex;
 use tokio::sync::Semaphore;
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::mpsc::{Receiver, Sender, channel, unbounded_channel};
 use tokio::time::{Duration, interval};
 use uuid::Uuid;
+
+/// Per-path cache of the last content hash we shipped, used to drop
+/// identical re-saves (a `touch`, a no-op editor save, a metadata change)
+/// before they re-hash, re-extract, and re-ship the same bytes. In-memory
+/// and per-watcher-session — cleared on restart, which is fine.
+type HashCache = Arc<Mutex<HashMap<PathBuf, String>>>;
 
 use self::fingerprint::fingerprint;
 use self::ignore::IgnoreRules;
@@ -134,6 +142,7 @@ pub fn start_watcher(cfg: WatcherConfig) -> Result<WatcherHandle> {
     log::info!("file watcher active on {watched} folder(s)");
 
     let permits = Arc::new(Semaphore::new(MAX_CONCURRENT_FINGERPRINTS));
+    let cache: HashCache = Arc::new(Mutex::new(HashMap::new()));
 
     tokio::spawn(async move {
         let mut normalizer = Normalizer::default();
@@ -145,13 +154,18 @@ pub fn start_watcher(cfg: WatcherConfig) -> Result<WatcherHandle> {
                     match maybe {
                         Some(event) => {
                             for obs in notify_glue::to_raw_observations(&event) {
-                                if let Some(p) = obs_path(&obs) {
-                                    if ignore.is_ignored(p) {
+                                // Privacy gate: drop the whole observation if
+                                // ANY of its paths is ignored. For a rename
+                                // that means BOTH old and new — so a sensitive
+                                // source path can never leak through `old_path`.
+                                let paths = obs_paths(&obs);
+                                if paths.iter().any(|p| ignore.is_ignored(p)) {
+                                    for p in &paths {
                                         if ignore.is_sensitive(p) {
                                             log::debug!("refusing sensitive path: {}", p.display());
                                         }
-                                        continue;
                                     }
+                                    continue;
                                 }
                                 normalizer.observe(obs, Instant::now());
                             }
@@ -159,7 +173,7 @@ pub fn start_watcher(cfg: WatcherConfig) -> Result<WatcherHandle> {
                         None => {
                             // Watcher dropped — flush and exit.
                             for decision in normalizer.flush() {
-                                dispatch(decision, &ignore, &permits, &event_tx);
+                                dispatch(decision, &ignore, &permits, &event_tx, &cache);
                             }
                             break;
                         }
@@ -167,7 +181,7 @@ pub fn start_watcher(cfg: WatcherConfig) -> Result<WatcherHandle> {
                 }
                 _ = tick.tick() => {
                     for decision in normalizer.drain_due(Instant::now()) {
-                        dispatch(decision, &ignore, &permits, &event_tx);
+                        dispatch(decision, &ignore, &permits, &event_tx, &cache);
                     }
                 }
             }
@@ -190,10 +204,12 @@ fn dispatch(
     ignore: &IgnoreRules,
     permits: &Arc<Semaphore>,
     event_tx: &Sender<NormalizedEvent>,
+    cache: &HashCache,
 ) {
     let ignore = ignore.clone();
     let permits = permits.clone();
     let event_tx = event_tx.clone();
+    let cache = cache.clone();
 
     tokio::spawn(async move {
         // Bound concurrency over the whole settle+hash, not just the hash.
@@ -202,12 +218,25 @@ fn dispatch(
             Err(_) => return, // semaphore closed — shutting down
         };
 
+        // Defensive privacy guard: never emit an event touching an
+        // ignored/sensitive path. Observation-time gating already covers
+        // this; this is belt-and-suspenders for the privacy boundary.
+        if decision_paths(&decision).iter().any(|p| ignore.is_ignored(p)) {
+            return;
+        }
+
         let observed_at = Utc::now();
         let event = match decision {
             NormalizedDecision::Created { path } => {
                 match settle_and_fingerprint(&path, &ignore).await {
-                    SettleOutcome::Deleted => delete_event(observed_at, path),
+                    SettleOutcome::Deleted => {
+                        cache.lock().remove(&path);
+                        delete_event(observed_at, path)
+                    }
                     SettleOutcome::Fingerprinted(fp) => {
+                        if is_duplicate(&cache, &path, &fp.content_hash) {
+                            return; // identical content already shipped
+                        }
                         change_event(EventType::FileCreated, observed_at, path, Some(fp))
                     }
                     SettleOutcome::Unhashable => {
@@ -217,8 +246,14 @@ fn dispatch(
             }
             NormalizedDecision::Modified { path } => {
                 match settle_and_fingerprint(&path, &ignore).await {
-                    SettleOutcome::Deleted => delete_event(observed_at, path),
+                    SettleOutcome::Deleted => {
+                        cache.lock().remove(&path);
+                        delete_event(observed_at, path)
+                    }
                     SettleOutcome::Fingerprinted(fp) => {
+                        if is_duplicate(&cache, &path, &fp.content_hash) {
+                            return; // no-op save / touch — content unchanged
+                        }
                         change_event(EventType::FileModified, observed_at, path, Some(fp))
                     }
                     SettleOutcome::Unhashable => {
@@ -226,13 +261,20 @@ fn dispatch(
                     }
                 }
             }
-            NormalizedDecision::Deleted { path } => delete_event(observed_at, path),
+            NormalizedDecision::Deleted { path } => {
+                cache.lock().remove(&path);
+                delete_event(observed_at, path)
+            }
             NormalizedDecision::Renamed { old_path, new_path } => {
+                cache.lock().remove(&old_path);
                 // A rename is structural; the target may already be gone,
                 // which doesn't undo the rename. Attach a fingerprint only
                 // when the target settled cleanly.
                 let file = match settle_and_fingerprint(&new_path, &ignore).await {
-                    SettleOutcome::Fingerprinted(fp) => Some(fp),
+                    SettleOutcome::Fingerprinted(fp) => {
+                        cache.lock().insert(new_path.clone(), fp.content_hash.clone());
+                        Some(fp)
+                    }
                     _ => None,
                 };
                 NormalizedEvent {
@@ -256,6 +298,19 @@ fn dispatch(
             Err(TrySendError::Closed(_)) => {} // consumer gone — shutting down
         }
     });
+}
+
+/// True when `hash` matches the last hash we shipped for `path`. When it
+/// differs (or is new), the cache is updated so the next identical save is
+/// suppressed. Deletes/renames evict the entry separately.
+fn is_duplicate(cache: &HashCache, path: &Path, hash: &str) -> bool {
+    let mut guard = cache.lock();
+    if guard.get(path).map(String::as_str) == Some(hash) {
+        true
+    } else {
+        guard.insert(path.to_path_buf(), hash.to_string());
+        false
+    }
 }
 
 fn change_event(
@@ -289,12 +344,28 @@ fn delete_event(observed_at: chrono::DateTime<Utc>, path: PathBuf) -> Normalized
     }
 }
 
-fn obs_path(obs: &normalizer::RawObservation) -> Option<&std::path::Path> {
+/// Every path an observation touches. A rename touches two — both must be
+/// gated so a sensitive *source* can't leak through `old_path`.
+fn obs_paths(obs: &normalizer::RawObservation) -> Vec<&Path> {
     match obs {
         normalizer::RawObservation::Created { path, .. }
         | normalizer::RawObservation::Modified { path, .. }
-        | normalizer::RawObservation::Deleted { path, .. } => Some(path),
-        normalizer::RawObservation::Renamed { new_path, .. } => Some(new_path),
+        | normalizer::RawObservation::Deleted { path, .. } => vec![path.as_path()],
+        normalizer::RawObservation::Renamed { old_path, new_path, .. } => {
+            vec![old_path.as_path(), new_path.as_path()]
+        }
+    }
+}
+
+/// Every path a normalized decision touches (used by the defensive guard).
+fn decision_paths(decision: &NormalizedDecision) -> Vec<&Path> {
+    match decision {
+        NormalizedDecision::Created { path }
+        | NormalizedDecision::Modified { path }
+        | NormalizedDecision::Deleted { path } => vec![path.as_path()],
+        NormalizedDecision::Renamed { old_path, new_path } => {
+            vec![old_path.as_path(), new_path.as_path()]
+        }
     }
 }
 
@@ -357,6 +428,33 @@ mod tests {
             ignore_globs: Vec::new(),
             max_file_bytes: 100 * 1024 * 1024,
         }
+    }
+
+    #[test]
+    fn obs_paths_covers_both_halves_of_a_rename() {
+        let obs = normalizer::RawObservation::Renamed {
+            old_path: PathBuf::from("/a/old"),
+            new_path: PathBuf::from("/a/new"),
+            inode: Some(1),
+        };
+        let paths = obs_paths(&obs);
+        // Both halves must be gated, so a sensitive source path is caught.
+        assert_eq!(paths.len(), 2);
+        assert!(paths.contains(&Path::new("/a/old")));
+        assert!(paths.contains(&Path::new("/a/new")));
+    }
+
+    #[test]
+    fn is_duplicate_suppresses_identical_content() {
+        let cache: HashCache = Arc::new(Mutex::new(HashMap::new()));
+        let p = Path::new("/x/notes.md");
+        // First sight of a hash is never a duplicate; it gets cached.
+        assert!(!is_duplicate(&cache, p, "sha256:aaa"));
+        // Same hash again → duplicate (a no-op save / touch).
+        assert!(is_duplicate(&cache, p, "sha256:aaa"));
+        // Real content change → not a duplicate, re-cached.
+        assert!(!is_duplicate(&cache, p, "sha256:bbb"));
+        assert!(is_duplicate(&cache, p, "sha256:bbb"));
     }
 
     /// End-to-end smoke test of the whole glue: a real `notify` watcher on a
