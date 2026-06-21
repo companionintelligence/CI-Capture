@@ -5,6 +5,7 @@ mod conversion;
 mod db;
 mod extractors;
 mod file_tracker;
+#[cfg(feature = "legacy-minio")]
 mod minio;
 mod queue;
 mod server_auth;

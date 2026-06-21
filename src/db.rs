@@ -1,3 +1,8 @@
+// The screenshot-recording helpers here are only reached by the legacy
+// MinIO path (`--features legacy-minio`); they're dead code in the default
+// build. The vizier snapshot path is always used.
+#![allow(dead_code)]
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
