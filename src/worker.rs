@@ -31,6 +31,7 @@ const ANALYSIS_QUEUE_CAPACITY: usize = 2;
 /// ingest body limit so an oversized snapshot is skipped, not bounced as 413.
 const MAX_VIZIER_PAYLOAD_BYTES: usize = 9 * 1024 * 1024;
 
+#[derive(Clone)]
 pub struct WorkerHandle {
     tx: UnboundedSender<WorkerCommand>,
     running: Arc<AtomicBool>,

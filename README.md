@@ -224,15 +224,22 @@ Configuration lives in the app config directory as `config.json`. Key fields:
 - `file_tracker.watched_paths` — folders to watch recursively (**empty = file tracking off**); plus `ignore_globs`, `max_file_bytes`, `send_content`, `max_content_bytes`
 
 After sign-in the applet stores the tokens + identity, best-effort registers the
-device (`POST /devices`, bearer-authed), and streams:
+device (`POST {portal}/api/devices`, bearer-authed), and streams:
 
 - screenshots → CI-Server file upload endpoint (multipart)
 - activity + file snapshots → CI-Server event ingest endpoint
 
+A background task keeps OIDC sessions alive: it **refreshes the `id_token`**
+with the stored `refresh_token` before it expires (honouring rotation) and
+retries device registration if CI‑Server was unreachable at sign-in —
+persisting both to `config.json` and pushing them to the capture worker live.
+API-key installs are unaffected.
+
 > **Auth setup:** `server.portal_url` and `oidc.issuer` are intentionally
 > separate. Point `server.portal_url` at the CI-Server that receives captures.
-> Point `oidc.issuer` at the auth issuer you want the browser login to use, or
-> paste a CI-Server API key into settings and skip OIDC entirely.
+> Point `oidc.issuer` at the auth issuer you want the browser login to use
+> (the `ci-applet` client must be registered there with the loopback redirect
+> above), or paste a CI-Server API key into settings and skip OIDC entirely.
 
 ## Privacy
 

@@ -14,10 +14,9 @@
 //! The returned `id_token` is the JWKS-signed JWT CI-Server validates; the
 //! applet forwards it as `Authorization: Bearer …` on ingest.
 //!
-//! A few parts of the client surface (token `refresh`, the `jwks_uri` /
-//! `userinfo` / `end_session` discovery fields, the `exp` claim) are kept
-//! complete for the upcoming token-renewal work but aren't wired into the
-//! login path yet.
+//! A few discovery fields (`jwks_uri`, `userinfo_endpoint`,
+//! `end_session_endpoint`) and the `exp` claim are decoded for completeness but
+//! not yet consumed.
 #![allow(dead_code)]
 
 use std::time::Duration;
@@ -25,6 +24,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use chrono::{DateTime, Utc};
 use reqwest::{Client, Url};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -206,6 +206,19 @@ pub fn decode_id_claims(id_token: &str) -> Result<IdClaims> {
         .decode(payload)
         .context("base64url-decoding id_token payload")?;
     serde_json::from_slice(&bytes).context("parsing id_token claims")
+}
+
+/// Whether a token with the given expiry should be refreshed now: true when it
+/// expires within `skew` of `now`. Unknown expiry → false (don't churn).
+pub fn token_expiring(
+    expires_at: Option<DateTime<Utc>>,
+    now: DateTime<Utc>,
+    skew: chrono::Duration,
+) -> bool {
+    match expires_at {
+        Some(exp) => exp <= now + skew,
+        None => false,
+    }
 }
 
 fn trim_body(body: &str) -> String {
@@ -394,6 +407,22 @@ mod tests {
         let t: TokenSet = serde_json::from_str(r#"{"access_token":"a","token_type":"Bearer"}"#).unwrap();
         assert_eq!(t.access_token, "a");
         assert!(t.id_token.is_none() && t.refresh_token.is_none());
+    }
+
+    #[test]
+    fn token_expiring_window() {
+        let now = DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let skew = chrono::Duration::minutes(2);
+        // Plenty of time left → not expiring.
+        assert!(!token_expiring(Some(now + chrono::Duration::minutes(10)), now, skew));
+        // Inside the skew window → expiring.
+        assert!(token_expiring(Some(now + chrono::Duration::minutes(1)), now, skew));
+        // Already past → expiring.
+        assert!(token_expiring(Some(now - chrono::Duration::minutes(5)), now, skew));
+        // Unknown expiry → don't churn.
+        assert!(!token_expiring(None, now, skew));
     }
 
     #[tokio::test]
