@@ -46,23 +46,26 @@ pub fn to_raw_observations(event: &notify::Event) -> Vec<RawObservation> {
         }
 
         // One-sided rename (FSEvents commonly emits these). We can't pair
-        // the halves here, so we classify by whether the path still exists:
-        // present → it's the destination (Created); gone → the source
-        // (Deleted). The normalizer re-pairs them by inode when it can.
+        // the halves here, so we classify by whether the path still exists,
+        // reading existence + inode in a single `symlink_metadata` syscall
+        // (one race window instead of two): present → destination (Created);
+        // gone → source (Deleted). The normalizer re-pairs them by inode
+        // when both halves arrive within its rename window.
+        //
+        // Known limitation: a one-sided rename whose counterpart never
+        // arrives (or arrives without a matching inode) stays split into a
+        // separate create + delete rather than a single rename.
         EventKind::Modify(ModifyKind::Name(_)) => paths
             .iter()
-            .map(|p| {
-                if p.exists() {
-                    RawObservation::Created {
-                        path: p.clone(),
-                        inode: inode_of(p),
-                    }
-                } else {
-                    RawObservation::Deleted {
-                        path: p.clone(),
-                        inode: None,
-                    }
-                }
+            .map(|p| match std::fs::symlink_metadata(p) {
+                Ok(meta) => RawObservation::Created {
+                    path: p.clone(),
+                    inode: file_id(&meta),
+                },
+                Err(_) => RawObservation::Deleted {
+                    path: p.clone(),
+                    inode: None,
+                },
             })
             .collect(),
 

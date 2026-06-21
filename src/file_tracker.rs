@@ -34,6 +34,18 @@ use crate::watcher::{self, WatcherConfig, ignore};
 /// How often the lane attempts to drain the queue to CI-Server.
 const SYNC_INTERVAL: Duration = Duration::from_secs(5);
 
+/// After this many failed delivery attempts, an event is dropped to the
+/// dead-letter log instead of being retried forever. Without this, a single
+/// poison event (one the server permanently rejects) would sit at the head
+/// of the FIFO queue and block every newer event behind it.
+const MAX_ATTEMPTS: u32 = 50;
+
+/// Upper bound on wall-clock spent POSTing in one sync tick. Keeps a slow
+/// server from monopolizing the lane's single task (which also drains the
+/// watcher) for minutes at a time — leftover events stay queued and resume
+/// next tick.
+const TICK_BUDGET: Duration = Duration::from_secs(20);
+
 /// True if the lane has everything it needs to run: enabled, an identity to
 /// attribute events to, a place to send them, and at least one folder.
 pub fn is_runnable(config: &AppConfig) -> bool {
@@ -126,8 +138,16 @@ pub async fn run(config: AppConfig, queue_path: PathBuf) -> Result<()> {
                     continue;
                 }
 
+                let tick_start = Instant::now();
                 let mut failed = false;
                 for queued in pending {
+                    // Don't let one slow batch monopolize the task; the rest
+                    // stay queued (still ready) and resume next tick.
+                    if tick_start.elapsed() > TICK_BUDGET {
+                        log::debug!("sync tick budget reached; deferring rest of batch");
+                        break;
+                    }
+
                     let content = build_content(&config, &queued.event).await;
                     match server_ingest::ingest_file_event(
                         &config,
@@ -144,14 +164,23 @@ pub async fn run(config: AppConfig, queue_path: PathBuf) -> Result<()> {
                             }
                         }
                         Err(err) => {
+                            let attempts = queued.attempts + 1;
+                            if attempts >= MAX_ATTEMPTS {
+                                // Dead-letter: drop the poison event so it
+                                // can't block the queue forever. Keep going —
+                                // this is a per-event problem, not an outage.
+                                log::error!(
+                                    "dead-letter: dropping {} after {attempts} attempts; last error: {err}",
+                                    describe(&queued.event)
+                                );
+                                let _ = queue.ack(&queued.event_id);
+                                continue;
+                            }
                             failed = true;
                             let delay = batch.backoff().max(Duration::from_secs(1));
-                            log::warn!(
-                                "file event sync failed (attempt {}): {err}",
-                                queued.attempts + 1
-                            );
+                            log::warn!("file event sync failed (attempt {attempts}): {err}");
                             let _ = queue.requeue(&queued.event_id, delay, &err.to_string());
-                            break; // stop the batch; the rest stay queued
+                            break; // outage path: stop, back off, the rest stay queued
                         }
                     }
                 }
