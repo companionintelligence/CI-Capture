@@ -31,8 +31,8 @@ flowchart LR
     end
 
     SHOT  -->|"POST /api/files/upload"| CI
-    VIZ   -->|"ingestUserSnapshot"| CI
-    FILE  -->|"ingestUserSnapshot<br/>snapshot_kind = file_event"| CI
+    VIZ   -->|"POST /api/v1/events"| CI
+    FILE  -->|"POST /api/v1/events"| CI
 
     CI[("CI-Server<br/>Companion Memory")]
 
@@ -40,11 +40,11 @@ flowchart LR
     class SHOT,VIZ,FILE lane;
 ```
 
-All three lanes authenticate with the same bearer token and target the same
-CI-Server origin. Sign-in is **OpenID Connect (Authorization Code + PKCE)**
-against the portal issuer — discovery-driven, with a loopback redirect (see
-[`src/oidc.rs`](../src/oidc.rs)). The portal-issued `id_token` is the bearer
-CI-Server validates; the applet best-effort registers the device after sign-in.
+All three lanes target the same CI-Server origin. Sign-in is **OpenID Connect
+(Authorization Code + PKCE)** against the configured issuer — discovery-driven,
+with a loopback redirect (see [`src/oidc.rs`](../src/oidc.rs)). The applet can
+also use a CI-Server API key pasted in settings; JWT/OIDC credentials are sent
+as bearer auth and CI-Server API keys as `x-api-key`.
 
 ## 2. The file-tracking lane
 
@@ -69,7 +69,7 @@ flowchart TB
     EV --> Q[("SQLite queue<br/>durable · at-least-once")]:::store
     Q --> EXT["extract → Markdown<br/>(text family; rich opt-in)"]
     EXT --> SYNC["sync engine<br/>adaptive batch + exponential backoff"]
-    SYNC -->|"ingestUserSnapshot(file_event)"| CI[("CI-Server")]
+    SYNC -->|"POST /api/v1/events<br/>kind = file_event"| CI[("CI-Server")]
 
     classDef os fill:#8957e522,stroke:#8957e5;
     classDef store fill:#3fb95022,stroke:#3fb950;
@@ -119,7 +119,7 @@ sequenceDiagram
     loop every 5 s, when not backing off
         Sy->>Q: take_batch(N)
         Sy->>Sy: convert notes.md → Markdown
-        Sy->>CI: ingestUserSnapshot(file_event + markdown)
+        Sy->>CI: POST /api/v1/events (file_event + markdown)
         CI-->>Sy: success
         Sy->>Q: ack (remove)
     end
@@ -136,7 +136,7 @@ The file-tracking lane starts, stops, and restarts in lock-step with the worker:
 ```mermaid
 stateDiagram-v2
     [*] --> Idle
-    Idle --> Running: runnable<br/>(enabled + identity + token + ≥1 folder)
+    Idle --> Running: runnable<br/>(enabled + server credential + ≥1 folder)
     Running --> Idle: Pause / config removes prerequisites
     Running --> Running: UpdateConfig<br/>(stop → await → restart)
     Idle --> Idle: UpdateConfig (still not runnable)
@@ -194,24 +194,21 @@ hardened):
 
 ## 7. Server contract
 
-The originally-planned `/history/file-events` REST endpoints do not exist on any
-CI-Server branch. The lane therefore rides the **existing** `ingestUserSnapshot`
-GraphQL mutation:
+The lane writes to CI-Server's unified capture-ingest endpoint:
 
 ```mermaid
 flowchart LR
-    subgraph payload["ingestUserSnapshot input"]
-        K["snapshot_kind = file_event"]
-        P["payload (JSON):<br/>{ event, content }"]
-        M["device_id · session_id<br/>observed_at · fs_event_count"]
+    subgraph body["POST /api/v1/events"]
+        E["events[]"]
+        K["kind = file_event / vizier_snapshot / vizier_patch"]
+        S["source_system = ci-applet<br/>source_id = stable event id"]
+        P["payload (JSON):<br/>{ event, content, device_id, session_id }"]
     end
-    payload -->|"POST /api/graphql"| CI[("CI-Server")]
+    body --> CI[("CI-Server")]
 ```
 
-`IngestUserSnapshotInput` accepts an arbitrary `payload: JSON!`, so the file
-event + converted Markdown ride it with **zero server changes**. The mutation
-currently lives on the `CI-Server-wt-applet-pairing` branch; deploy that for
-end-to-end ingest. Verify connectivity anytime:
+`/api/v1/events` accepts arbitrary JSON payloads and uses the authenticated
+server context to attribute events. Verify connectivity anytime:
 
 ```bash
 cargo run -- --check-server                       # configured portal

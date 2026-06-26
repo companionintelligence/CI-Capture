@@ -1,73 +1,43 @@
 use anyhow::{Context, Result, anyhow};
-use reqwest::{Client, Url};
+use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
 use crate::config::AppConfig;
 use crate::db::VizierEventRecord;
-use crate::server_common::{graphql_url, server_origin};
-
-const INGEST_USER_SNAPSHOT_MUTATION: &str = r#"
-mutation IngestUserSnapshot($input: IngestUserSnapshotInput!) {
-  ingestUserSnapshot(input: $input) {
-    success
-    errorMessage
-  }
-}
-"#;
+use crate::server_common::{AuthCredential, server_origin};
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize)]
-struct GraphqlRequest<TVariables> {
-    query: &'static str,
-    variables: TVariables,
-}
-
-#[derive(Debug, Deserialize)]
-struct GraphqlResponse<TData> {
-    data: Option<TData>,
-    errors: Option<Vec<GraphqlError>>,
-}
-
-#[derive(Debug, Deserialize)]
-struct GraphqlError {
-    message: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct VizierVariables {
-    input: VizierEventInput,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct VizierEventInput {
-    device_id: String,
-    session_id: String,
-    snapshot_kind: String,
-    observed_at: String,
-    monotonic_ms: i64,
+struct CaptureEvent {
+    source_system: &'static str,
+    source_id: String,
+    kind: String,
+    occurred_at: String,
+    observed_at: Option<String>,
+    title: Option<String>,
+    description: Option<String>,
     payload: Value,
-    focus_app: Option<String>,
-    focus_title: Option<String>,
-    cwd: Option<String>,
-    fs_event_count: i32,
+}
+
+#[derive(Debug, Serialize)]
+struct IngestEventsRequest {
+    events: Vec<CaptureEvent>,
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct VizierEnvelope {
-    ingest_user_snapshot: VizierIngestPayload,
+struct IngestEventsResponse {
+    ingested: u32,
+    duplicate: u32,
+    rejected: Vec<RejectedEvent>,
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct VizierIngestPayload {
-    success: bool,
-    error_message: Option<String>,
+struct RejectedEvent {
+    index: usize,
+    reason: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -95,12 +65,7 @@ pub async fn ingest_capture(
     filename: &str,
     png_bytes: &[u8],
 ) -> Result<String> {
-    let auth_token = config
-        .server
-        .applet_auth_token
-        .as_deref()
-        .filter(|t| !t.trim().is_empty())
-        .context("applet auth token is not configured")?;
+    let credential = AuthCredential::from_config(config)?;
 
     let upload_url = server_origin(&config.server.portal_url)?
         .join("/api/files/upload")
@@ -121,9 +86,8 @@ pub async fn ingest_capture(
         .text("inventoryCapture", "true")
         .text("model", config.analysis.model.clone());
 
-    let response = client
-        .post(upload_url)
-        .bearer_auth(auth_token)
+    let response = credential
+        .apply(client.post(upload_url))
         .multipart(form)
         .send()
         .await
@@ -167,12 +131,8 @@ pub struct FileEventContent {
 
 /// Ship a single file-activity event to CI-Server.
 ///
-/// CI-Server has no dedicated file-event endpoint today, so we ride the
-/// proven `ingestUserSnapshot` channel the vizier lane already uses:
-/// `snapshot_kind = "file_event"` with the normalized event (and any
-/// converted Markdown) carried in `payload`. This keeps the applet working
-/// against the same server it already talks to — when a first-class
-/// `/history/file-events` endpoint lands, only this function changes.
+/// File events use CI-Server's unified capture ingest endpoint (`/api/v1/events`)
+/// with converted Markdown carried in the event payload.
 pub async fn ingest_file_event(
     config: &AppConfig,
     device_id: Uuid,
@@ -180,8 +140,6 @@ pub async fn ingest_file_event(
     event: &crate::watcher::types::NormalizedEvent,
     content: &FileEventContent,
 ) -> Result<()> {
-    let client = build_gql_client(config)?;
-
     let path = event
         .new_path
         .as_ref()
@@ -194,43 +152,27 @@ pub async fn ingest_file_event(
         .map(|p| p.display().to_string());
 
     let payload = serde_json::json!({
+        "device_id": device_id,
+        "session_id": session_id,
         "event": serde_json::to_value(event).unwrap_or(Value::Null),
         "content": serde_json::to_value(content).unwrap_or(Value::Null),
+        "cwd": cwd,
     });
 
-    let response = graphql::<_, VizierEnvelope>(
-        &client,
-        GraphqlRequest {
-            query: INGEST_USER_SNAPSHOT_MUTATION,
-            variables: VizierVariables {
-                input: VizierEventInput {
-                    device_id: device_id.to_string(),
-                    session_id: session_id.to_string(),
-                    snapshot_kind: "file_event".to_string(),
-                    observed_at: event.observed_at.to_rfc3339(),
-                    monotonic_ms: 0,
-                    payload,
-                    focus_app: Some("ci-applet/file-tracker".to_string()),
-                    focus_title: path,
-                    cwd,
-                    fs_event_count: 1,
-                },
-            },
+    post_capture_event(
+        config,
+        CaptureEvent {
+            source_system: "ci-applet",
+            source_id: event.event_id.clone(),
+            kind: "file_event".to_string(),
+            occurred_at: event.occurred_at.to_rfc3339(),
+            observed_at: Some(event.observed_at.to_rfc3339()),
+            title: path,
+            description: Some(format!("{:?}", event.event_type)),
+            payload,
         },
     )
-    .await?;
-
-    let payload = response.ingest_user_snapshot;
-    if !payload.success {
-        return Err(anyhow!(
-            "{}",
-            payload
-                .error_message
-                .unwrap_or_else(|| "Applet file-event ingest failed.".to_string())
-        ));
-    }
-
-    Ok(())
+    .await
 }
 
 pub async fn ingest_vizier_event(
@@ -238,111 +180,85 @@ pub async fn ingest_vizier_event(
     device_id: Uuid,
     event: &VizierEventRecord,
 ) -> Result<()> {
-    let client = build_gql_client(config)?;
-    let response = graphql::<_, VizierEnvelope>(
-        &client,
-        GraphqlRequest {
-            query: INGEST_USER_SNAPSHOT_MUTATION,
-            variables: VizierVariables {
-                input: VizierEventInput {
-                    device_id: device_id.to_string(),
-                    session_id: event.session_id.to_string(),
-                    snapshot_kind: event.event_kind.clone(),
-                    observed_at: event.observed_at.to_rfc3339(),
-                    monotonic_ms: event.monotonic_ms,
-                    payload: event.payload.clone(),
-                    focus_app: event.focus_app.clone(),
-                    focus_title: event.focus_title.clone(),
-                    cwd: event.cwd.clone(),
-                    fs_event_count: event.fs_event_count,
-                },
-            },
+    let payload = serde_json::json!({
+        "device_id": device_id,
+        "session_id": event.session_id,
+        "snapshot_kind": event.event_kind,
+        "monotonic_ms": event.monotonic_ms,
+        "payload": event.payload,
+        "focus_app": event.focus_app,
+        "focus_title": event.focus_title,
+        "cwd": event.cwd,
+        "fs_event_count": event.fs_event_count,
+    });
+
+    post_capture_event(
+        config,
+        CaptureEvent {
+            source_system: "ci-applet",
+            source_id: format!(
+                "vizier:{}:{}:{}",
+                event.session_id, event.monotonic_ms, event.event_kind
+            ),
+            kind: format!("vizier_{}", event.event_kind),
+            occurred_at: event.observed_at.to_rfc3339(),
+            observed_at: Some(event.observed_at.to_rfc3339()),
+            title: event
+                .focus_title
+                .clone()
+                .or_else(|| event.focus_app.clone()),
+            description: event.focus_app.clone(),
+            payload,
         },
     )
-    .await?;
-
-    let payload = response.ingest_user_snapshot;
-    if !payload.success {
-        return Err(anyhow!(
-            "{}",
-            payload
-                .error_message
-                .unwrap_or_else(|| "Applet vizier ingest failed.".to_string())
-        ));
-    }
-
-    Ok(())
+    .await
 }
 
 // ── Internal ──────────────────────────────────────────────────────────────────
 
-struct GraphqlClient {
-    client: Client,
-    url: Url,
-    auth_token: String,
-}
-
-fn build_gql_client(config: &AppConfig) -> Result<GraphqlClient> {
-    let auth_token = config
-        .server
-        .applet_auth_token
-        .clone()
-        .filter(|token| !token.trim().is_empty())
-        .context("server applet auth token is not configured")?;
+async fn post_capture_event(config: &AppConfig, event: CaptureEvent) -> Result<()> {
+    let credential = AuthCredential::from_config(config)?;
     let client = Client::builder()
         .use_rustls_tls()
         .timeout(std::time::Duration::from_secs(30))
         .build()
-        .context("building ingest GraphQL client")?;
+        .context("building event ingest client")?;
+    let url = server_origin(&config.server.portal_url)?
+        .join("/api/v1/events")
+        .context("building event ingest URL")?;
 
-    Ok(GraphqlClient {
-        client,
-        url: graphql_url(&config.server.portal_url)?,
-        auth_token,
-    })
-}
-
-async fn graphql<TVariables, TData>(
-    client: &GraphqlClient,
-    request: GraphqlRequest<TVariables>,
-) -> Result<TData>
-where
-    TVariables: Serialize,
-    TData: for<'de> Deserialize<'de>,
-{
-    let response = client
-        .client
-        .post(client.url.clone())
-        .bearer_auth(&client.auth_token)
-        .json(&request)
+    let response = credential
+        .apply(client.post(url))
+        .json(&IngestEventsRequest {
+            events: vec![event],
+        })
         .send()
         .await
-        .context("sending GraphQL ingest request")?;
+        .context("sending event ingest request")?;
 
     let status = response.status();
-    let body: GraphqlResponse<TData> = response
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_default();
+        return Err(anyhow!("event ingest failed with HTTP {status}: {body}"));
+    }
+
+    let body: IngestEventsResponse = response
         .json()
         .await
-        .context("decoding GraphQL ingest response")?;
-
-    if !status.is_success() {
-        let message = body
-            .errors
-            .as_ref()
-            .and_then(|errors| errors.first())
-            .and_then(|error| error.message.clone())
-            .unwrap_or_else(|| format!("GraphQL ingest failed with HTTP {status}."));
-        return Err(anyhow!(message));
+        .context("decoding event ingest response")?;
+    if let Some(rejected) = body.rejected.first() {
+        return Err(anyhow!(
+            "event ingest rejected event {}: {}",
+            rejected.index,
+            rejected.reason
+        ));
     }
 
-    if let Some(error) = body
-        .errors
-        .as_ref()
-        .and_then(|errors| errors.first())
-        .and_then(|error| error.message.clone())
-    {
-        return Err(anyhow!(error));
-    }
+    log::debug!(
+        "event ingest accepted: ingested={} duplicate={}",
+        body.ingested,
+        body.duplicate
+    );
 
-    body.data.context("GraphQL ingest response missing data")
+    Ok(())
 }

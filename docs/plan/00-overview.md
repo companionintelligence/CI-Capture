@@ -13,8 +13,8 @@ connection:
 | Lane | What it captures | Ships via |
 |------|------------------|-----------|
 | **Screenshots** (existing) | Diff-gated primary-display frames | `POST /api/files/upload` |
-| **vizier** (existing) | System/activity snapshots + diffs | `ingestUserSnapshot` GraphQL |
-| **File tracker** (this work) | Edits to watched folders → fingerprint + Markdown | `ingestUserSnapshot` GraphQL |
+| **vizier** (existing) | System/activity snapshots + diffs | `POST /api/v1/events` |
+| **File tracker** (this work) | Edits to watched folders → fingerprint + Markdown | `POST /api/v1/events` |
 
 The file-tracking lane is the answer to *"track the important files I edit and
 let my AI remember them."*
@@ -31,7 +31,7 @@ notify (FSEvents/inotify/RDCW)
   → SQLite queue       durable; survives crash + network outage (at-least-once)
   → extract            changed file → Markdown (text family always; rich opt-in)
   → sync               adaptive batch size + exponential backoff
-  → CI-Server          ingestUserSnapshot(snapshot_kind="file_event")
+  → CI-Server          POST /api/v1/events (kind="file_event")
 ```
 
 Module map (all under `src/`):
@@ -47,41 +47,37 @@ Module map (all under `src/`):
   extracts, and syncs.
 - `server_check.rs` — `--check-server` connectivity self-test.
 
-## 3. The key revision: ride the existing ingest channel
+## 3. The key revision: ride the unified capture ingest channel
 
-The original Phase 2/3 plans assumed CI-Server would grow a family of new REST
-endpoints (`/history/file-events/batch`, `/history/documents/upsert`,
-`/history/blobs/upload`, …). **Those endpoints do not exist** — not on
-mainline CI-Server, not on any feature branch.
+The original Phase 2/3 plans assumed CI-Server would grow a family of
+history-specific REST endpoints (`/history/file-events/batch`,
+`/history/documents/upsert`, `/history/blobs/upload`, …). CI-Server now exposes
+the mainline unified capture ingest endpoint at `POST /api/v1/events`, guarded
+by `JwtOrApiKeyAuthGuard`.
 
-What *does* exist (on the `CI-Server-wt-applet-pairing` branch) is the
-`ingestUserSnapshot` GraphQL mutation the vizier lane already uses. Its
-`IngestUserSnapshotInput` carries an arbitrary `payload: JSON!` plus
-`snapshotKind`, `deviceId`, `sessionId`, `observedAt`, `fsEventCount`,
-`focusApp`/`focusTitle`/`cwd`.
-
-So the file-tracking lane **reuses that channel** instead of inventing
+So the file-tracking lane writes capture events there instead of inventing
 endpoints the server can't serve:
 
-- `snapshot_kind = "file_event"`
+- `kind = "file_event"`
+- `source_system = "ci-applet"`
+- `source_id = NormalizedEvent.event_id`
 - `payload = { event: NormalizedEvent, content: { markdown, section_count, extractor, content_truncated } }`
 
-This keeps the applet working against the same server it already talks to.
-When a first-class `/history/file-events` API eventually lands, only
-`server_ingest::ingest_file_event` changes — the whole pipeline above is
-untouched.
+This keeps the applet working against mainline CI-Server. JWT/OIDC credentials
+are sent as bearer auth; CI-Server API keys are sent as `x-api-key`.
 
 ## 4. CI-Server connection — verified state (2026-06-21)
 
 | Check | Result |
 |-------|--------|
-| Transport + GraphQL reachable | ✅ **live** — applet reached the running CI-Server gateway at `http://localhost:8642/api/graphql` (HTTP 200, valid GraphQL) via `--check-server` |
-| `IngestUserSnapshotInput` field contract | ✅ exact match with what the applet sends (verified against `CI-Server-wt-applet-pairing` schema) |
-| `ingestUserSnapshot` / `startAppletPairing` on the **running** server | ⚠️ absent — the running gateway serves **mainline** CI-Server; these mutations exist only on `CI-Server-wt-applet-pairing` |
+| Transport + GraphQL reachable | ✅ applet probes the configured CI-Server gateway via `--check-server` |
+| File upload endpoint | ✅ applet posts screenshots/documents to `POST /api/files/upload` |
+| Unified capture ingest | ✅ applet posts activity/file events to `POST /api/v1/events` |
+| API-key auth | ✅ applet sends 64-character CI-Server API keys as `x-api-key` |
 
-**To go end-to-end:** merge/deploy the `applet-pairing` GraphQL onto the
-running CI-Server, then `cargo run -- --check-server` against that origin and
-pair via the tray.
+**To go end-to-end:** configure `server.portal_url`, either sign in via the
+configured OIDC issuer or paste a CI-Server API key, then run
+`cargo run -- --check-server` against that origin.
 
 Self-test usage:
 
@@ -109,8 +105,8 @@ cargo run -- --check-server --portal http://localhost:8642
 - **Tray status**: "Tracking N folders · queue depth M".
 - **Rich/heavy extractors**: PDF (pdfium + OCR), DOCX, PPTX, XLSX, images
   (EXIF/OCR), audio (Whisper) — see `03-conversion.md` §4. Stubs are in place.
-- **First-class server endpoint**: a real `/history/file-events` so events
-  don't have to ride `ingestUserSnapshot`.
+- **First-class server endpoint**: richer typed capture schemas on top of
+  `/api/v1/events` when the server is ready.
 - **Privacy/intelligence**: see `04-polish.md` and `05-intelligence.md`.
 
 ## 7. Design records

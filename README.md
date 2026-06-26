@@ -32,8 +32,8 @@ flowchart LR
         FILE["📄 File edits"]
     end
     SHOT -->|"/api/files/upload"| CI[("CI‑Server<br/>Companion Memory")]
-    VIZ  -->|"ingestUserSnapshot"| CI
-    FILE -->|"ingestUserSnapshot (file_event)"| CI
+    VIZ  -->|"/api/v1/events"| CI
+    FILE -->|"/api/v1/events"| CI
 ```
 
 ## Screenshots
@@ -62,7 +62,7 @@ flowchart LR
 Download the installer for your OS from the [**Releases**](https://github.com/companionintelligence/CI-Applet/releases) page — a real `.dmg` / `.exe` / `.deb` / `.AppImage` / Arch pacman package, like CI-Hub.
 
 <details open>
-<summary><b>macOS</b> — <code>CI-Applet_*_aarch64.dmg</code> (Apple Silicon) · <code>CI-Applet_*_x64.dmg</code> (Intel)</summary>
+<summary><b>macOS</b> — <code>CI-Applet_*_aarch64.dmg</code> (Apple Silicon)</summary>
 
 Open the `.dmg` and drag **CI-Applet** to **Applications**. The build is **ad‑hoc signed**, so on first launch Gatekeeper warns it's from an unidentified developer — **right‑click → Open** once. It lives in the menu bar (no Dock icon). Grant **Screen Recording** and **Accessibility** in *System Settings → Privacy & Security* when prompted.
 </details>
@@ -114,7 +114,7 @@ flowchart LR
     F --> Q[("durable<br/>SQLite queue")]
     Q --> M["Markdown<br/>conversion"]
     M --> SY["sync<br/>batch + backoff"]
-    SY -->|"ingestUserSnapshot<br/>(file_event)"| CI[("CI‑Server")]
+    SY -->|"/api/v1/events<br/>(file_event)"| CI[("CI‑Server")]
 ```
 
 - **Off until you opt in.** Nothing is watched until you add a folder to `file_tracker.watched_paths`.
@@ -122,7 +122,7 @@ flowchart LR
 - **Durable.** Events persist in a local SQLite queue (`file-tracker-queue.db`) and drain with exponential backoff — a network outage or hard kill never loses a tracked change.
 - **Markdown conversion.** Text, Markdown, JSON, CSV/TSV, and **source‑code/config** files are converted to language‑aware Markdown so the content (not just "a file changed") reaches your memory. HTML/EML/EPUB are available with `--features rich-extractors`.
 
-Events ride the existing `ingestUserSnapshot` GraphQL channel as `snapshot_kind = "file_event"` — no new server endpoints required. See [`docs/architecture.md`](docs/architecture.md) for diagrams (pipeline, sequence, lifecycle) and [`docs/plan/00-overview.md`](docs/plan/00-overview.md) for the rollout plan.
+Events ride CI-Server's unified capture ingest endpoint (`POST /api/v1/events`) with `kind = "file_event"` and converted Markdown carried in the payload. See [`docs/architecture.md`](docs/architecture.md) for diagrams (pipeline, sequence, lifecycle) and [`docs/plan/00-overview.md`](docs/plan/00-overview.md) for the rollout plan.
 
 ### Check the server connection
 
@@ -182,7 +182,7 @@ Every push and PR is built and tested on macOS by [`.github/workflows/ci.yml`](.
 
 ### Cutting a release
 
-[`.github/workflows/release.yml`](.github/workflows/release.yml) builds **native installers** with [`cargo-packager`](https://github.com/crabnebula-dev/cargo-packager) on each OS's runner — `.dmg` (macOS arm64 + Intel), `.exe` NSIS installer (Windows), and `.deb` + `.AppImage` (Linux), all `--features rich-extractors`. Tag to publish:
+[`.github/workflows/release.yml`](.github/workflows/release.yml) builds **native installers** with [`cargo-packager`](https://github.com/crabnebula-dev/cargo-packager) on each OS's runner — `.dmg` (macOS Apple Silicon), `.exe` NSIS installer (Windows), `.deb` + `.AppImage` (Ubuntu), and Arch pacman package, all `--features rich-extractors`. Tag to publish:
 
 ```bash
 # 1. bump `version` in Cargo.toml, commit
@@ -195,31 +195,35 @@ The tag triggers a GitHub Release with every installer + `SHA256SUMS`. To dry‑
 
 ## Sign in & configure
 
-Click **Login to Portal** from the tray. The applet runs the standard **OpenID
-Connect Authorization Code + PKCE** flow — the same one CI-Import-Tools and
-CI-Server use — opening your browser to the portal and capturing the redirect on
-a loopback listener. The portal-issued **`id_token`** becomes the bearer the
-applet sends on every capture.
+Click **Login via …** from the tray to run the configured **OpenID Connect
+Authorization Code + PKCE** flow. The applet opens `oidc.issuer`, captures the
+loopback redirect, and stores the issued **`id_token`** as the bearer credential
+for CI-Server uploads.
+
+You can bypass browser login by pasting a CI-Server bearer token or API key into
+**Settings → Identity → Bearer Token / API Key**. JWT/OIDC tokens are sent as
+`Authorization: Bearer …`; CI-Server API keys are sent as `x-api-key`.
 
 Configuration lives in the app config directory as `config.json`. Key fields:
 
-- `oidc.issuer` — portal OIDC issuer (default `https://hub.companionintelligence.com/api/auth`; discovery-driven)
+- `server.portal_url` — CI‑Server origin that receives captures (file upload + `/api/v1/events`)
+- `server.applet_auth_token` — JWT bearer token or 64-character CI-Server API key used for CI-Server calls (set by login or pasted in settings)
+- `oidc.issuer` — OIDC issuer opened by the tray login (default `https://memory.ci.localhost/api/auth`; discovery-driven)
 - `oidc.client_id` — registered client (default `ci-applet`)
 - `oidc.redirect_uri` — loopback callback (default `http://127.0.0.1:49473/callback`)
-- `server.portal_url` — CI‑Server origin that receives captures (files upload + `ingestUserSnapshot`)
 - `screenshot_interval_secs` (default 300, floored to 30) and `diff_threshold_percent` (default 10)
 - `file_tracker.watched_paths` — folders to watch recursively (**empty = file tracking off**); plus `ignore_globs`, `max_file_bytes`, `send_content`, `max_content_bytes`
 
 After sign-in the applet stores the tokens + identity, best-effort registers the
 device (`POST /devices`, bearer-authed), and streams:
 
-- screenshots → `POST {portal}/api/files/upload` (multipart, bearer `id_token`)
-- activity + file snapshots → `ingestUserSnapshot` GraphQL mutation (bearer `id_token`)
+- screenshots → `POST {portal}/api/files/upload` (multipart)
+- activity + file snapshots → `POST {portal}/api/v1/events`
 
-> **Portal setup:** the `ci-applet` client must be registered with the portal's
-> OIDC provider, allowing the loopback redirect above. Point `oidc.issuer` /
-> `oidc.client_id` at any deployment; run `--check-server` to see the resolved
-> issuer, client, and sign-in state.
+> **Auth setup:** `server.portal_url` and `oidc.issuer` are intentionally
+> separate. Point `server.portal_url` at the CI-Server that receives captures.
+> Point `oidc.issuer` at the auth issuer you want the browser login to use, or
+> paste a CI-Server API key into settings and skip OIDC entirely.
 
 ## Privacy
 

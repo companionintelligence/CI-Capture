@@ -6,7 +6,7 @@
 //! watcher (notify → normalize → settle → fingerprint)
 //!     → durable SQLite queue
 //!         → extract changed file to Markdown (text family; rich formats opt-in)
-//!             → POST to CI-Server via ingestUserSnapshot(snapshot_kind="file_event")
+//!             → POST to CI-Server via /api/v1/events
 //! ```
 //!
 //! Design: a single Tokio task owns the [`Queue`] (a `rusqlite::Connection`
@@ -51,21 +51,13 @@ const TICK_BUDGET: Duration = Duration::from_secs(20);
 pub fn is_runnable(config: &AppConfig) -> bool {
     config.file_tracker.enabled
         && !config.file_tracker.watched_paths.is_empty()
-        && config.identity.user_id.is_some()
-        && config.identity.device_id.is_some()
         && server_ingest::is_configured(config)
 }
 
 /// Run the file-tracking lane until the watcher stops (or the task is
 /// aborted on shutdown/reconfigure). Returns `Ok(())` when it exits cleanly.
 pub async fn run(config: AppConfig, queue_path: PathBuf) -> Result<()> {
-    let device_id = match config.identity.device_id {
-        Some(d) => d,
-        None => {
-            log::warn!("file tracker: identity not configured, lane idle");
-            return Ok(());
-        }
-    };
+    let device_id = config.identity.device_id.unwrap_or_else(Uuid::nil);
     if config.file_tracker.watched_paths.is_empty() {
         log::info!("file tracker: no watched folders, lane idle");
         return Ok(());
@@ -73,8 +65,10 @@ pub async fn run(config: AppConfig, queue_path: PathBuf) -> Result<()> {
 
     // Stack the user's globs on top of the built-in defaults; the sensitive
     // list is always added inside the watcher.
-    let mut ignore_globs: Vec<String> =
-        ignore::DEFAULT_IGNORES.iter().map(|s| s.to_string()).collect();
+    let mut ignore_globs: Vec<String> = ignore::DEFAULT_IGNORES
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
     ignore_globs.extend(config.file_tracker.ignore_globs.iter().cloned());
 
     let watcher_cfg = WatcherConfig {

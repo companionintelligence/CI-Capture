@@ -3,7 +3,7 @@
 //!
 //! Run with `cargo run -- --check-server`. It reports, in order:
 //! 1. The resolved endpoints (origin, GraphQL, file upload).
-//! 2. Local config state (identity + auth token presence).
+//! 2. Local config state (identity + auth credential presence).
 //! 3. A live reachability probe: a trivial `{ __typename }` GraphQL query
 //!    plus a `GET /health`, with the bearer token attached when present.
 //!
@@ -16,8 +16,7 @@ use anyhow::{Context, Result};
 use reqwest::Client;
 
 use crate::config::{AppConfig, ConfigManager};
-use crate::server_common::{graphql_url, server_origin};
-use crate::server_ingest;
+use crate::server_common::{AuthCredential, graphql_url, server_origin};
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -74,17 +73,20 @@ async fn report(config: &AppConfig) -> Result<()> {
         "device_id  : {}",
         opt(config.identity.device_id.map(|u| u.to_string()))
     );
-    let has_token = server_ingest::is_configured(config);
+    let credential = AuthCredential::from_config(config).ok();
     println!(
-        "auth token : {}",
-        if has_token { "present" } else { "✗ not configured (run “Login to Portal”)" }
+        "auth cred  : {}",
+        credential
+            .as_ref()
+            .map(|auth| auth.label())
+            .unwrap_or("✗ not configured (login or paste API key in settings)")
     );
     println!(
         "file lane  : {}",
         if crate::file_tracker::is_runnable(config) {
             "runnable"
         } else {
-            "idle (needs identity, token, and ≥1 watched folder)"
+            "idle (needs server credential and ≥1 watched folder)"
         }
     );
 
@@ -107,7 +109,7 @@ async fn report(config: &AppConfig) -> Result<()> {
                 .unwrap_or_else(|| "n/a".to_string());
             println!("signed in  : {who} (token expires {expiry})");
         }
-        None => println!("signed in  : ✗ not signed in (run “Login to Portal”)"),
+        None => println!("signed in  : ✗ not signed in (browser login not completed)"),
     }
 
     println!("\nLive probe");
@@ -134,13 +136,8 @@ async fn report(config: &AppConfig) -> Result<()> {
             let mut req = client
                 .post(gql)
                 .json(&serde_json::json!({ "query": "query{__typename}" }));
-            if let Some(token) = config
-                .server
-                .applet_auth_token
-                .as_deref()
-                .filter(|t| !t.trim().is_empty())
-            {
-                req = req.bearer_auth(token);
+            if let Some(auth) = &credential {
+                req = auth.apply(req);
             }
             match req.send().await {
                 Ok(resp) => {
@@ -150,7 +147,11 @@ async fn report(config: &AppConfig) -> Result<()> {
                     println!(
                         "POST /api/graphql     : HTTP {} {}",
                         status.as_u16(),
-                        if reachable { "✓ reachable" } else { "(unexpected body)" }
+                        if reachable {
+                            "✓ reachable"
+                        } else {
+                            "(unexpected body)"
+                        }
                     );
                 }
                 Err(err) => println!("POST /api/graphql     : ✗ {}", short_err(&err)),
@@ -159,8 +160,8 @@ async fn report(config: &AppConfig) -> Result<()> {
         Err(err) => println!("POST /api/graphql     : ✗ {err}"),
     }
 
-    println!("\nNote: sign in via the portal OIDC issuer above, then captures");
-    println!("stream to CI-Server (files/upload + ingestUserSnapshot) as the id_token bearer.");
+    println!("\nNote: browser login uses the OIDC issuer above. A pasted CI-Server");
+    println!("API key is sent as x-api-key; JWT/OIDC tokens are sent as bearer auth.");
     Ok(())
 }
 

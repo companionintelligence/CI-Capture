@@ -22,7 +22,7 @@ Runs CI-Applet background capture loops. It manages screenshot capture/analysis 
 ### `WorkerState::capture_once`
 - **Does**: Preserves the existing screenshot path and analysis queue behavior while snapshotting the current config into each queued capture so later config changes apply without a restart.
 - **Interacts with**: `capture.rs` and `run_analysis_loop`.
-- **Rationale**: Skips capture ticks while the macOS screensaver is active so lock-screen frames are not uploaded/analyzed, and drops captures when analysis is backlogged to keep memory bounded.
+- **Rationale**: Skips capture ticks while the macOS screensaver is active so lock-screen frames are not uploaded/analyzed, permits bearer-auth CI-Server uploads without local identity IDs, and drops captures when analysis is backlogged to keep memory bounded.
 
 ### `run_analysis_loop`
 - **Does**: Analyzes queued screenshots, then routes them to CI-Server GraphQL when the applet has a bearer token or to the legacy MinIO/Postgres path otherwise.

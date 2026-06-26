@@ -1,29 +1,30 @@
 # settings_ui.rs
 
 ## Purpose
-Provides the standalone egui settings window for CI-Applet configuration, including portal URL, manual identity overrides, and infrastructure settings.
+Provides the standalone egui settings window for CI-Applet configuration, including CI-Server URL, OIDC login settings, bearer/API-key override, manual identity overrides, and infrastructure settings.
 
 ## Components
 
 ### `SettingsApp::save`
-- **Does**: Validates and persists the edited config, treating `user_id` as an optional manual override now that portal pairing is the default path.
+- **Does**: Validates and persists the edited config, treating `user_id` and `server.applet_auth_token` as independent optional overrides.
 - **Interacts with**: `ConfigManager`.
-- **Rationale**: Clears the applet bearer token when the manual identity changes so the worker never uploads under a mismatched server session.
+- **Rationale**: Allows users to point captures at one CI-Server while choosing either OIDC browser login or a pasted CI-Server bearer/API key.
 
 ### `SettingsApp::validate`
-- **Does**: Enforces portal URL and numeric constraints while only validating `user_id` when a manual UUID is supplied.
+- **Does**: Enforces CI-Server/OIDC URL constraints and numeric constraints while only validating `user_id` when a manual UUID is supplied.
 - **Interacts with**: `save`.
 
 ### `render_identity_tab`
-- **Does**: Explains the tray-based portal pairing flow and exposes the legacy manual UUID override.
+- **Does**: Exposes CI-Server URL, OIDC issuer/client/redirect settings, bearer/API-key paste, and legacy manual UUID override.
 - **Interacts with**: `SettingsFormState`.
 
 ## Contracts
 
 | Dependent | Expects | Breaking changes |
 |-----------|---------|------------------|
-| Users relying on the settings window | Leaving the manual user field blank no longer blocks saving unrelated settings | Requiring `user_id` again or hiding portal URL |
-| `main.rs` | Persisted portal URL remains editable here and manual identity edits invalidate stale applet auth | Keeping a mismatched token after manual user changes |
+| Users relying on the settings window | Leaving the manual user field blank no longer blocks saving unrelated settings or pasted tokens | Requiring `user_id` again or hiding auth fields |
+| `main.rs` | Persisted CI-Server URL and OIDC issuer remain editable here | Merging server URL and OIDC issuer into one field |
 
 ## Notes
-- The portal URL hint now points at `https://memory.ci.localhost`, which matches the CI-Server repo's local hostname configuration.
+- `server.portal_url` is where captures are sent; `oidc.issuer` is where the browser login starts.
+- Pasted bearer/API keys are stored in `server.applet_auth_token`; changing that field clears the stored OIDC session metadata.

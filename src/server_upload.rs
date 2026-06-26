@@ -6,7 +6,7 @@ use reqwest::Client;
 use serde::Deserialize;
 
 use crate::config::AppConfig;
-use crate::server_common::{graphql_url, server_origin};
+use crate::server_common::{AuthCredential, graphql_url, server_origin};
 
 const POLL_INTERVAL: Duration = Duration::from_secs(3);
 const POLL_TIMEOUT: Duration = Duration::from_secs(5 * 60);
@@ -49,12 +49,7 @@ pub struct TerminalParseStatus {
 // ── Upload ────────────────────────────────────────────────────────────────────
 
 pub async fn upload_files(config: &AppConfig, paths: &[PathBuf]) -> Result<Vec<UploadedFile>> {
-    let auth_token = config
-        .server
-        .applet_auth_token
-        .as_deref()
-        .filter(|t| !t.trim().is_empty())
-        .context("applet auth token is not configured")?;
+    let credential = AuthCredential::from_config(config)?;
 
     let upload_url = server_origin(&config.server.portal_url)?
         .join("/api/files/upload")
@@ -75,8 +70,8 @@ pub async fn upload_files(config: &AppConfig, paths: &[PathBuf]) -> Result<Vec<U
             .with_context(|| format!("invalid filename: {}", path.display()))?
             .to_string();
 
-        let bytes = std::fs::read(path)
-            .with_context(|| format!("reading file {}", path.display()))?;
+        let bytes =
+            std::fs::read(path).with_context(|| format!("reading file {}", path.display()))?;
         total_bytes += bytes.len() as u64;
 
         let mime = mime_for_filename(&filename);
@@ -93,9 +88,8 @@ pub async fn upload_files(config: &AppConfig, paths: &[PathBuf]) -> Result<Vec<U
         total_bytes as f64 / 1024.0
     );
 
-    let response = client
-        .post(upload_url)
-        .bearer_auth(auth_token)
+    let response = credential
+        .apply(client.post(upload_url))
         .multipart(form)
         .send()
         .await
@@ -157,12 +151,7 @@ fn mime_for_filename(filename: &str) -> &'static str {
 // ── Parse-status polling ──────────────────────────────────────────────────────
 
 pub async fn poll_parse_status(config: &AppConfig, file_id: &str) -> Result<TerminalParseStatus> {
-    let auth_token = config
-        .server
-        .applet_auth_token
-        .as_deref()
-        .filter(|t| !t.trim().is_empty())
-        .context("applet auth token is not configured")?;
+    let credential = AuthCredential::from_config(config)?;
 
     let gql_url = graphql_url(&config.server.portal_url)?;
     let client = Client::builder()
@@ -192,23 +181,21 @@ pub async fn poll_parse_status(config: &AppConfig, file_id: &str) -> Result<Term
             "variables": { "id": file_id }
         });
 
-        let response = client
-            .post(gql_url.clone())
-            .bearer_auth(auth_token)
+        let response = credential
+            .apply(client.post(gql_url.clone()))
             .json(&body)
             .send()
             .await
             .context("sending parse-status poll request")?;
 
-        let gql: GqlResponse<FileStatusData> =
-            response.json().await.context("decoding parse-status response")?;
+        let gql: GqlResponse<FileStatusData> = response
+            .json()
+            .await
+            .context("decoding parse-status response")?;
 
         poll_count += 1;
 
-        let file = gql
-            .data
-            .as_ref()
-            .and_then(|d| d.file.as_ref());
+        let file = gql.data.as_ref().and_then(|d| d.file.as_ref());
 
         let parse_status = file.and_then(|f| f.parse_status.as_deref());
 
@@ -300,5 +287,7 @@ struct FileStatusPayload {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 pub fn supported_extensions() -> &'static [&'static str] {
-    &["pdf", "docx", "xlsx", "xls", "doc", "csv", "txt", "md", "markdown"]
+    &[
+        "pdf", "docx", "xlsx", "xls", "doc", "csv", "txt", "md", "markdown",
+    ]
 }

@@ -7,8 +7,8 @@ mod extractors;
 mod file_tracker;
 #[cfg(feature = "legacy-minio")]
 mod minio;
-mod queue;
 mod oidc;
+mod queue;
 mod server_check;
 mod server_common;
 mod server_ingest;
@@ -430,13 +430,13 @@ impl MenuState {
         ));
         self.server_item
             .set_text(&format!("Portal URL: {}", config.server.portal_url));
-        let host_display = config
-            .server
-            .portal_url
+        let issuer_display = config
+            .oidc
+            .issuer
             .trim_start_matches("https://")
             .trim_start_matches("http://");
         self.login_item
-            .set_text(&format!("Login to {}", host_display));
+            .set_text(&format!("Login via {}", issuer_display));
         self.postgres_item.set_text(&format!(
             "Postgres: {}:{} / {}",
             config.postgres.host, config.postgres.port, config.postgres.database
@@ -539,12 +539,13 @@ fn short_uuid(id: Option<Uuid>) -> String {
     }
 }
 
-
 /// Sign in to the portal via OIDC (Authorization Code + PKCE), persist the
 /// resulting tokens + identity, and best-effort register this device.
 fn login_with_portal() -> Result<String> {
     let manager = ConfigManager::new().context("loading config manager for sign-in")?;
-    let mut config = manager.load_or_default().context("loading config for sign-in")?;
+    let mut config = manager
+        .load_or_default()
+        .context("loading config for sign-in")?;
 
     let runtime = Runtime::new().context("creating runtime for portal sign-in")?;
     let outcome = runtime
@@ -599,7 +600,9 @@ fn login_with_portal() -> Result<String> {
         }
     }
 
-    manager.save(&config).context("saving config after sign-in")?;
+    manager
+        .save(&config)
+        .context("saving config after sign-in")?;
 
     let who = outcome
         .claims
@@ -634,8 +637,16 @@ async fn register_device(config: &AppConfig, bearer: &str) -> Result<Uuid> {
 
     let mut last_err = None;
     for path in ["/devices", "/api/devices"] {
-        let url = origin.join(path).with_context(|| format!("building {path} URL"))?;
-        match client.post(url).bearer_auth(bearer).json(&payload).send().await {
+        let url = origin
+            .join(path)
+            .with_context(|| format!("building {path} URL"))?;
+        match client
+            .post(url)
+            .bearer_auth(bearer)
+            .json(&payload)
+            .send()
+            .await
+        {
             Ok(resp) if resp.status().is_success() => {
                 let v: serde_json::Value = resp.json().await.context("decoding device response")?;
                 let obj = if v.is_array() {
@@ -656,4 +667,3 @@ async fn register_device(config: &AppConfig, bearer: &str) -> Result<Uuid> {
     }
     Err(last_err.unwrap_or_else(|| anyhow!("device registration failed")))
 }
-

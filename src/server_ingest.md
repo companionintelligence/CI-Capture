@@ -1,32 +1,32 @@
 # server_ingest.rs
 
 ## Purpose
-Wraps the CI-Server GraphQL mutations used after browser pairing so the worker can ingest screenshots and vizier events without embedding raw Postgres or MinIO credentials.
+Wraps the CI-Server upload and unified event-ingest endpoints used after browser login or API-key configuration. It keeps screenshot, vizier, and file-event delivery behind the same saved server credential.
 
 ## Components
 
 ### `is_configured`
-- **Does**: Reports whether the current app config has a non-empty applet bearer token.
+- **Does**: Reports whether the current app config has a non-empty applet credential.
 - **Interacts with**: `worker.rs`.
 
 ### `ingest_capture`
 - **Does**: Uploads a screenshot to `POST /api/files/upload` with `inventoryCapture=true`.
-- **Interacts with**: `AnalysisResult` from `analysis.rs` and CI-Server file ingestion.
+- **Interacts with**: `AuthCredential` in `server_common.rs` and CI-Server file ingestion.
 
-### `ingest_vizier_event`
-- **Does**: Serializes a `VizierEventRecord` into the generic `ingestUserSnapshot` mutation.
-- **Interacts with**: `db.rs` event types and CI-Server GraphQL.
+### `ingest_vizier_event`, `ingest_file_event`
+- **Does**: Serializes applet activity into CI-Server's `POST /api/v1/events` capture-ingest envelope.
+- **Interacts with**: `db.rs` event types, watcher events, and CI-Server event ingest.
 
-### `build_gql_client`, `graphql_url`, `graphql`
-- **Does**: Build the authenticated GraphQL client and normalize transport errors.
-- **Interacts with**: `reqwest`, `server.portal_url`, and `server.applet_auth_token`.
+### `post_capture_event`
+- **Does**: Authenticates and posts one capture event, treating server-side rejections as errors.
+- **Interacts with**: `AuthCredential`, `server.portal_url`, and CI-Server `/api/v1/events`.
 
 ## Contracts
 
 | Dependent | Expects | Breaking changes |
 |-----------|---------|------------------|
-| `worker.rs` | Token presence alone is enough to choose server ingest and mutation names match CI-Server schema | Renaming ingest mutations or changing auth to cookies only |
-| CI-Server GraphQL | Inputs stay camelCase and accept RFC3339 timestamps/base64 PNGs | Renaming input fields or changing payload encoding |
+| `worker.rs` | Credential presence alone is enough to choose server ingest | Requiring local Postgres/MinIO credentials for server mode |
+| CI-Server `/api/v1/events` | Events use `source_system`, `source_id`, `kind`, timestamps, and JSON payload | Removing unified capture ingest or changing auth headers |
 
 ## Notes
-- This module keeps GraphQL transport separate from the OIDC sign-in client in `oidc.rs`: `oidc.rs` obtains the bearer `id_token`, and this module spends it on ingest.
+- `AuthCredential` sends JWT/OIDC tokens as bearer auth and 64-character CI-Server API keys as `x-api-key`.

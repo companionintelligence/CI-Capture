@@ -187,7 +187,7 @@ pub struct OidcConfig {
 impl Default for OidcConfig {
     fn default() -> Self {
         Self {
-            issuer: "https://hub.companionintelligence.com/api/auth".to_string(),
+            issuer: "https://memory.ci.localhost/api/auth".to_string(),
             client_id: "ci-applet".to_string(),
             scopes: "openid profile email offline_access".to_string(),
             redirect_uri: "http://127.0.0.1:49473/callback".to_string(),

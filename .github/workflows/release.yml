@@ -33,8 +33,7 @@ jobs:
       matrix:
         include:
           - { os: macos-15,       label: macOS (Apple Silicon), artifact: macos-arm64,   formats: dmg }
-          - { os: macos-15-intel, label: macOS (Intel),         artifact: macos-x64,     formats: dmg }
-          - { os: ubuntu-22.04,   label: Ubuntu (x86_64),       artifact: ubuntu-x64,    formats: "deb appimage" }
+          - { os: ubuntu-22.04,   label: Ubuntu (x86_64),       artifact: ubuntu-x64,    formats: "deb,appimage" }
           - { os: ubuntu-22.04,   label: Arch Linux (x86_64),   artifact: arch-x64,      formats: pacman }
           - { os: windows-latest, label: Windows (x86_64),      artifact: windows-x64,   formats: nsis }
     steps:

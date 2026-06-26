@@ -3,6 +3,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result, anyhow};
 use eframe::{NativeOptions, egui};
 use parking_lot::Mutex;
+use reqwest::Url;
 use uuid::Uuid;
 
 use crate::config::{AppConfig, ConfigManager, MinioConfig, PostgresConfig};
@@ -46,6 +47,11 @@ pub struct SettingsFormState {
     pub user_id: String,
     pub device_id: String,
     pub portal_url: String,
+    pub oidc_issuer: String,
+    pub oidc_client_id: String,
+    pub oidc_scopes: String,
+    pub oidc_redirect_uri: String,
+    pub applet_auth_token: String,
     pub screenshot_interval_secs: u64,
     pub diff_threshold_percent: f32,
     pub minio_endpoint: String,
@@ -79,6 +85,11 @@ impl From<&AppConfig> for SettingsFormState {
                 .map(|id| id.to_string())
                 .unwrap_or_default(),
             portal_url: config.server.portal_url.clone(),
+            oidc_issuer: config.oidc.issuer.clone(),
+            oidc_client_id: config.oidc.client_id.clone(),
+            oidc_scopes: config.oidc.scopes.clone(),
+            oidc_redirect_uri: config.oidc.redirect_uri.clone(),
+            applet_auth_token: config.server.applet_auth_token.clone().unwrap_or_default(),
             screenshot_interval_secs: config.capture.screenshot_interval_secs,
             diff_threshold_percent: config.capture.diff_threshold_percent,
             minio_endpoint: config.minio.endpoint.clone(),
@@ -169,19 +180,31 @@ impl SettingsApp {
         let previous = self.base_config.lock().clone();
         let mut updated = previous.clone();
         let previous_user_id = previous.identity.user_id.map(|id| id.to_string());
+        let previous_auth_token = previous.server.applet_auth_token.clone();
+        let auth_token = self.form.applet_auth_token.trim();
         if self.form.user_id.trim().is_empty() {
             updated.identity.user_id = None;
             updated.identity.device_id = None;
-            updated.server.applet_auth_token = None;
         } else {
             let user_id = Uuid::parse_str(self.form.user_id.trim()).unwrap();
             updated.identity.user_id = Some(user_id);
             if previous_user_id.as_deref() != Some(self.form.user_id.trim()) {
                 updated.identity.device_id = None;
-                updated.server.applet_auth_token = None;
             }
         }
         updated.server.portal_url = self.form.portal_url.trim().to_string();
+        updated.server.applet_auth_token = if auth_token.is_empty() {
+            None
+        } else {
+            Some(auth_token.to_string())
+        };
+        if previous_auth_token != updated.server.applet_auth_token {
+            updated.oidc_session = None;
+        }
+        updated.oidc.issuer = self.form.oidc_issuer.trim().to_string();
+        updated.oidc.client_id = self.form.oidc_client_id.trim().to_string();
+        updated.oidc.scopes = self.form.oidc_scopes.trim().to_string();
+        updated.oidc.redirect_uri = self.form.oidc_redirect_uri.trim().to_string();
         updated.capture.screenshot_interval_secs = self.form.screenshot_interval_secs;
         updated.capture.diff_threshold_percent = self.form.diff_threshold_percent;
         updated.minio = MinioConfig {
@@ -222,6 +245,30 @@ impl SettingsApp {
         if self.form.portal_url.trim().is_empty() {
             return Err("Portal URL cannot be empty.".into());
         }
+        Url::parse(self.form.portal_url.trim())
+            .map_err(|_| "Portal URL must be a valid URL.".to_string())?;
+        if self.form.oidc_issuer.trim().is_empty() {
+            return Err("OIDC issuer cannot be empty.".into());
+        }
+        Url::parse(self.form.oidc_issuer.trim())
+            .map_err(|_| "OIDC issuer must be a valid URL.".to_string())?;
+        if self.form.oidc_client_id.trim().is_empty() {
+            return Err("OIDC client ID cannot be empty.".into());
+        }
+        if self.form.oidc_scopes.trim().is_empty() {
+            return Err("OIDC scopes cannot be empty.".into());
+        }
+        let redirect = Url::parse(self.form.oidc_redirect_uri.trim())
+            .map_err(|_| "OIDC redirect URI must be a valid URL.".to_string())?;
+        if redirect.scheme() != "http"
+            || redirect.host_str() != Some("127.0.0.1")
+            || redirect.port().is_none()
+        {
+            return Err(
+                "OIDC redirect URI must be an http://127.0.0.1:<port>/... loopback URL."
+                    .to_string(),
+            );
+        }
         if self.form.screenshot_interval_secs == 0 {
             return Err("Screenshot interval must be greater than zero.".into());
         }
@@ -254,13 +301,18 @@ impl eframe::App for SettingsApp {
             });
             ui.separator();
 
-            let changed = match self.current_tab {
-                SettingsTab::Identity => render_identity_tab(ui, &mut self.form),
-                SettingsTab::Capture => render_capture_tab(ui, &mut self.form),
-                SettingsTab::Minio => render_minio_tab(ui, &mut self.form),
-                SettingsTab::Postgres => render_postgres_tab(ui, &mut self.form),
-                SettingsTab::Analysis => render_analysis_tab(ui, &mut self.form),
-            };
+            let mut changed = false;
+            egui::ScrollArea::vertical()
+                .max_height((ui.available_height() - 56.0).max(240.0))
+                .show(ui, |ui| {
+                    changed = match self.current_tab {
+                        SettingsTab::Identity => render_identity_tab(ui, &mut self.form),
+                        SettingsTab::Capture => render_capture_tab(ui, &mut self.form),
+                        SettingsTab::Minio => render_minio_tab(ui, &mut self.form),
+                        SettingsTab::Postgres => render_postgres_tab(ui, &mut self.form),
+                        SettingsTab::Analysis => render_analysis_tab(ui, &mut self.form),
+                    };
+                });
             if changed {
                 self.error = None;
             }
@@ -286,26 +338,60 @@ impl eframe::App for SettingsApp {
 
 fn render_identity_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bool {
     let mut changed = false;
-    ui.label("Portal pairing is the primary login flow.");
-    ui.label("Use the tray menu item 'Login to …' to link this computer automatically.");
-    ui.label("Changing the manual user ID clears the current applet login token.");
+    ui.label("CI-Server URL receives captures and uploads.");
+    ui.label("OIDC issuer controls where the tray login opens.");
+    ui.label("Paste a CI-Server bearer token or API key to bypass browser login.");
     ui.separator();
-    ui.label("Manual User ID Override (optional UUID)");
-    changed |= ui
-        .add(egui::TextEdit::singleline(&mut form.user_id).hint_text("User UUID"))
-        .changed();
-    ui.label("Portal Login URL");
+    ui.label("CI-Server URL");
     changed |= ui
         .add(
             egui::TextEdit::singleline(&mut form.portal_url)
                 .hint_text("https://memory.ci.localhost"),
         )
         .changed();
+    ui.label("OIDC Issuer URL");
+    changed |= ui
+        .add(
+            egui::TextEdit::singleline(&mut form.oidc_issuer)
+                .hint_text("https://memory.ci.localhost/api/auth"),
+        )
+        .changed();
+    ui.label("OIDC Client ID");
+    changed |= ui
+        .add(egui::TextEdit::singleline(&mut form.oidc_client_id).hint_text("ci-applet"))
+        .changed();
+    ui.label("OIDC Scopes");
+    changed |= ui
+        .add(
+            egui::TextEdit::singleline(&mut form.oidc_scopes)
+                .hint_text("openid profile email offline_access"),
+        )
+        .changed();
+    ui.label("OIDC Redirect URI");
+    changed |= ui
+        .add(
+            egui::TextEdit::singleline(&mut form.oidc_redirect_uri)
+                .hint_text("http://127.0.0.1:49473/callback"),
+        )
+        .changed();
+    ui.separator();
+    ui.label("Bearer Token / API Key");
+    changed |= ui
+        .add(
+            egui::TextEdit::singleline(&mut form.applet_auth_token)
+                .password(true)
+                .hint_text("Paste CI-Server token or API key"),
+        )
+        .changed();
+    ui.label("Manual User ID Override (optional UUID)");
+    changed |= ui
+        .add(egui::TextEdit::singleline(&mut form.user_id).hint_text("User UUID"))
+        .changed();
     ui.separator();
     ui.label("Device ID (auto-assigned)");
     if form.device_id.is_empty() {
         ui.label(
-            egui::RichText::new("Device will be set after portal pairing or manual user save")
+            egui::RichText::new("Device will be set after browser login or manual user save")
                 .italics(),
         );
     } else {

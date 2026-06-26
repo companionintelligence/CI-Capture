@@ -29,16 +29,16 @@
     <text x="24" y="272" fill="#444c56">------------</text>
     <text x="24" y="292" fill="#8b949e">user_id    : <tspan fill="#e5534b">✗</tspan> unset</text>
     <text x="24" y="312" fill="#8b949e">device_id  : <tspan fill="#e5534b">✗</tspan> unset</text>
-    <text x="24" y="332" fill="#8b949e">auth token : <tspan fill="#e5534b">✗</tspan> not configured (run "Login to Portal")</text>
-    <text x="24" y="352" fill="#8b949e">file lane  : idle (needs identity, token, and ≥1 watched folder)</text>
+    <text x="24" y="332" fill="#8b949e">auth cred  : <tspan fill="#e5534b">✗</tspan> not configured (login or paste API key)</text>
+    <text x="24" y="352" fill="#8b949e">file lane  : idle (needs server credential and ≥1 watched folder)</text>
 
     <text x="24" y="384" fill="#5c8dff" font-weight="700">Live probe</text>
     <text x="24" y="404" fill="#444c56">----------</text>
     <text x="24" y="424" fill="#8b949e">GET /health           : <tspan fill="#3fb950">HTTP 200</tspan></text>
     <text x="24" y="444" fill="#8b949e">POST /api/graphql     : <tspan fill="#3fb950">HTTP 200 ✓ reachable</tspan></text>
 
-    <text x="24" y="488" fill="#6e7681">Note: a fully working applet needs CI-Server running the</text>
-    <text x="24" y="508" fill="#6e7681">applet-pairing GraphQL (startAppletPairing + ingestUserSnapshot).</text>
+    <text x="24" y="488" fill="#6e7681">Note: API keys are sent as x-api-key; JWT/OIDC tokens</text>
+    <text x="24" y="508" fill="#6e7681">are sent as bearer auth.</text>
     <text x="24" y="536"><tspan fill="#3fb950">$</tspan><tspan fill="#c9d1d9"> </tspan><tspan fill="#3fb950">▋</tspan></text>
   </g>
 </svg>

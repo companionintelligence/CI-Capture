@@ -17,9 +17,9 @@ use vizier::observer::{Observer, ObserverConfig, create_observer};
 use crate::analysis::{AnalysisResult, VisionAnalyzer};
 use crate::capture::{CapturedImage, capture_primary, diff_percent, save_to_path};
 use crate::config::AppConfig;
-use crate::db::{PostgresRecorder, VizierEventRecord};
 #[cfg(feature = "legacy-minio")]
 use crate::db::ScreenshotRecord;
+use crate::db::{PostgresRecorder, VizierEventRecord};
 use crate::file_tracker;
 #[cfg(feature = "legacy-minio")]
 use crate::minio::MinioUploader;
@@ -258,10 +258,9 @@ impl WorkerState {
         self.stop_file_tracker().await;
         if !file_tracker::is_runnable(&self.config) {
             log::debug!(
-                "file tracker idle (enabled={}, folders={}, identity={}, server={})",
+                "file tracker idle (enabled={}, folders={}, server={})",
                 self.config.file_tracker.enabled,
                 self.config.file_tracker.watched_paths.len(),
-                self.config.identity.device_id.is_some(),
                 server_ingest::is_configured(&self.config),
             );
             return;
@@ -343,11 +342,16 @@ impl WorkerState {
     }
 
     async fn capture_vizier(&mut self) -> Result<()> {
+        let server_configured = server_ingest::is_configured(&self.config);
         let (user_id, device_id) = match (
             self.config.identity.user_id,
             self.config.identity.device_id,
         ) {
             (Some(user), Some(device)) => (user, device),
+            _ if server_configured => (
+                self.config.identity.user_id.unwrap_or_else(Uuid::nil),
+                self.config.identity.device_id.unwrap_or_else(Uuid::nil),
+            ),
             _ => {
                 log::warn!(
                     "identity not configured; skipping vizier capture (set user and device IDs in settings)"
@@ -398,7 +402,7 @@ impl WorkerState {
             fs_event_count,
         };
 
-        if server_ingest::is_configured(&self.config) {
+        if server_configured {
             server_ingest::ingest_vizier_event(&self.config, device_id, &event)
                 .await
                 .context("writing vizier event via CI-Server GraphQL")?;
@@ -427,7 +431,9 @@ impl WorkerState {
             self.capture_blocked = false;
         }
 
-        if self.config.identity.user_id.is_none() || self.config.identity.device_id.is_none() {
+        if !server_ingest::is_configured(&self.config)
+            && (self.config.identity.user_id.is_none() || self.config.identity.device_id.is_none())
+        {
             log::warn!(
                 "identity not configured; skipping capture (set user and device IDs in settings)"
             );

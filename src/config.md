@@ -10,9 +10,9 @@ Defines persisted application configuration for CI-Applet. It is the schema boun
 - **Interacts with**: `ConfigManager`, `worker.rs`, and the settings UI.
 
 ### `ServerConfig`
-- **Does**: Stores the CI-Server portal URL and the applet-scoped bearer token issued during browser pairing.
-- **Interacts with**: `main.rs`, `oidc.rs`, and `server_ingest.rs`.
-- **Rationale**: Keeps human login/bootstrap separate from infrastructure credentials while still letting the worker reuse the paired applet session.
+- **Does**: Stores the CI-Server URL and the bearer credential used by upload/ingest calls.
+- **Interacts with**: `main.rs`, `settings_ui.rs`, `oidc.rs`, and `server_ingest.rs`.
+- **Rationale**: Lets the applet send captures to a chosen CI-Server while the bearer credential can come from OIDC browser login or a pasted API key.
 
 ### `VizierConfig`
 - **Does**: Controls whether embedded `vizier` capture is enabled and what it watches.
@@ -33,4 +33,5 @@ Defines persisted application configuration for CI-Applet. It is the schema boun
 
 ## Notes
 - `server.applet_auth_token` is intentionally optional so pre-pairing installs and manual UUID fallback still load cleanly.
-- The default portal origin now targets the repo's local CI-Server hostname (`https://memory.ci.localhost`) rather than the external dev site.
+- `server.portal_url` controls where data is sent. `oidc.issuer` controls where login happens; they are not automatically derived from each other.
+- New configs default both CI-Server URL and OIDC issuer to the local CI-Server hostname (`https://memory.ci.localhost`).
