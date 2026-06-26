@@ -5,9 +5,10 @@ Shared CI-Server URL and authentication helpers. This file centralizes endpoint 
 
 ## Components
 
-### `server_origin`, `graphql_url`
-- **Does**: Normalize configured CI-Server URLs to an origin and derive the GraphQL endpoint.
+### `server_origin`, `graphql_url`, `upload_url`, `events_url`, `devices_url`
+- **Does**: Normalize configured CI-Server URLs to an origin and derive API endpoints.
 - **Interacts with**: `server_check.rs`, `server_ingest.rs`, and `server_upload.rs`.
+- **Rationale**: Reverse-proxied deployments often expose endpoints below `/api`, while direct API deployments often expose the same routes without that prefix.
 
 ### `AuthCredential`
 - **Does**: Represents either a bearer token or a CI-Server API key and applies the correct request header.

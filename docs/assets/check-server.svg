@@ -15,15 +15,15 @@
   </g>
 
   <g font-family="'SF Mono','Source Code Pro',Menlo,Consolas,monospace" font-size="13" xml:space="preserve">
-    <text x="24" y="72"><tspan fill="#3fb950">$</tspan><tspan fill="#c9d1d9"> cargo run -- --check-server --portal http://localhost:8642</tspan></text>
+    <text x="24" y="72"><tspan fill="#3fb950">$</tspan><tspan fill="#c9d1d9"> cargo run -- --check-server --portal https://your-ci-server.example.com</tspan></text>
 
     <text x="24" y="112" fill="#d2e3ff" font-weight="700">CI-Applet → CI-Server connection check</text>
     <text x="24" y="132" fill="#444c56">======================================</text>
 
-    <text x="24" y="160" fill="#8b949e">Portal URL : <tspan fill="#56b6c2">http://localhost:8642</tspan></text>
-    <text x="24" y="180" fill="#8b949e">Origin     : <tspan fill="#56b6c2">http://localhost:8642/</tspan></text>
-    <text x="24" y="200" fill="#8b949e">GraphQL    : <tspan fill="#56b6c2">http://localhost:8642/api/graphql</tspan></text>
-    <text x="24" y="220" fill="#8b949e">File upload: <tspan fill="#56b6c2">http://localhost:8642/api/files/upload</tspan></text>
+    <text x="24" y="160" fill="#8b949e">Portal URL : <tspan fill="#56b6c2">https://your-ci-server.example.com</tspan></text>
+    <text x="24" y="180" fill="#8b949e">Origin     : <tspan fill="#56b6c2">https://your-ci-server.example.com/</tspan></text>
+    <text x="24" y="200" fill="#8b949e">GraphQL    : <tspan fill="#56b6c2">/api/graphql | /graphql</tspan></text>
+    <text x="24" y="220" fill="#8b949e">File upload: <tspan fill="#56b6c2">/api/files/upload | /files/upload</tspan></text>
 
     <text x="24" y="252" fill="#5c8dff" font-weight="700">Local config</text>
     <text x="24" y="272" fill="#444c56">------------</text>

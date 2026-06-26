@@ -212,5 +212,8 @@ server context to attribute events. Verify connectivity anytime:
 
 ```bash
 cargo run -- --check-server                       # configured portal
-cargo run -- --check-server --portal http://localhost:8642
+cargo run -- --check-server --portal https://your-ci-server.example.com
 ```
+
+The applet probes both `/api/...` and bare API routes, so reverse-proxied and
+direct CI-Server deployments can use the same CI-Server URL field.

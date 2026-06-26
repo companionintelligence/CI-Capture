@@ -69,10 +69,24 @@ pub struct SettingsFormState {
     pub analysis_endpoint: String,
     pub analysis_api_key: String,
     pub analysis_model: String,
+    auth_mode: AuthMode,
 }
 
 impl From<&AppConfig> for SettingsFormState {
     fn from(config: &AppConfig) -> Self {
+        let auth_mode = if config
+            .server
+            .applet_auth_token
+            .as_deref()
+            .is_some_and(|token| !token.trim().is_empty())
+        {
+            AuthMode::ApiKey
+        } else if !config.oidc.issuer.trim().is_empty() || config.oidc_session.is_some() {
+            AuthMode::Oidc
+        } else {
+            AuthMode::ApiKey
+        };
+
         Self {
             user_id: config
                 .identity
@@ -107,8 +121,15 @@ impl From<&AppConfig> for SettingsFormState {
             analysis_endpoint: config.analysis.endpoint.clone(),
             analysis_api_key: config.analysis.api_key.clone(),
             analysis_model: config.analysis.model.clone(),
+            auth_mode,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub enum AuthMode {
+    ApiKey,
+    Oidc,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -192,11 +213,12 @@ impl SettingsApp {
                 updated.identity.device_id = None;
             }
         }
-        updated.server.portal_url = self.form.portal_url.trim().to_string();
-        updated.server.applet_auth_token = if auth_token.is_empty() {
-            None
-        } else {
-            Some(auth_token.to_string())
+        updated.server.portal_url = normalize_ci_server_url(self.form.portal_url.trim())
+            .unwrap_or_else(|_| self.form.portal_url.trim().to_string());
+        updated.server.applet_auth_token = match self.form.auth_mode {
+            AuthMode::ApiKey if !auth_token.is_empty() => Some(auth_token.to_string()),
+            AuthMode::ApiKey => None,
+            AuthMode::Oidc => None,
         };
         if previous_auth_token != updated.server.applet_auth_token {
             updated.oidc_session = None;
@@ -242,32 +264,45 @@ impl SettingsApp {
             Uuid::parse_str(self.form.user_id.trim())
                 .map_err(|_| "User ID must be a valid UUID.".to_string())?;
         }
-        if self.form.portal_url.trim().is_empty() {
-            return Err("Portal URL cannot be empty.".into());
+        let has_server_credential = self.form.auth_mode == AuthMode::ApiKey
+            && !self.form.applet_auth_token.trim().is_empty();
+        let has_oidc_issuer = self.form.auth_mode == AuthMode::Oidc;
+
+        if self.form.portal_url.trim().is_empty() && (has_server_credential || has_oidc_issuer) {
+            return Err("CI-Server URL is required.".into());
         }
-        Url::parse(self.form.portal_url.trim())
-            .map_err(|_| "Portal URL must be a valid URL.".to_string())?;
-        if self.form.oidc_issuer.trim().is_empty() {
-            return Err("OIDC issuer cannot be empty.".into());
+        if !self.form.portal_url.trim().is_empty() {
+            normalize_ci_server_url(self.form.portal_url.trim())?;
         }
-        Url::parse(self.form.oidc_issuer.trim())
-            .map_err(|_| "OIDC issuer must be a valid URL.".to_string())?;
-        if self.form.oidc_client_id.trim().is_empty() {
-            return Err("OIDC client ID cannot be empty.".into());
-        }
-        if self.form.oidc_scopes.trim().is_empty() {
-            return Err("OIDC scopes cannot be empty.".into());
-        }
-        let redirect = Url::parse(self.form.oidc_redirect_uri.trim())
-            .map_err(|_| "OIDC redirect URI must be a valid URL.".to_string())?;
-        if redirect.scheme() != "http"
-            || redirect.host_str() != Some("127.0.0.1")
-            || redirect.port().is_none()
+        if self.form.auth_mode == AuthMode::ApiKey
+            && !self.form.portal_url.trim().is_empty()
+            && self.form.applet_auth_token.trim().is_empty()
         {
-            return Err(
-                "OIDC redirect URI must be an http://127.0.0.1:<port>/... loopback URL."
-                    .to_string(),
-            );
+            return Err("API key is required in API key mode.".into());
+        }
+        if has_oidc_issuer {
+            if self.form.oidc_issuer.trim().is_empty() {
+                return Err("OIDC issuer is required in OIDC mode.".into());
+            }
+            Url::parse(self.form.oidc_issuer.trim())
+                .map_err(|_| "OIDC issuer must be a valid URL.".to_string())?;
+            if self.form.oidc_client_id.trim().is_empty() {
+                return Err("OIDC client ID cannot be empty.".into());
+            }
+            if self.form.oidc_scopes.trim().is_empty() {
+                return Err("OIDC scopes cannot be empty.".into());
+            }
+            let redirect = Url::parse(self.form.oidc_redirect_uri.trim())
+                .map_err(|_| "OIDC redirect URI must be a valid URL.".to_string())?;
+            if redirect.scheme() != "http"
+                || redirect.host_str() != Some("127.0.0.1")
+                || redirect.port().is_none()
+            {
+                return Err(
+                    "OIDC redirect URI must be an http://127.0.0.1:<port>/... loopback URL."
+                        .to_string(),
+                );
+            }
         }
         if self.form.screenshot_interval_secs == 0 {
             return Err("Screenshot interval must be greater than zero.".into());
@@ -339,65 +374,122 @@ impl eframe::App for SettingsApp {
 fn render_identity_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bool {
     let mut changed = false;
     ui.label("CI-Server URL receives captures and uploads.");
-    ui.label("OIDC issuer controls where the tray login opens.");
-    ui.label("Paste a CI-Server bearer token or API key to bypass browser login.");
     ui.separator();
     ui.label("CI-Server URL");
     changed |= ui
         .add(
             egui::TextEdit::singleline(&mut form.portal_url)
-                .hint_text("https://memory.ci.localhost"),
+                .hint_text("https://your-ci-server.example.com"),
         )
         .changed();
-    ui.label("OIDC Issuer URL");
-    changed |= ui
-        .add(
-            egui::TextEdit::singleline(&mut form.oidc_issuer)
-                .hint_text("https://memory.ci.localhost/api/auth"),
-        )
-        .changed();
-    ui.label("OIDC Client ID");
-    changed |= ui
-        .add(egui::TextEdit::singleline(&mut form.oidc_client_id).hint_text("ci-applet"))
-        .changed();
-    ui.label("OIDC Scopes");
-    changed |= ui
-        .add(
-            egui::TextEdit::singleline(&mut form.oidc_scopes)
-                .hint_text("openid profile email offline_access"),
-        )
-        .changed();
-    ui.label("OIDC Redirect URI");
-    changed |= ui
-        .add(
-            egui::TextEdit::singleline(&mut form.oidc_redirect_uri)
-                .hint_text("http://127.0.0.1:49473/callback"),
-        )
-        .changed();
+
+    ui.add_space(4.0);
+    ui.label("Authentication");
+    ui.horizontal(|ui| {
+        changed |= ui
+            .selectable_value(&mut form.auth_mode, AuthMode::ApiKey, "API key")
+            .changed();
+        changed |= ui
+            .selectable_value(&mut form.auth_mode, AuthMode::Oidc, "OIDC")
+            .changed();
+    });
     ui.separator();
-    ui.label("Bearer Token / API Key");
-    changed |= ui
-        .add(
-            egui::TextEdit::singleline(&mut form.applet_auth_token)
-                .password(true)
-                .hint_text("Paste CI-Server token or API key"),
-        )
-        .changed();
-    ui.label("Manual User ID Override (optional UUID)");
-    changed |= ui
-        .add(egui::TextEdit::singleline(&mut form.user_id).hint_text("User UUID"))
-        .changed();
-    ui.separator();
-    ui.label("Device ID (auto-assigned)");
-    if form.device_id.is_empty() {
-        ui.label(
-            egui::RichText::new("Device will be set after browser login or manual user save")
-                .italics(),
-        );
-    } else {
-        ui.monospace(&form.device_id);
+
+    match form.auth_mode {
+        AuthMode::ApiKey => {
+            ui.label("API Key");
+            changed |= ui
+                .add(
+                    egui::TextEdit::singleline(&mut form.applet_auth_token)
+                        .password(true)
+                        .hint_text("Paste CI-Server API key"),
+                )
+                .changed();
+        }
+        AuthMode::Oidc => {
+            ui.label("OIDC Issuer URL");
+            changed |= ui
+                .add(
+                    egui::TextEdit::singleline(&mut form.oidc_issuer)
+                        .hint_text("https://your-ci-server.example.com/api/auth"),
+                )
+                .changed();
+            ui.label("OIDC Client ID");
+            changed |= ui
+                .add(egui::TextEdit::singleline(&mut form.oidc_client_id).hint_text("ci-applet"))
+                .changed();
+            ui.label("OIDC Scopes");
+            changed |= ui
+                .add(
+                    egui::TextEdit::singleline(&mut form.oidc_scopes)
+                        .hint_text("openid profile email offline_access"),
+                )
+                .changed();
+            ui.label("OIDC Redirect URI");
+            changed |= ui
+                .add(
+                    egui::TextEdit::singleline(&mut form.oidc_redirect_uri)
+                        .hint_text("http://127.0.0.1:49473/callback"),
+                )
+                .changed();
+        }
     }
+
+    ui.separator();
+    ui.collapsing("Advanced identity", |ui| {
+        ui.label("Manual User ID Override (optional UUID)");
+        changed |= ui
+            .add(egui::TextEdit::singleline(&mut form.user_id).hint_text("User UUID"))
+            .changed();
+        ui.label("Device ID (auto-assigned)");
+        if form.device_id.is_empty() {
+            ui.label(
+                egui::RichText::new("Device will be set after browser login or manual user save")
+                    .italics(),
+            );
+        } else {
+            ui.monospace(&form.device_id);
+        }
+    });
     changed
+}
+
+fn normalize_ci_server_url(raw: &str) -> Result<String, String> {
+    let mut url = Url::parse(raw).map_err(|_| "CI-Server URL must be a valid URL.".to_string())?;
+    url.set_query(None);
+    url.set_fragment(None);
+
+    let path = url.path().trim_matches('/');
+    if path.is_empty() || path == "feed" || path.starts_with("feed/") {
+        url.set_path("");
+    }
+
+    Ok(url.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_ci_server_url;
+
+    #[test]
+    fn feed_page_url_normalizes_to_origin() {
+        assert_eq!(
+            normalize_ci_server_url("https://ci-server.localhost/feed").unwrap(),
+            "https://ci-server.localhost/"
+        );
+        assert_eq!(
+            normalize_ci_server_url("https://ci.example.com/feed?cursor=abc").unwrap(),
+            "https://ci.example.com/"
+        );
+    }
+
+    #[test]
+    fn api_base_path_is_preserved() {
+        assert_eq!(
+            normalize_ci_server_url("https://ci.example.com/api").unwrap(),
+            "https://ci.example.com/api"
+        );
+    }
 }
 
 fn render_capture_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bool {

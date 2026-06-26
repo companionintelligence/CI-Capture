@@ -2,11 +2,11 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
-use reqwest::Client;
+use reqwest::{Client, StatusCode};
 use serde::Deserialize;
 
 use crate::config::AppConfig;
-use crate::server_common::{AuthCredential, graphql_url, server_origin};
+use crate::server_common::{AuthCredential, graphql_urls, upload_urls};
 
 const POLL_INTERVAL: Duration = Duration::from_secs(3);
 const POLL_TIMEOUT: Duration = Duration::from_secs(5 * 60);
@@ -51,82 +51,69 @@ pub struct TerminalParseStatus {
 pub async fn upload_files(config: &AppConfig, paths: &[PathBuf]) -> Result<Vec<UploadedFile>> {
     let credential = AuthCredential::from_config(config)?;
 
-    let upload_url = server_origin(&config.server.portal_url)?
-        .join("/api/files/upload")
-        .context("building upload URL")?;
-
     let client = Client::builder()
         .use_rustls_tls()
         .build()
         .context("building upload HTTP client")?;
 
-    let mut form = reqwest::multipart::Form::new();
-    let mut total_bytes: u64 = 0;
-
-    for path in paths {
-        let filename = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .with_context(|| format!("invalid filename: {}", path.display()))?
-            .to_string();
-
-        let bytes =
-            std::fs::read(path).with_context(|| format!("reading file {}", path.display()))?;
-        total_bytes += bytes.len() as u64;
-
-        let mime = mime_for_filename(&filename);
-        let part = reqwest::multipart::Part::bytes(bytes)
-            .file_name(filename)
-            .mime_str(mime)
-            .context("setting MIME type on upload part")?;
-        form = form.part("files", part);
-    }
-
+    let total_bytes = total_upload_bytes(paths)?;
     log::info!(
         "uploading {} file(s), {:.1} KB total",
         paths.len(),
         total_bytes as f64 / 1024.0
     );
 
-    let response = credential
-        .apply(client.post(upload_url))
-        .multipart(form)
-        .send()
-        .await
-        .context("sending upload request")?;
+    let mut last_error = None;
+    for upload_url in upload_urls(&config.server.portal_url)? {
+        let form = build_upload_form(paths)?;
+        let response = credential
+            .apply(client.post(upload_url.clone()))
+            .multipart(form)
+            .send()
+            .await
+            .with_context(|| format!("sending upload request to {upload_url}"))?;
 
-    let status = response.status();
-    if !status.is_success() {
-        let body = response.text().await.unwrap_or_default();
-        return Err(anyhow!("upload failed with HTTP {status}: {body}"));
+        let status = response.status();
+        if should_try_next_endpoint(status) {
+            let body = response.text().await.unwrap_or_default();
+            last_error = Some(anyhow!("upload failed with HTTP {status}: {body}"));
+            continue;
+        }
+
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(anyhow!("upload failed with HTTP {status}: {body}"));
+        }
+
+        let ids: Vec<UploadIdEntry> = response.json().await.context("decoding upload response")?;
+
+        log::info!("upload succeeded: {} unique file(s) returned", ids.len());
+
+        // The server deduplicates by hash. We detect already-existing files by
+        // comparing the count of returned IDs to the number of files we sent.
+        // Any ID that maps to more than one path was a duplicate upload.
+        let already_existed = ids.len() < paths.len();
+
+        return Ok(ids
+            .into_iter()
+            .enumerate()
+            .map(|(i, entry)| {
+                let filename = paths
+                    .get(i)
+                    .and_then(|p| p.file_name())
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("unknown")
+                    .to_string();
+                UploadedFile {
+                    filename,
+                    id: entry.id,
+                    already_existed: already_existed && i > 0,
+                }
+            })
+            .collect());
     }
 
-    let ids: Vec<UploadIdEntry> = response.json().await.context("decoding upload response")?;
-
-    log::info!("upload succeeded: {} unique file(s) returned", ids.len());
-
-    // The server deduplicates by hash. We detect already-existing files by
-    // comparing the count of returned IDs to the number of files we sent.
-    // Any ID that maps to more than one path was a duplicate upload.
-    let already_existed = ids.len() < paths.len();
-
-    Ok(ids
-        .into_iter()
-        .enumerate()
-        .map(|(i, entry)| {
-            let filename = paths
-                .get(i)
-                .and_then(|p| p.file_name())
-                .and_then(|n| n.to_str())
-                .unwrap_or("unknown")
-                .to_string();
-            UploadedFile {
-                filename,
-                id: entry.id,
-                already_existed: already_existed && i > 0,
-            }
-        })
-        .collect())
+    Err(last_error.unwrap_or_else(|| anyhow!("no upload endpoint candidates")))
 }
 
 #[derive(Debug, Deserialize)]
@@ -148,12 +135,43 @@ fn mime_for_filename(filename: &str) -> &'static str {
     }
 }
 
+fn total_upload_bytes(paths: &[PathBuf]) -> Result<u64> {
+    paths.iter().try_fold(0u64, |total, path| {
+        let metadata =
+            std::fs::metadata(path).with_context(|| format!("stat file {}", path.display()))?;
+        Ok(total + metadata.len())
+    })
+}
+
+fn build_upload_form(paths: &[PathBuf]) -> Result<reqwest::multipart::Form> {
+    let mut form = reqwest::multipart::Form::new();
+
+    for path in paths {
+        let filename = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .with_context(|| format!("invalid filename: {}", path.display()))?
+            .to_string();
+
+        let bytes =
+            std::fs::read(path).with_context(|| format!("reading file {}", path.display()))?;
+        let mime = mime_for_filename(&filename);
+        let part = reqwest::multipart::Part::bytes(bytes)
+            .file_name(filename)
+            .mime_str(mime)
+            .context("setting MIME type on upload part")?;
+        form = form.part("files", part);
+    }
+
+    Ok(form)
+}
+
 // ── Parse-status polling ──────────────────────────────────────────────────────
 
 pub async fn poll_parse_status(config: &AppConfig, file_id: &str) -> Result<TerminalParseStatus> {
     let credential = AuthCredential::from_config(config)?;
 
-    let gql_url = graphql_url(&config.server.portal_url)?;
+    let gql_urls = graphql_urls(&config.server.portal_url)?;
     let client = Client::builder()
         .use_rustls_tls()
         .build()
@@ -181,12 +199,35 @@ pub async fn poll_parse_status(config: &AppConfig, file_id: &str) -> Result<Term
             "variables": { "id": file_id }
         });
 
-        let response = credential
-            .apply(client.post(gql_url.clone()))
-            .json(&body)
-            .send()
-            .await
-            .context("sending parse-status poll request")?;
+        let mut response = None;
+        let mut last_error = None;
+        for gql_url in &gql_urls {
+            let candidate = credential
+                .apply(client.post(gql_url.clone()))
+                .json(&body)
+                .send()
+                .await
+                .with_context(|| format!("sending parse-status poll request to {gql_url}"))?;
+            let status = candidate.status();
+            if should_try_next_endpoint(status) {
+                let text = candidate.text().await.unwrap_or_default();
+                last_error = Some(anyhow!(
+                    "parse-status poll failed with HTTP {status}: {text}"
+                ));
+                continue;
+            }
+            if !status.is_success() {
+                let text = candidate.text().await.unwrap_or_default();
+                return Err(anyhow!(
+                    "parse-status poll failed with HTTP {status}: {text}"
+                ));
+            }
+            response = Some(candidate);
+            break;
+        }
+        let response = response.ok_or_else(|| {
+            last_error.unwrap_or_else(|| anyhow!("no GraphQL endpoint candidates"))
+        })?;
 
         let gql: GqlResponse<FileStatusData> = response
             .json()
@@ -250,6 +291,13 @@ pub async fn poll_parse_status(config: &AppConfig, file_id: &str) -> Result<Term
 
         tokio::time::sleep(POLL_INTERVAL).await;
     }
+}
+
+fn should_try_next_endpoint(status: StatusCode) -> bool {
+    matches!(
+        status,
+        StatusCode::NOT_FOUND | StatusCode::METHOD_NOT_ALLOWED
+    )
 }
 
 /// Strip anything that looks like a file path or internal module reference

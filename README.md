@@ -128,10 +128,12 @@ Events ride CI-Server's unified capture ingest endpoint (`POST /api/v1/events`) 
 
 ```bash
 cargo run -- --check-server                                # probe the configured portal
-cargo run -- --check-server --portal http://localhost:8642  # probe a specific origin
+cargo run -- --check-server --portal https://your-ci-server.example.com
 ```
 
 Reports resolved endpoints, local identity/token state, and a live reachability probe.
+The applet probes both common route shapes (`/api/...` and bare API routes), so
+the same setting can work for reverse-proxied and direct CI-Server deployments.
 
 ## `vizier` — the perception engine
 
@@ -206,9 +208,9 @@ You can bypass browser login by pasting a CI-Server bearer token or API key into
 
 Configuration lives in the app config directory as `config.json`. Key fields:
 
-- `server.portal_url` — CI‑Server origin that receives captures (file upload + `/api/v1/events`)
+- `server.portal_url` — CI‑Server URL that receives captures. Use the server origin, not a page route such as `/feed`. The applet probes both `/api/...` and bare API routes.
 - `server.applet_auth_token` — JWT bearer token or 64-character CI-Server API key used for CI-Server calls (set by login or pasted in settings)
-- `oidc.issuer` — OIDC issuer opened by the tray login (default `https://memory.ci.localhost/api/auth`; discovery-driven)
+- `oidc.issuer` — OIDC issuer opened by the tray login (blank by default; optional when using an API key)
 - `oidc.client_id` — registered client (default `ci-applet`)
 - `oidc.redirect_uri` — loopback callback (default `http://127.0.0.1:49473/callback`)
 - `screenshot_interval_secs` (default 300, floored to 30) and `diff_threshold_percent` (default 10)
@@ -217,8 +219,8 @@ Configuration lives in the app config directory as `config.json`. Key fields:
 After sign-in the applet stores the tokens + identity, best-effort registers the
 device (`POST /devices`, bearer-authed), and streams:
 
-- screenshots → `POST {portal}/api/files/upload` (multipart)
-- activity + file snapshots → `POST {portal}/api/v1/events`
+- screenshots → CI-Server file upload endpoint (multipart)
+- activity + file snapshots → CI-Server event ingest endpoint
 
 > **Auth setup:** `server.portal_url` and `oidc.issuer` are intentionally
 > separate. Point `server.portal_url` at the CI-Server that receives captures.

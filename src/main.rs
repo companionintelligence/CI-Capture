@@ -615,10 +615,8 @@ fn login_with_portal() -> Result<String> {
     ))
 }
 
-/// Register this machine with CI-Server (`POST /devices`, bearer-authed). Tries
-/// the bare path and the `/api`-prefixed variant; returns the device id.
+/// Register this machine with CI-Server (`POST /devices`, bearer-authed).
 async fn register_device(config: &AppConfig, bearer: &str) -> Result<Uuid> {
-    let origin = server_common::server_origin(&config.server.portal_url)?;
     let hostname = whoami::fallible::hostname().unwrap_or_else(|_| "unknown".to_string());
     let payload = serde_json::json!({
         "device_name": format!("ci-applet-{hostname}"),
@@ -635,13 +633,10 @@ async fn register_device(config: &AppConfig, bearer: &str) -> Result<Uuid> {
         .build()
         .context("building device-registration client")?;
 
-    let mut last_err = None;
-    for path in ["/devices", "/api/devices"] {
-        let url = origin
-            .join(path)
-            .with_context(|| format!("building {path} URL"))?;
+    let mut last_error = None;
+    for url in server_common::devices_urls(&config.server.portal_url)? {
         match client
-            .post(url)
+            .post(url.clone())
             .bearer_auth(bearer)
             .json(&payload)
             .send()
@@ -661,9 +656,19 @@ async fn register_device(config: &AppConfig, bearer: &str) -> Result<Uuid> {
                     .context("device response missing device_id")?;
                 return Uuid::parse_str(id_str).context("parsing device_id");
             }
-            Ok(resp) => last_err = Some(anyhow!("POST {path} → HTTP {}", resp.status())),
-            Err(err) => last_err = Some(anyhow!("POST {path}: {err}")),
+            Ok(resp)
+                if matches!(
+                    resp.status(),
+                    reqwest::StatusCode::NOT_FOUND | reqwest::StatusCode::METHOD_NOT_ALLOWED
+                ) =>
+            {
+                last_error = Some(anyhow!("POST {url} → HTTP {}", resp.status()));
+                continue;
+            }
+            Ok(resp) => return Err(anyhow!("POST {url} → HTTP {}", resp.status())),
+            Err(err) => return Err(anyhow!("POST {url}: {err}")),
         }
     }
-    Err(last_err.unwrap_or_else(|| anyhow!("device registration failed")))
+
+    Err(last_error.unwrap_or_else(|| anyhow!("device registration failed")))
 }

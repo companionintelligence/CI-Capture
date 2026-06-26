@@ -19,7 +19,8 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 log = "0.4"
 parking_lot = "0.12"
 # rustls + ring (not aws-lc-rs) so it builds cleanly on every platform.
-reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls-webpki-roots-no-provider", "__rustls-ring"] }
+# Native roots let local CI-Server Caddy certificates work once trusted by the OS.
+reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls-native-roots-no-provider", "__rustls-ring"] }
 screenshots = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

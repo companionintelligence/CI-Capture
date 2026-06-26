@@ -187,7 +187,7 @@ pub struct OidcConfig {
 impl Default for OidcConfig {
     fn default() -> Self {
         Self {
-            issuer: "https://memory.ci.localhost/api/auth".to_string(),
+            issuer: String::new(),
             client_id: "ci-applet".to_string(),
             scopes: "openid profile email offline_access".to_string(),
             redirect_uri: "http://127.0.0.1:49473/callback".to_string(),
@@ -217,7 +217,7 @@ pub struct ServerConfig {
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
-            portal_url: "https://memory.ci.localhost".to_string(),
+            portal_url: String::new(),
             applet_auth_token: None,
         }
     }

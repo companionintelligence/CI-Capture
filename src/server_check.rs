@@ -10,13 +10,13 @@
 //! It never mutates anything on the server — it's safe to run anytime to
 //! answer "can this machine actually talk to my CI-Server?".
 
-use std::time::Duration;
+use std::{error::Error, time::Duration};
 
 use anyhow::{Context, Result};
 use reqwest::Client;
 
 use crate::config::{AppConfig, ConfigManager};
-use crate::server_common::{AuthCredential, graphql_url, server_origin};
+use crate::server_common::{AuthCredential, graphql_urls, server_origin, upload_urls};
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -53,14 +53,14 @@ async fn report(config: &AppConfig) -> Result<()> {
             None
         }
     };
-    match graphql_url(portal) {
-        Ok(u) => println!("GraphQL    : {u}"),
+    match graphql_urls(portal) {
+        Ok(urls) => println!("GraphQL    : {}", join_urls(&urls)),
         Err(err) => println!("GraphQL    : ✗ {err}"),
     }
-    if let Some(o) = &origin
-        && let Ok(u) = o.join("/api/files/upload")
+    if origin.is_some()
+        && let Ok(urls) = upload_urls(portal)
     {
-        println!("File upload: {u}");
+        println!("File upload: {}", join_urls(&urls));
     }
 
     println!("\nLocal config");
@@ -92,7 +92,14 @@ async fn report(config: &AppConfig) -> Result<()> {
 
     println!("\nPortal sign-in (OIDC)");
     println!("---------------------");
-    println!("issuer     : {}", config.oidc.issuer);
+    println!(
+        "issuer     : {}",
+        if config.oidc.issuer.trim().is_empty() {
+            "✗ not configured (not needed for API key)"
+        } else {
+            config.oidc.issuer.as_str()
+        }
+    );
     println!("client_id  : {}", config.oidc.client_id);
     println!("redirect   : {}", config.oidc.redirect_uri);
     match &config.oidc_session {
@@ -131,33 +138,49 @@ async fn report(config: &AppConfig) -> Result<()> {
     }
 
     // GraphQL reachability (attach bearer token if we have one).
-    match graphql_url(portal) {
-        Ok(gql) => {
-            let mut req = client
-                .post(gql)
-                .json(&serde_json::json!({ "query": "query{__typename}" }));
-            if let Some(auth) = &credential {
-                req = auth.apply(req);
-            }
-            match req.send().await {
-                Ok(resp) => {
-                    let status = resp.status();
-                    let body = resp.text().await.unwrap_or_default();
-                    let reachable = body.contains("__typename") || status.is_success();
-                    println!(
-                        "POST /api/graphql     : HTTP {} {}",
-                        status.as_u16(),
-                        if reachable {
-                            "✓ reachable"
-                        } else {
-                            "(unexpected body)"
-                        }
-                    );
+    match graphql_urls(portal) {
+        Ok(urls) => {
+            let mut last_err = None;
+            for gql in urls {
+                let mut req = client
+                    .post(gql.clone())
+                    .json(&serde_json::json!({ "query": "query{__typename}" }));
+                if let Some(auth) = &credential {
+                    req = auth.apply(req);
                 }
-                Err(err) => println!("POST /api/graphql     : ✗ {}", short_err(&err)),
+                match req.send().await {
+                    Ok(resp) => {
+                        let status = resp.status();
+                        let body = resp.text().await.unwrap_or_default();
+                        let reachable = body.contains("__typename") || status.is_success();
+                        let route_miss = matches!(
+                            status,
+                            reqwest::StatusCode::NOT_FOUND
+                                | reqwest::StatusCode::METHOD_NOT_ALLOWED
+                        );
+                        println!(
+                            "POST GraphQL          : HTTP {} {} ({gql})",
+                            status.as_u16(),
+                            if reachable {
+                                "✓ reachable"
+                            } else if route_miss {
+                                "route not found; trying next"
+                            } else {
+                                "(unexpected body)"
+                            }
+                        );
+                        if reachable {
+                            break;
+                        }
+                    }
+                    Err(err) => last_err = Some(short_err(&err)),
+                }
+            }
+            if let Some(err) = last_err {
+                println!("POST GraphQL          : ✗ {err}");
             }
         }
-        Err(err) => println!("POST /api/graphql     : ✗ {err}"),
+        Err(err) => println!("POST GraphQL          : ✗ {err}"),
     }
 
     println!("\nNote: browser login uses the OIDC issuer above. A pasted CI-Server");
@@ -169,12 +192,37 @@ fn opt(v: Option<String>) -> String {
     v.unwrap_or_else(|| "✗ unset".to_string())
 }
 
+fn join_urls(urls: &[reqwest::Url]) -> String {
+    urls.iter()
+        .map(|url| url.as_str())
+        .collect::<Vec<_>>()
+        .join(" | ")
+}
+
 fn short_err(err: &reqwest::Error) -> String {
-    if err.is_connect() {
+    let chain = error_chain(err);
+    let lower = chain.to_ascii_lowercase();
+    if lower.contains("certificate") || lower.contains("unknownissuer") {
+        "TLS certificate rejected; use a trusted CI-Server URL or install the server certificate"
+            .to_string()
+    } else if lower.contains("tls") || lower.contains("ssl") || lower.contains("alert") {
+        "TLS handshake failed; check the CI-Server URL and certificate".to_string()
+    } else if err.is_connect() {
         "connection refused / host unreachable".to_string()
     } else if err.is_timeout() {
         "timed out".to_string()
     } else {
         err.to_string()
     }
+}
+
+fn error_chain(err: &reqwest::Error) -> String {
+    let mut text = err.to_string();
+    let mut source = err.source();
+    while let Some(err) = source {
+        text.push_str(": ");
+        text.push_str(&err.to_string());
+        source = err.source();
+    }
+    text
 }

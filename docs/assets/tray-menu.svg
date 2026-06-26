@@ -49,8 +49,8 @@
     <text x="40" y="220" fill="#ffffff" fill-opacity="0.45">Screenshot Interval: 300s</text>
     <text x="40" y="248" fill="#ffffff" fill-opacity="0.45">Diff Threshold: 10.0%</text>
     <text x="40" y="276" fill="#ffffff" fill-opacity="0.45">Identity: user a1b2 / device 9f3c</text>
-    <text x="40" y="304" fill="#ffffff" fill-opacity="0.45">Portal URL: memory.ci.localhost</text>
-    <text x="40" y="332" fill="#f2f2f7">Login to memory.ci.localhost</text>
+    <text x="40" y="304" fill="#ffffff" fill-opacity="0.45">Portal URL: your CI-Server URL</text>
+    <text x="40" y="332" fill="#f2f2f7">Login via configured issuer</text>
     <line x1="32" y1="350" x2="296" y2="350" stroke="#ffffff" stroke-opacity="0.10"/>
 
     <!-- file-tracking status line (the new lane) -->

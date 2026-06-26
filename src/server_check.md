@@ -12,6 +12,7 @@ Provides the `--check-server` connectivity diagnostic. It reports configured end
 ### `short_err`
 - **Does**: Converts common HTTP client errors into concise terminal text.
 - **Interacts with**: `report`.
+- **Rationale**: TLS/certificate failures can be reported by `reqwest` as connect failures, so the full error chain is inspected before falling back to host/port wording.
 
 ## Contracts
 

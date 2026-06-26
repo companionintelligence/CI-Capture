@@ -10,11 +10,11 @@ Wraps the CI-Server upload and unified event-ingest endpoints used after browser
 - **Interacts with**: `worker.rs`.
 
 ### `ingest_capture`
-- **Does**: Uploads a screenshot to `POST /api/files/upload` with `inventoryCapture=true`.
+- **Does**: Uploads a screenshot to CI-Server file upload with `inventoryCapture=true`.
 - **Interacts with**: `AuthCredential` in `server_common.rs` and CI-Server file ingestion.
 
 ### `ingest_vizier_event`, `ingest_file_event`
-- **Does**: Serializes applet activity into CI-Server's `POST /api/v1/events` capture-ingest envelope.
+- **Does**: Serializes applet activity into CI-Server's capture-ingest envelope.
 - **Interacts with**: `db.rs` event types, watcher events, and CI-Server event ingest.
 
 ### `post_capture_event`
@@ -30,3 +30,4 @@ Wraps the CI-Server upload and unified event-ingest endpoints used after browser
 
 ## Notes
 - `AuthCredential` sends JWT/OIDC tokens as bearer auth and 64-character CI-Server API keys as `x-api-key`.
+- Endpoint candidates from `server_common` allow either `/api/...` or bare API routes.

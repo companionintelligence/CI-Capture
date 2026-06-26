@@ -34,4 +34,4 @@ Defines persisted application configuration for CI-Applet. It is the schema boun
 ## Notes
 - `server.applet_auth_token` is intentionally optional so pre-pairing installs and manual UUID fallback still load cleanly.
 - `server.portal_url` controls where data is sent. `oidc.issuer` controls where login happens; they are not automatically derived from each other.
-- New configs default both CI-Server URL and OIDC issuer to the local CI-Server hostname (`https://memory.ci.localhost`).
+- New configs do not embed a CI-Server URL; users provide the server origin/API URL that matches their deployment.

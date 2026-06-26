@@ -3035,7 +3035,6 @@ dependencies = [
  "tokio",
  "tokio-rustls 0.26.4",
  "tower-service",
- "webpki-roots 1.0.4",
 ]
 
 [[package]]
@@ -5060,6 +5059,7 @@ dependencies = [
  "pin-project-lite",
  "quinn",
  "rustls 0.23.35",
+ "rustls-native-certs 0.8.2",
  "rustls-pki-types",
  "serde",
  "serde_json",
@@ -5074,7 +5074,6 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
- "webpki-roots 1.0.4",
 ]
 
 [[package]]

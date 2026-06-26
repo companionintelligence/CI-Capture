@@ -83,8 +83,11 @@ Self-test usage:
 
 ```bash
 cargo run -- --check-server                       # against configured portal
-cargo run -- --check-server --portal http://localhost:8642
+cargo run -- --check-server --portal https://your-ci-server.example.com
 ```
+
+The applet probes both `/api/...` and bare API routes for the configured
+CI-Server URL.
 
 ## 5. Privacy posture (shipped)
 

@@ -1,12 +1,12 @@
 use anyhow::{Context, Result, anyhow};
-use reqwest::Client;
+use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
 use crate::config::AppConfig;
 use crate::db::VizierEventRecord;
-use crate::server_common::{AuthCredential, server_origin};
+use crate::server_common::{AuthCredential, events_urls, upload_urls};
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -67,52 +67,50 @@ pub async fn ingest_capture(
 ) -> Result<String> {
     let credential = AuthCredential::from_config(config)?;
 
-    let upload_url = server_origin(&config.server.portal_url)?
-        .join("/api/files/upload")
-        .context("building capture upload URL")?;
-
     let client = Client::builder()
         .use_rustls_tls()
         .build()
         .context("building capture upload client")?;
 
-    let part = reqwest::multipart::Part::bytes(png_bytes.to_vec())
-        .file_name(filename.to_string())
-        .mime_str("image/png")
-        .context("setting MIME type on capture upload part")?;
+    let mut last_error = None;
+    for upload_url in upload_urls(&config.server.portal_url)? {
+        let form = capture_upload_form(filename, png_bytes, &config.analysis.model)?;
+        let response = credential
+            .apply(client.post(upload_url.clone()))
+            .multipart(form)
+            .send()
+            .await
+            .with_context(|| format!("sending capture upload request to {upload_url}"))?;
 
-    let form = reqwest::multipart::Form::new()
-        .part("files", part)
-        .text("inventoryCapture", "true")
-        .text("model", config.analysis.model.clone());
+        let status = response.status();
+        if should_try_next_endpoint(status) {
+            let body = response.text().await.unwrap_or_default();
+            last_error = Some(anyhow!("capture upload failed with HTTP {status}: {body}"));
+            continue;
+        }
 
-    let response = credential
-        .apply(client.post(upload_url))
-        .multipart(form)
-        .send()
-        .await
-        .context("sending capture upload request")?;
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(anyhow!("capture upload failed with HTTP {status}: {body}"));
+        }
 
-    let status = response.status();
-    if !status.is_success() {
-        let body = response.text().await.unwrap_or_default();
-        return Err(anyhow!("capture upload failed with HTTP {status}: {body}"));
+        let entries: Vec<UploadResponse> = response
+            .json()
+            .await
+            .context("decoding capture upload response")?;
+
+        let file_id = entries
+            .into_iter()
+            .next()
+            .context("capture upload response was empty")?
+            .id;
+
+        log::debug!("capture uploaded: file_id={file_id} filename={filename}");
+
+        return Ok(file_id);
     }
 
-    let entries: Vec<UploadResponse> = response
-        .json()
-        .await
-        .context("decoding capture upload response")?;
-
-    let file_id = entries
-        .into_iter()
-        .next()
-        .context("capture upload response was empty")?
-        .id;
-
-    log::debug!("capture uploaded: file_id={file_id} filename={filename}");
-
-    Ok(file_id)
+    Err(last_error.unwrap_or_else(|| anyhow!("no capture upload endpoint candidates")))
 }
 
 /// Content extracted from a changed file, attached to a file event so the
@@ -223,42 +221,74 @@ async fn post_capture_event(config: &AppConfig, event: CaptureEvent) -> Result<(
         .timeout(std::time::Duration::from_secs(30))
         .build()
         .context("building event ingest client")?;
-    let url = server_origin(&config.server.portal_url)?
-        .join("/api/v1/events")
-        .context("building event ingest URL")?;
+    let request = IngestEventsRequest {
+        events: vec![event],
+    };
 
-    let response = credential
-        .apply(client.post(url))
-        .json(&IngestEventsRequest {
-            events: vec![event],
-        })
-        .send()
-        .await
-        .context("sending event ingest request")?;
+    let mut last_error = None;
+    for url in events_urls(&config.server.portal_url)? {
+        let response = credential
+            .apply(client.post(url.clone()))
+            .json(&request)
+            .send()
+            .await
+            .with_context(|| format!("sending event ingest request to {url}"))?;
 
-    let status = response.status();
-    if !status.is_success() {
-        let body = response.text().await.unwrap_or_default();
-        return Err(anyhow!("event ingest failed with HTTP {status}: {body}"));
+        let status = response.status();
+        if should_try_next_endpoint(status) {
+            let body = response.text().await.unwrap_or_default();
+            last_error = Some(anyhow!("event ingest failed with HTTP {status}: {body}"));
+            continue;
+        }
+
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(anyhow!("event ingest failed with HTTP {status}: {body}"));
+        }
+
+        let body: IngestEventsResponse = response
+            .json()
+            .await
+            .context("decoding event ingest response")?;
+        if let Some(rejected) = body.rejected.first() {
+            return Err(anyhow!(
+                "event ingest rejected event {}: {}",
+                rejected.index,
+                rejected.reason
+            ));
+        }
+
+        log::debug!(
+            "event ingest accepted: ingested={} duplicate={}",
+            body.ingested,
+            body.duplicate
+        );
+
+        return Ok(());
     }
 
-    let body: IngestEventsResponse = response
-        .json()
-        .await
-        .context("decoding event ingest response")?;
-    if let Some(rejected) = body.rejected.first() {
-        return Err(anyhow!(
-            "event ingest rejected event {}: {}",
-            rejected.index,
-            rejected.reason
-        ));
-    }
+    Err(last_error.unwrap_or_else(|| anyhow!("no event ingest endpoint candidates")))
+}
 
-    log::debug!(
-        "event ingest accepted: ingested={} duplicate={}",
-        body.ingested,
-        body.duplicate
-    );
+fn capture_upload_form(
+    filename: &str,
+    png_bytes: &[u8],
+    model: &str,
+) -> Result<reqwest::multipart::Form> {
+    let part = reqwest::multipart::Part::bytes(png_bytes.to_vec())
+        .file_name(filename.to_string())
+        .mime_str("image/png")
+        .context("setting MIME type on capture upload part")?;
 
-    Ok(())
+    Ok(reqwest::multipart::Form::new()
+        .part("files", part)
+        .text("inventoryCapture", "true")
+        .text("model", model.to_string()))
+}
+
+fn should_try_next_endpoint(status: StatusCode) -> bool {
+    matches!(
+        status,
+        StatusCode::NOT_FOUND | StatusCode::METHOD_NOT_ALLOWED
+    )
 }
