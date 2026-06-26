@@ -2,17 +2,19 @@ name: Release
 
 # Builds native installers for every platform with cargo-packager — the same
 # kind of distributables a Tauri app produces (.dmg / .deb / .AppImage /
-# .exe installer) — and publishes them to a GitHub Release.
+# .exe installer / Arch pacman package) — and publishes them to a GitHub
+# Release.
 #
-# Cut a release:
+# Cut a versioned release:
 #   1. bump `version` in Cargo.toml, commit
 #   2. git tag v0.1.0 && git push origin v0.1.0
 #
-# Or run manually (Actions → Release → Run workflow) to dry-run the full build
-# on all platforms: it produces the installers as artifacts but doesn't publish.
+# Pushes to main/master publish a prerelease named from Cargo.toml + run number.
+# Manual runs build every package and upload the combined bundle as artifacts.
 
 on:
   push:
+    branches: [main, master]
     tags: ['v*']
   workflow_dispatch:
 
@@ -30,10 +32,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: macos-latest,   label: macOS (Apple Silicon), formats: dmg }
-          - { os: macos-13,       label: macOS (Intel),         formats: dmg }
-          - { os: ubuntu-22.04,   label: Linux (x86_64),        formats: "deb appimage" }
-          - { os: windows-latest, label: Windows (x86_64),      formats: nsis }
+          - { os: macos-15,       label: macOS (Apple Silicon), artifact: macos-arm64,   formats: dmg }
+          - { os: macos-15-intel, label: macOS (Intel),         artifact: macos-x64,     formats: dmg }
+          - { os: ubuntu-22.04,   label: Ubuntu (x86_64),       artifact: ubuntu-x64,    formats: "deb appimage" }
+          - { os: ubuntu-22.04,   label: Arch Linux (x86_64),   artifact: arch-x64,      formats: pacman }
+          - { os: windows-latest, label: Windows (x86_64),      artifact: windows-x64,   formats: nsis }
     steps:
       - uses: actions/checkout@v4
 
@@ -70,15 +73,15 @@ jobs:
         shell: bash
         run: |
           mkdir -p out
-          find dist -maxdepth 1 -type f \
-            \( -name '*.dmg' -o -name '*.deb' -o -name '*.AppImage' -o -name '*.exe' -o -name '*.msi' \) \
+          find dist -maxdepth 2 -type f \
+            \( -name '*.dmg' -o -name '*.deb' -o -name '*.AppImage' -o -name '*.exe' -o -name '*.msi' -o -name '*.tar.gz' -o -name '*.pkg.tar.*' -o -name 'PKGBUILD' \) \
             -exec cp {} out/ \;
           ls -la out
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: installers-${{ matrix.os }}
+          name: installers-${{ matrix.artifact }}
           path: out/*
           if-no-files-found: error
 
@@ -87,13 +90,30 @@ jobs:
     needs: package
     runs-on: ubuntu-latest
     steps:
-      - name: Resolve version
-        id: ver
+      - uses: actions/checkout@v4
+
+      - name: Resolve release metadata
+        id: release
+        shell: bash
         run: |
           if [ "${{ github.ref_type }}" = "tag" ]; then
             echo "version=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+            echo "tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event_name }}" = "push" ]; then
+            version="$(sed -nE 's/^version = "([^"]+)"/\1/p' Cargo.toml | head -n 1)"
+            short_sha="$(git rev-parse --short=12 HEAD)"
+            tag="build-${{ github.ref_name }}-${version}.${{ github.run_number }}-${short_sha}"
+            echo "version=v${version}+${{ github.ref_name }}.${{ github.run_number }}.${short_sha}" >> "$GITHUB_OUTPUT"
+            echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+            echo "publish=true" >> "$GITHUB_OUTPUT"
           else
             echo "version=v0.0.0-dev.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+            echo "tag=" >> "$GITHUB_OUTPUT"
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+            echo "publish=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Download all installers
@@ -105,22 +125,25 @@ jobs:
       - name: Checksums
         run: |
           cd artifacts
-          shasum -a 256 * > "CI-Applet-${{ steps.ver.outputs.version }}-SHA256SUMS.txt"
+          shasum -a 256 * > "CI-Applet-${{ steps.release.outputs.version }}-SHA256SUMS.txt"
           ls -la
 
       - name: Create GitHub Release
-        if: github.ref_type == 'tag'
+        if: steps.release.outputs.publish == 'true'
         uses: softprops/action-gh-release@v2
         with:
-          name: CI-Applet ${{ steps.ver.outputs.version }}
+          tag_name: ${{ steps.release.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: CI-Applet ${{ steps.release.outputs.version }}
+          prerelease: ${{ steps.release.outputs.prerelease }}
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: artifacts/*
 
       - name: Upload combined dry-run bundle
-        if: github.ref_type != 'tag'
+        if: steps.release.outputs.publish != 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: CI-Applet-${{ steps.ver.outputs.version }}-installers
+          name: CI-Applet-${{ steps.release.outputs.version }}-installers
           path: artifacts/*
           if-no-files-found: error

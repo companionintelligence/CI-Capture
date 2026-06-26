@@ -59,7 +59,7 @@ flowchart LR
 
 ## Install
 
-Download the installer for your OS from the [**Releases**](https://github.com/companionintelligence/CI-Applet/releases) page — a real `.dmg` / `.exe` / `.deb` / `.AppImage`, like CI-Hub.
+Download the installer for your OS from the [**Releases**](https://github.com/companionintelligence/CI-Applet/releases) page — a real `.dmg` / `.exe` / `.deb` / `.AppImage` / Arch pacman package, like CI-Hub.
 
 <details open>
 <summary><b>macOS</b> — <code>CI-Applet_*_aarch64.dmg</code> (Apple Silicon) · <code>CI-Applet_*_x64.dmg</code> (Intel)</summary>
@@ -74,9 +74,9 @@ Run the installer (**per‑user**, no admin needed). SmartScreen may warn about 
 </details>
 
 <details>
-<summary><b>Linux</b> — <code>ci-applet_*_amd64.deb</code> · <code>CI-Applet_*_x86_64.AppImage</code></summary>
+<summary><b>Linux</b> — <code>ci-applet_*_amd64.deb</code> · <code>CI-Applet_*_x86_64.AppImage</code> · Arch <code>*.tar.gz</code>/<code>PKGBUILD</code></summary>
 
-Debian/Ubuntu: `sudo apt install ./ci-applet_*_amd64.deb`. Any distro: `chmod +x CI-Applet_*.AppImage && ./CI-Applet_*.AppImage`. Needs an **X11** session and an AppIndicator/StatusNotifier tray host (GNOME needs the *AppIndicator* extension). The `.deb` pulls in GTK 3, `libayatana-appindicator3`, `libxdo`, and xcb.
+Debian/Ubuntu: `sudo apt install ./ci-applet_*_amd64.deb`. Arch: build/install with the release `PKGBUILD`, or install the generated pacman archive with `sudo pacman -U ./CI-Applet_*.tar.gz`. Any distro: `chmod +x CI-Applet_*.AppImage && ./CI-Applet_*.AppImage`. Needs an **X11** session and an AppIndicator/StatusNotifier tray host (GNOME needs the *AppIndicator* extension). The `.deb` pulls in GTK 3, `libayatana-appindicator3`, `libxdo`, and xcb.
 </details>
 
 > Prefer building from source? See [Build](#build).
