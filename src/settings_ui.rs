@@ -1,4 +1,6 @@
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::mpsc::{Receiver, Sender, channel};
 
 use anyhow::{Context, Result, anyhow};
 use eframe::{NativeOptions, egui};
@@ -7,6 +9,16 @@ use reqwest::Url;
 use uuid::Uuid;
 
 use crate::config::{AppConfig, ConfigManager, MinioConfig, PostgresConfig};
+use crate::connection_test;
+use crate::theme;
+
+/// Result of an inline connection test for one tab.
+#[derive(Clone)]
+enum TestState {
+    Running,
+    Ok(String),
+    Err(String),
+}
 
 pub fn run_settings_ui() -> Result<()> {
     let manager = ConfigManager::new().context("building config manager")?;
@@ -23,17 +35,21 @@ pub fn run_settings_ui() -> Result<()> {
     let mut native_options = NativeOptions::default();
     native_options.viewport = egui::ViewportBuilder::default()
         .with_title("CI-Applet Settings")
-        .with_inner_size([520.0, 640.0])
-        .with_min_inner_size([420.0, 520.0]);
+        .with_inner_size([900.0, 620.0])
+        .with_min_inner_size([720.0, 520.0]);
 
     eframe::run_native(
         "CI-Applet Settings",
         native_options,
-        Box::new(move |_cc| {
+        Box::new(move |cc| {
+            crate::theme::install_fonts(&cc.egui_ctx);
+            crate::theme::apply_visuals(&cc.egui_ctx);
+            let logo = crate::theme::load_logo(&cc.egui_ctx);
             Ok(Box::new(SettingsApp::new(
                 manager_clone.clone(),
                 base_clone.clone(),
                 saved_clone.clone(),
+                logo,
             )))
         }),
     )
@@ -132,7 +148,7 @@ pub enum AuthMode {
     Oidc,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum SettingsTab {
     Identity,
     Capture,
@@ -146,10 +162,44 @@ impl SettingsTab {
         match self {
             SettingsTab::Identity => "Identity",
             SettingsTab::Capture => "Capture",
-            SettingsTab::Minio => "MinIO",
-            SettingsTab::Postgres => "Postgres",
+            SettingsTab::Minio => "Storage",
+            SettingsTab::Postgres => "Database",
             SettingsTab::Analysis => "Vision",
         }
+    }
+
+    /// Short descriptor shown under the nav label.
+    fn subtitle(&self) -> &'static str {
+        match self {
+            SettingsTab::Identity => "Server & auth",
+            SettingsTab::Capture => "Cadence & lanes",
+            SettingsTab::Minio => "MinIO object store",
+            SettingsTab::Postgres => "Postgres",
+            SettingsTab::Analysis => "Analysis model",
+        }
+    }
+
+    /// Accent colour for the nav chip.
+    fn accent(&self) -> egui::Color32 {
+        match self {
+            SettingsTab::Identity => theme::TEAL_DIM,
+            SettingsTab::Capture => theme::BLUE,
+            SettingsTab::Minio => theme::PURPLE,
+            SettingsTab::Postgres => theme::TEAL_DIM,
+            SettingsTab::Analysis => theme::BLUE,
+        }
+    }
+
+    /// Whether this tab configures a remote service that can be test-probed.
+    fn has_connection(&self) -> bool {
+        !matches!(self, SettingsTab::Capture)
+    }
+
+    /// Legacy direct-write connections (Storage/Database). The supported path
+    /// streams everything through CI-Server, so these are hidden unless the
+    /// user opts into the advanced section.
+    fn is_advanced(&self) -> bool {
+        matches!(self, SettingsTab::Minio | SettingsTab::Postgres)
     }
 
     fn all() -> [SettingsTab; 5] {
@@ -170,6 +220,12 @@ struct SettingsApp {
     current_tab: SettingsTab,
     error: Option<String>,
     saved_flag: Arc<Mutex<bool>>,
+    logo: egui::TextureHandle,
+    runtime: tokio::runtime::Runtime,
+    test_tx: Sender<(SettingsTab, Result<String, String>)>,
+    test_rx: Receiver<(SettingsTab, Result<String, String>)>,
+    tests: HashMap<SettingsTab, TestState>,
+    show_advanced: bool,
 }
 
 impl SettingsApp {
@@ -177,11 +233,18 @@ impl SettingsApp {
         manager: Arc<ConfigManager>,
         base_config: Arc<Mutex<AppConfig>>,
         saved_flag: Arc<Mutex<bool>>,
+        logo: egui::TextureHandle,
     ) -> Self {
         let form = {
             let cfg = base_config.lock();
             SettingsFormState::from(&*cfg)
         };
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .expect("failed to create settings runtime");
+        let (test_tx, test_rx) = channel();
         Self {
             manager,
             base_config,
@@ -189,6 +252,102 @@ impl SettingsApp {
             current_tab: SettingsTab::Identity,
             error: None,
             saved_flag,
+            logo,
+            runtime,
+            test_tx,
+            test_rx,
+            tests: HashMap::new(),
+            show_advanced: false,
+        }
+    }
+
+    /// Build an `AppConfig` from the current form, layered onto the last saved
+    /// config. Shared by `save` and the connection tests so a test always
+    /// probes exactly what the form shows.
+    fn build_config(&self) -> AppConfig {
+        let mut c = self.base_config.lock().clone();
+        c.server.portal_url = normalize_ci_server_url(self.form.portal_url.trim())
+            .unwrap_or_else(|_| self.form.portal_url.trim().to_string());
+        let auth_token = self.form.applet_auth_token.trim();
+        c.server.applet_auth_token = match self.form.auth_mode {
+            AuthMode::ApiKey if !auth_token.is_empty() => Some(auth_token.to_string()),
+            _ => None,
+        };
+        c.oidc.issuer = self.form.oidc_issuer.trim().to_string();
+        c.oidc.client_id = self.form.oidc_client_id.trim().to_string();
+        c.oidc.scopes = self.form.oidc_scopes.trim().to_string();
+        c.oidc.redirect_uri = self.form.oidc_redirect_uri.trim().to_string();
+        c.capture.screenshot_interval_secs = self.form.screenshot_interval_secs;
+        c.capture.diff_threshold_percent = self.form.diff_threshold_percent;
+        c.minio = MinioConfig {
+            endpoint: self.form.minio_endpoint.clone(),
+            bucket: self.form.minio_bucket.clone(),
+            region: self.form.minio_region.clone(),
+            access_key: self.form.minio_access_key.clone(),
+            secret_key: self.form.minio_secret_key.clone(),
+            use_ssl: self.form.minio_use_ssl,
+        };
+        c.postgres = PostgresConfig {
+            host: self.form.postgres_host.clone(),
+            port: self.form.postgres_port,
+            user: self.form.postgres_user.clone(),
+            password: self.form.postgres_password.clone(),
+            database: self.form.postgres_database.clone(),
+            require_ssl: self.form.postgres_require_ssl,
+        };
+        c.analysis.endpoint = self.form.analysis_endpoint.clone();
+        c.analysis.api_key = self.form.analysis_api_key.clone();
+        c.analysis.model = self.form.analysis_model.clone();
+        if let Ok(uid) = Uuid::parse_str(self.form.user_id.trim()) {
+            c.identity.user_id = Some(uid);
+        }
+        c
+    }
+
+    /// Spawn an async probe for `tab` and mark it running.
+    fn run_test(&mut self, tab: SettingsTab, ctx: &egui::Context) {
+        let config = self.build_config();
+        self.tests.insert(tab, TestState::Running);
+        let tx = self.test_tx.clone();
+        let ctx = ctx.clone();
+        self.runtime.spawn(async move {
+            let result = match tab {
+                SettingsTab::Identity => connection_test::test_ci_server(&config).await,
+                SettingsTab::Minio => connection_test::test_minio(&config).await,
+                SettingsTab::Postgres => connection_test::test_postgres(&config).await,
+                SettingsTab::Analysis => connection_test::test_vision(&config).await,
+                SettingsTab::Capture => return,
+            };
+            let _ = tx.send((tab, result));
+            ctx.request_repaint();
+        });
+    }
+
+    /// Apply any finished test results.
+    fn drain_tests(&mut self) {
+        while let Ok((tab, result)) = self.test_rx.try_recv() {
+            let state = match result {
+                Ok(detail) => TestState::Ok(detail),
+                Err(msg) => TestState::Err(msg),
+            };
+            self.tests.insert(tab, state);
+        }
+    }
+
+    /// Derive a coarse connection descriptor from config presence (no network
+    /// call is made here — this is a visual hint, not a live probe).
+    fn connection_status(&self) -> (&'static str, &'static str, egui::Color32) {
+        let has_url = !self.form.portal_url.trim().is_empty();
+        let has_cred = match self.form.auth_mode {
+            AuthMode::ApiKey => !self.form.applet_auth_token.trim().is_empty(),
+            AuthMode::Oidc => !self.form.oidc_issuer.trim().is_empty(),
+        };
+        if has_url && has_cred {
+            ("Configured", "Streaming target set", theme::GREEN)
+        } else if has_url {
+            ("Incomplete", "Add credentials to stream", theme::AMBER)
+        } else {
+            ("Not configured", "Set a CI-Server URL", theme::RED)
         }
     }
 
@@ -199,55 +358,22 @@ impl SettingsApp {
         }
 
         let previous = self.base_config.lock().clone();
-        let mut updated = previous.clone();
         let previous_user_id = previous.identity.user_id.map(|id| id.to_string());
         let previous_auth_token = previous.server.applet_auth_token.clone();
-        let auth_token = self.form.applet_auth_token.trim();
+
+        let mut updated = self.build_config();
+        // Identity is handled specially: a blank user clears the identity, and
+        // changing the user resets the auto-assigned device.
         if self.form.user_id.trim().is_empty() {
             updated.identity.user_id = None;
             updated.identity.device_id = None;
-        } else {
-            let user_id = Uuid::parse_str(self.form.user_id.trim()).unwrap();
-            updated.identity.user_id = Some(user_id);
-            if previous_user_id.as_deref() != Some(self.form.user_id.trim()) {
-                updated.identity.device_id = None;
-            }
+        } else if previous_user_id.as_deref() != Some(self.form.user_id.trim()) {
+            updated.identity.device_id = None;
         }
-        updated.server.portal_url = normalize_ci_server_url(self.form.portal_url.trim())
-            .unwrap_or_else(|_| self.form.portal_url.trim().to_string());
-        updated.server.applet_auth_token = match self.form.auth_mode {
-            AuthMode::ApiKey if !auth_token.is_empty() => Some(auth_token.to_string()),
-            AuthMode::ApiKey => None,
-            AuthMode::Oidc => None,
-        };
+        // Changing the server credential invalidates any stored OIDC session.
         if previous_auth_token != updated.server.applet_auth_token {
             updated.oidc_session = None;
         }
-        updated.oidc.issuer = self.form.oidc_issuer.trim().to_string();
-        updated.oidc.client_id = self.form.oidc_client_id.trim().to_string();
-        updated.oidc.scopes = self.form.oidc_scopes.trim().to_string();
-        updated.oidc.redirect_uri = self.form.oidc_redirect_uri.trim().to_string();
-        updated.capture.screenshot_interval_secs = self.form.screenshot_interval_secs;
-        updated.capture.diff_threshold_percent = self.form.diff_threshold_percent;
-        updated.minio = MinioConfig {
-            endpoint: self.form.minio_endpoint.clone(),
-            bucket: self.form.minio_bucket.clone(),
-            region: self.form.minio_region.clone(),
-            access_key: self.form.minio_access_key.clone(),
-            secret_key: self.form.minio_secret_key.clone(),
-            use_ssl: self.form.minio_use_ssl,
-        };
-        updated.postgres = PostgresConfig {
-            host: self.form.postgres_host.clone(),
-            port: self.form.postgres_port,
-            user: self.form.postgres_user.clone(),
-            password: self.form.postgres_password.clone(),
-            database: self.form.postgres_database.clone(),
-            require_ssl: self.form.postgres_require_ssl,
-        };
-        updated.analysis.endpoint = self.form.analysis_endpoint.clone();
-        updated.analysis.api_key = self.form.analysis_api_key.clone();
-        updated.analysis.model = self.form.analysis_model.clone();
 
         if let Err(err) = self.manager.save(&updated) {
             self.error = Some(format!("Failed to save config: {err}"));
@@ -319,49 +445,44 @@ impl SettingsApp {
 
 impl eframe::App for SettingsApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("CI-Applet Settings");
-            if let Some(error) = &self.error {
-                ui.colored_label(egui::Color32::from_rgb(208, 17, 54), error);
-                ui.add_space(8.0);
-            }
+        self.drain_tests();
+        self.render_sidebar(ctx);
+        self.render_footer(ctx);
 
-            ui.horizontal(|ui| {
-                for tab in SettingsTab::all() {
-                    let selected = self.current_tab == tab;
-                    if ui.selectable_label(selected, tab.label()).clicked() {
-                        self.current_tab = tab;
-                    }
-                }
+        egui::CentralPanel::default()
+            .frame(
+                egui::Frame::new()
+                    .fill(theme::PANEL)
+                    .inner_margin(egui::Margin::symmetric(30, 26)),
+            )
+            .show(ctx, |ui| {
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        let tab = self.current_tab;
+                        let changed = match tab {
+                            SettingsTab::Identity => render_identity_tab(ui, &mut self.form),
+                            SettingsTab::Capture => render_capture_tab(ui, &mut self.form),
+                            SettingsTab::Minio => render_minio_tab(ui, &mut self.form),
+                            SettingsTab::Postgres => render_postgres_tab(ui, &mut self.form),
+                            SettingsTab::Analysis => render_analysis_tab(ui, &mut self.form),
+                        };
+                        // Editing a field invalidates a prior test result.
+                        if changed {
+                            self.error = None;
+                            self.tests.remove(&tab);
+                        }
+                        if tab.has_connection() {
+                            ui.add_space(20.0);
+                            ui.separator();
+                            ui.add_space(14.0);
+                            if render_test_row(ui, self.tests.get(&tab)) {
+                                self.run_test(tab, ctx);
+                            }
+                        }
+                    });
             });
-            ui.separator();
-
-            let mut changed = false;
-            egui::ScrollArea::vertical()
-                .max_height((ui.available_height() - 56.0).max(240.0))
-                .show(ui, |ui| {
-                    changed = match self.current_tab {
-                        SettingsTab::Identity => render_identity_tab(ui, &mut self.form),
-                        SettingsTab::Capture => render_capture_tab(ui, &mut self.form),
-                        SettingsTab::Minio => render_minio_tab(ui, &mut self.form),
-                        SettingsTab::Postgres => render_postgres_tab(ui, &mut self.form),
-                        SettingsTab::Analysis => render_analysis_tab(ui, &mut self.form),
-                    };
-                });
-            if changed {
-                self.error = None;
-            }
-
-            ui.separator();
-            ui.horizontal(|ui| {
-                if ui.button("Close").clicked() {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                }
-                if ui.button("Save").clicked() {
-                    self.save(ctx);
-                }
-            });
-        });
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
@@ -371,84 +492,313 @@ impl eframe::App for SettingsApp {
     }
 }
 
+impl SettingsApp {
+    fn render_sidebar(&mut self, ctx: &egui::Context) {
+        egui::SidePanel::left("nav")
+            .exact_width(236.0)
+            .resizable(false)
+            .frame(
+                egui::Frame::new()
+                    .fill(theme::PANEL_HI)
+                    .inner_margin(egui::Margin::same(14)),
+            )
+            .show(ctx, |ui| {
+                // Header: logo + product name.
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 10.0;
+                    theme::logo(ui, &self.logo, 26.0, theme::TEAL);
+                    ui.vertical(|ui| {
+                        ui.spacing_mut().item_spacing.y = 1.0;
+                        ui.label(
+                            egui::RichText::new("CI-Applet")
+                                .font(theme::light(16.0))
+                                .color(theme::TEXT),
+                        );
+                        ui.label(
+                            egui::RichText::new("Settings")
+                                .font(theme::body(11.0))
+                                .color(theme::MUTED),
+                        );
+                    });
+                });
+                ui.add_space(14.0);
+
+                // Nav items — advanced (legacy) connections stay hidden unless
+                // the user opts in below.
+                for tab in SettingsTab::all() {
+                    if tab.is_advanced() && !self.show_advanced {
+                        continue;
+                    }
+                    let selected = self.current_tab == tab;
+                    if theme::nav_item(ui, tab.accent(), tab.label(), tab.subtitle(), selected) {
+                        self.current_tab = tab;
+                    }
+                    ui.add_space(3.0);
+                }
+
+                // Advanced toggle: reveals the legacy Storage/Database tabs.
+                ui.add_space(7.0);
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 10.0;
+                    if theme::toggle(ui, &mut self.show_advanced).changed()
+                        && !self.show_advanced
+                        && self.current_tab.is_advanced()
+                    {
+                        // Hid the tab we were on — fall back to Identity.
+                        self.current_tab = SettingsTab::Identity;
+                    }
+                    ui.vertical(|ui| {
+                        ui.spacing_mut().item_spacing.y = 1.0;
+                        ui.label(
+                            egui::RichText::new("Advanced")
+                                .font(theme::body(12.5))
+                                .color(theme::TEXT),
+                        );
+                        ui.label(
+                            egui::RichText::new("Legacy storage & database")
+                                .font(theme::body(10.5))
+                                .color(theme::MUTED),
+                        );
+                    });
+                });
+
+                // Push the connection card to the bottom.
+                let (text, sub, color) = self.connection_status();
+                ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
+                    theme::card(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 8.0;
+                            theme::status_dot(ui, color, true);
+                            ui.label(
+                                egui::RichText::new(text)
+                                    .font(theme::semibold(12.5))
+                                    .color(theme::TEXT),
+                            );
+                        });
+                        ui.add_space(5.0);
+                        theme::caption(ui, sub);
+                        ui.add_space(10.0);
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 6.0;
+                            for c in [theme::LANE_SHOT, theme::LANE_ACTIVITY, theme::LANE_FILE] {
+                                let (r, _) =
+                                    ui.allocate_exact_size(egui::Vec2::splat(7.0), egui::Sense::hover());
+                                ui.painter().circle_filled(r.center(), 3.5, c);
+                            }
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| theme::mono_label(ui, "3 lanes", theme::FAINT),
+                            );
+                        });
+                    });
+                });
+            });
+    }
+
+    fn render_footer(&mut self, ctx: &egui::Context) {
+        let config_path = self.manager.path().display().to_string();
+        egui::TopBottomPanel::bottom("footer")
+            .frame(
+                egui::Frame::new()
+                    .fill(theme::PANEL_HI)
+                    .inner_margin(egui::Margin::symmetric(22, 14)),
+            )
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    if let Some(error) = self.error.clone() {
+                        theme::status_dot(ui, theme::RED, false);
+                        ui.label(
+                            egui::RichText::new(error)
+                                .font(theme::body(11.5))
+                                .color(theme::RED),
+                        );
+                    } else {
+                        theme::mono_label(ui, &config_path, theme::FAINT);
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.spacing_mut().item_spacing.x = 10.0;
+                        if theme::primary_button(ui, "Save").clicked() {
+                            self.save(ctx);
+                        }
+                        if theme::ghost_button(ui, "Close").clicked() {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                        }
+                    });
+                });
+            });
+    }
+}
+
+/// A labelled text field with consistent spacing. Returns whether it changed.
+fn field(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: &mut String,
+    hint: &str,
+    opts: theme::FieldOpts,
+) -> bool {
+    theme::field_label(ui, label);
+    ui.add_space(6.0);
+    let changed = theme::text_field(ui, value, hint, opts);
+    ui.add_space(15.0);
+    changed
+}
+
+/// The "Test connection" button + live result for a connection tab. Returns
+/// true when the button is clicked.
+fn render_test_row(ui: &mut egui::Ui, state: Option<&TestState>) -> bool {
+    let mut clicked = false;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 10.0;
+        clicked = theme::ghost_button(ui, "Test connection").clicked();
+        match state {
+            Some(TestState::Running) => {
+                ui.add(egui::Spinner::new().size(16.0).color(theme::AMBER));
+                ui.label(
+                    egui::RichText::new("Testing…")
+                        .font(theme::body(12.0))
+                        .color(theme::AMBER),
+                );
+            }
+            Some(TestState::Ok(_)) => {
+                theme::status_badge(ui, "Connected", theme::GREEN);
+            }
+            Some(TestState::Err(_)) => {
+                theme::status_badge(ui, "Failed", theme::RED);
+            }
+            None => {}
+        }
+    });
+    if let Some(TestState::Ok(detail) | TestState::Err(detail)) = state {
+        ui.add_space(7.0);
+        theme::mono_label(ui, detail, theme::MUTED);
+    }
+    clicked
+}
+
+/// Page title + descriptive subtitle.
+fn page_header(ui: &mut egui::Ui, title: &str, subtitle: &str) {
+    theme::heading(ui, title);
+    ui.add_space(3.0);
+    theme::subtitle(ui, subtitle);
+    ui.add_space(20.0);
+}
+
 fn render_identity_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bool {
     let mut changed = false;
-    ui.label("CI-Server URL receives captures and uploads.");
-    ui.separator();
-    ui.label("CI-Server URL");
-    changed |= ui
-        .add(
-            egui::TextEdit::singleline(&mut form.portal_url)
-                .hint_text("https://your-ci-server.example.com"),
-        )
-        .changed();
+    page_header(
+        ui,
+        "Identity",
+        "Where captures are sent, and how the applet authenticates.",
+    );
 
-    ui.add_space(4.0);
-    ui.label("Authentication");
-    ui.horizontal(|ui| {
-        changed |= ui
-            .selectable_value(&mut form.auth_mode, AuthMode::ApiKey, "API key")
-            .changed();
-        changed |= ui
-            .selectable_value(&mut form.auth_mode, AuthMode::Oidc, "OIDC")
-            .changed();
-    });
-    ui.separator();
+    changed |= field(
+        ui,
+        "CI-Server URL",
+        &mut form.portal_url,
+        "https://your-ci-server.example.com",
+        theme::FieldOpts::monospace(),
+    );
+
+    theme::field_label(ui, "Authentication");
+    ui.add_space(6.0);
+    egui::Frame::new()
+        .fill(theme::INPUT)
+        .stroke(egui::Stroke::new(1.0, theme::BORDER))
+        .corner_radius(egui::CornerRadius::same(10))
+        .inner_margin(egui::Margin::same(3))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 3.0;
+                if theme::segment(ui, "API key", form.auth_mode == AuthMode::ApiKey) {
+                    form.auth_mode = AuthMode::ApiKey;
+                    changed = true;
+                }
+                if theme::segment(ui, "OIDC browser login", form.auth_mode == AuthMode::Oidc) {
+                    form.auth_mode = AuthMode::Oidc;
+                    changed = true;
+                }
+            });
+        });
+    ui.add_space(16.0);
 
     match form.auth_mode {
         AuthMode::ApiKey => {
-            ui.label("API Key");
-            changed |= ui
-                .add(
-                    egui::TextEdit::singleline(&mut form.applet_auth_token)
-                        .password(true)
-                        .hint_text("Paste CI-Server API key"),
-                )
-                .changed();
+            changed |= field(
+                ui,
+                "API Key",
+                &mut form.applet_auth_token,
+                "Paste CI-Server API key",
+                theme::FieldOpts::password(),
+            );
+            theme::caption(
+                ui,
+                "Sent as x-api-key. Pasting a key clears any OIDC session.",
+            );
+            ui.add_space(15.0);
         }
         AuthMode::Oidc => {
-            ui.label("OIDC Issuer URL");
-            changed |= ui
-                .add(
-                    egui::TextEdit::singleline(&mut form.oidc_issuer)
-                        .hint_text("https://your-ci-server.example.com/api/auth"),
-                )
-                .changed();
-            ui.label("OIDC Client ID");
-            changed |= ui
-                .add(egui::TextEdit::singleline(&mut form.oidc_client_id).hint_text("ci-applet"))
-                .changed();
-            ui.label("OIDC Scopes");
-            changed |= ui
-                .add(
-                    egui::TextEdit::singleline(&mut form.oidc_scopes)
-                        .hint_text("openid profile email offline_access"),
-                )
-                .changed();
-            ui.label("OIDC Redirect URI");
-            changed |= ui
-                .add(
-                    egui::TextEdit::singleline(&mut form.oidc_redirect_uri)
-                        .hint_text("http://127.0.0.1:49473/callback"),
-                )
-                .changed();
+            changed |= field(
+                ui,
+                "OIDC Issuer URL",
+                &mut form.oidc_issuer,
+                "https://your-ci-server.example.com/api/auth",
+                theme::FieldOpts::monospace(),
+            );
+            ui.columns(2, |cols| {
+                changed |= field(
+                    &mut cols[0],
+                    "Client ID",
+                    &mut form.oidc_client_id,
+                    "ci-applet",
+                    theme::FieldOpts::monospace(),
+                );
+                changed |= field(
+                    &mut cols[1],
+                    "Scopes",
+                    &mut form.oidc_scopes,
+                    "openid profile email",
+                    theme::FieldOpts::monospace(),
+                );
+            });
+            changed |= field(
+                ui,
+                "Redirect URI",
+                &mut form.oidc_redirect_uri,
+                "http://127.0.0.1:49473/callback",
+                theme::FieldOpts::monospace(),
+            );
         }
     }
 
-    ui.separator();
-    ui.collapsing("Advanced identity", |ui| {
-        ui.label("Manual User ID Override (optional UUID)");
-        changed |= ui
-            .add(egui::TextEdit::singleline(&mut form.user_id).hint_text("User UUID"))
-            .changed();
-        ui.label("Device ID (auto-assigned)");
+    ui.add_space(3.0);
+    theme::field_label(ui, "Advanced identity");
+    ui.add_space(10.0);
+    ui.columns(2, |cols| {
+        cols[0].label(
+            egui::RichText::new("User ID override")
+                .font(theme::body(11.5))
+                .color(theme::MUTED),
+        );
+        cols[0].add_space(5.0);
+        changed |= theme::text_field(
+            &mut cols[0],
+            &mut form.user_id,
+            "User UUID",
+            theme::FieldOpts::monospace(),
+        );
+
+        cols[1].label(
+            egui::RichText::new("Device ID (auto)")
+                .font(theme::body(11.5))
+                .color(theme::MUTED),
+        );
+        cols[1].add_space(5.0);
         if form.device_id.is_empty() {
-            ui.label(
-                egui::RichText::new("Device will be set after browser login or manual user save")
-                    .italics(),
-            );
+            theme::mono_label(&mut cols[1], "set after login / save", theme::FAINT);
         } else {
-            ui.monospace(&form.device_id);
+            theme::mono_label(&mut cols[1], &form.device_id, theme::TEXT);
         }
     });
     changed
@@ -494,89 +844,264 @@ mod tests {
 
 fn render_capture_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bool {
     let mut changed = false;
-    ui.label("Screenshot interval (seconds)");
-    changed |= ui
-        .add(egui::DragValue::new(&mut form.screenshot_interval_secs).range(30..=86_400))
-        .changed();
-    ui.label("Diff threshold (%)");
-    changed |= ui
-        .add(egui::Slider::new(
-            &mut form.diff_threshold_percent,
-            0.0..=100.0,
-        ))
-        .changed();
+    page_header(
+        ui,
+        "Capture",
+        "How often the desktop is perceived, and the diff gate that skips near-identical frames.",
+    );
+
+    ui.columns(2, |cols| {
+        // Screenshot interval stepper.
+        theme::card(&mut cols[0], |ui| {
+            ui.set_width(ui.available_width());
+            theme::field_label(ui, "Screenshot interval");
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 12.0;
+                if stepper_button(ui, "\u{2212}") {
+                    form.screenshot_interval_secs =
+                        form.screenshot_interval_secs.saturating_sub(30).max(30);
+                    changed = true;
+                }
+                ui.with_layout(
+                    egui::Layout::top_down(egui::Align::Center).with_main_justify(true),
+                    |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new(form.screenshot_interval_secs.to_string())
+                                    .font(theme::light(30.0))
+                                    .color(theme::TEXT),
+                            );
+                            ui.label(
+                                egui::RichText::new("s")
+                                    .font(theme::body(14.0))
+                                    .color(theme::MUTED),
+                            );
+                        });
+                    },
+                );
+                if stepper_button(ui, "+") {
+                    form.screenshot_interval_secs =
+                        (form.screenshot_interval_secs + 30).min(86_400);
+                    changed = true;
+                }
+            });
+            ui.add_space(12.0);
+            ui.vertical_centered(|ui| theme::caption(ui, "Floored to 30s · default 300s"));
+        });
+
+        // Diff threshold slider.
+        theme::card(&mut cols[1], |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                theme::field_label(ui, "Diff threshold");
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(
+                        egui::RichText::new("%")
+                            .font(theme::body(13.0))
+                            .color(theme::TEAL),
+                    );
+                    ui.label(
+                        egui::RichText::new(format!("{:.0}", form.diff_threshold_percent))
+                            .font(theme::light(22.0))
+                            .color(theme::TEAL),
+                    );
+                });
+            });
+            ui.add_space(12.0);
+            changed |= ui
+                .add(
+                    egui::Slider::new(&mut form.diff_threshold_percent, 0.0..=100.0)
+                        .show_value(false),
+                )
+                .changed();
+            ui.add_space(12.0);
+            theme::caption(ui, "Frames changing less than this are skipped.");
+        });
+    });
+
+    ui.add_space(20.0);
+    theme::field_label(ui, "Capture lanes");
+    ui.add_space(10.0);
+    theme::lane_row(
+        ui,
+        theme::LANE_SHOT,
+        "Screenshots",
+        "Primary display, diff-gated & screensaver-aware",
+        "vision-analyzed",
+    );
+    ui.add_space(10.0);
+    theme::lane_row(
+        ui,
+        theme::LANE_ACTIVITY,
+        "Activity",
+        "vizier perception · app, window, filesystem deltas",
+        "JSON-Patch",
+    );
+    ui.add_space(10.0);
+    theme::lane_row(
+        ui,
+        theme::LANE_FILE,
+        "File tracking",
+        "Watched folders → Markdown · durable queue",
+        "queued",
+    );
     changed
+}
+
+/// A small square +/- button for the interval stepper.
+fn stepper_button(ui: &mut egui::Ui, glyph: &str) -> bool {
+    let btn = egui::Button::new(
+        egui::RichText::new(glyph)
+            .font(theme::body(18.0))
+            .color(theme::TEXT),
+    )
+    .fill(theme::INPUT)
+    .stroke(egui::Stroke::new(1.0, theme::BORDER_HI))
+    .corner_radius(egui::CornerRadius::same(9))
+    .min_size(egui::Vec2::splat(34.0));
+    ui.add(btn).clicked()
 }
 
 fn render_minio_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bool {
     let mut changed = false;
-    ui.label("Endpoint");
-    changed |= ui
-        .add(
-            egui::TextEdit::singleline(&mut form.minio_endpoint).hint_text("http://localhost:9000"),
-        )
-        .changed();
-    ui.label("Bucket");
-    changed |= ui
-        .add(egui::TextEdit::singleline(&mut form.minio_bucket).hint_text("Bucket"))
-        .changed();
-    ui.label("Region");
-    changed |= ui
-        .add(egui::TextEdit::singleline(&mut form.minio_region).hint_text("Region"))
-        .changed();
-    ui.label("Access Key");
-    changed |= ui
-        .add(egui::TextEdit::singleline(&mut form.minio_access_key).hint_text("Access key"))
-        .changed();
-    ui.label("Secret Key");
-    changed |= ui
-        .add(egui::TextEdit::singleline(&mut form.minio_secret_key).hint_text("Secret key"))
-        .changed();
-    changed |= ui.checkbox(&mut form.minio_use_ssl, "Use SSL").changed();
+    page_header(
+        ui,
+        "Storage",
+        "MinIO / S3-compatible object store for captured artifacts.",
+    );
+
+    changed |= field(
+        ui,
+        "Endpoint",
+        &mut form.minio_endpoint,
+        "http://localhost:9000",
+        theme::FieldOpts::monospace(),
+    );
+    ui.columns(2, |cols| {
+        changed |= field(
+            &mut cols[0],
+            "Bucket",
+            &mut form.minio_bucket,
+            "ci-captures",
+            theme::FieldOpts::monospace(),
+        );
+        changed |= field(
+            &mut cols[1],
+            "Region",
+            &mut form.minio_region,
+            "us-east-1",
+            theme::FieldOpts::monospace(),
+        );
+    });
+    ui.columns(2, |cols| {
+        changed |= field(
+            &mut cols[0],
+            "Access Key",
+            &mut form.minio_access_key,
+            "Access key",
+            theme::FieldOpts::monospace(),
+        );
+        changed |= field(
+            &mut cols[1],
+            "Secret Key",
+            &mut form.minio_secret_key,
+            "Secret key",
+            theme::FieldOpts::password(),
+        );
+    });
+    changed |= theme::toggle_row(
+        ui,
+        &mut form.minio_use_ssl,
+        "Use SSL",
+        "Encrypt the connection to the object store.",
+    );
     changed
 }
 
 fn render_postgres_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bool {
     let mut changed = false;
-    ui.label("Host");
-    changed |= ui
-        .add(egui::TextEdit::singleline(&mut form.postgres_host).hint_text("Host"))
-        .changed();
-    ui.label("Port");
-    changed |= ui
-        .add(egui::DragValue::new(&mut form.postgres_port).range(1..=65535))
-        .changed();
-    ui.label("Database");
-    changed |= ui
-        .add(egui::TextEdit::singleline(&mut form.postgres_database).hint_text("Database"))
-        .changed();
-    ui.label("User");
-    changed |= ui
-        .add(egui::TextEdit::singleline(&mut form.postgres_user).hint_text("User"))
-        .changed();
-    ui.label("Password");
-    changed |= ui
-        .add(egui::TextEdit::singleline(&mut form.postgres_password).hint_text("Password"))
-        .changed();
-    changed |= ui
-        .checkbox(&mut form.postgres_require_ssl, "Require SSL")
-        .changed();
+    page_header(ui, "Database", "Postgres connection for capture metadata.");
+
+    ui.columns(2, |cols| {
+        changed |= field(
+            &mut cols[0],
+            "Host",
+            &mut form.postgres_host,
+            "db.example.com",
+            theme::FieldOpts::monospace(),
+        );
+        theme::field_label(&mut cols[1], "Port");
+        cols[1].add_space(6.0);
+        changed |= cols[1]
+            .add(
+                egui::DragValue::new(&mut form.postgres_port)
+                    .range(1..=65535)
+                    .speed(1.0),
+            )
+            .changed();
+        cols[1].add_space(15.0);
+    });
+    ui.columns(2, |cols| {
+        changed |= field(
+            &mut cols[0],
+            "Database",
+            &mut form.postgres_database,
+            "companion",
+            theme::FieldOpts::monospace(),
+        );
+        changed |= field(
+            &mut cols[1],
+            "User",
+            &mut form.postgres_user,
+            "ci_applet",
+            theme::FieldOpts::monospace(),
+        );
+    });
+    changed |= field(
+        ui,
+        "Password",
+        &mut form.postgres_password,
+        "Password",
+        theme::FieldOpts::password(),
+    );
+    changed |= theme::toggle_row(
+        ui,
+        &mut form.postgres_require_ssl,
+        "Require SSL",
+        "Refuse unencrypted database connections.",
+    );
     changed
 }
 
 fn render_analysis_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bool {
     let mut changed = false;
-    ui.label("Vision Endpoint");
-    changed |= ui
-        .add(egui::TextEdit::singleline(&mut form.analysis_endpoint).hint_text("Vision endpoint"))
-        .changed();
-    ui.label("API Key");
-    changed |= ui
-        .add(egui::TextEdit::singleline(&mut form.analysis_api_key).hint_text("API key"))
-        .changed();
-    ui.label("Model");
-    changed |= ui
-        .add(egui::TextEdit::singleline(&mut form.analysis_model).hint_text("Model"))
-        .changed();
+    page_header(
+        ui,
+        "Vision",
+        "The vision model that interprets screenshots before they reach memory.",
+    );
+
+    changed |= field(
+        ui,
+        "Endpoint",
+        &mut form.analysis_endpoint,
+        "https://api.anthropic.com/v1/messages",
+        theme::FieldOpts::monospace(),
+    );
+    changed |= field(
+        ui,
+        "API Key",
+        &mut form.analysis_api_key,
+        "sk-ant-…",
+        theme::FieldOpts::password(),
+    );
+    changed |= field(
+        ui,
+        "Model",
+        &mut form.analysis_model,
+        "claude-sonnet-4",
+        theme::FieldOpts::monospace(),
+    );
     changed
 }

@@ -1,0 +1,583 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@200;300;400;500;600;700&family=Source+Code+Pro:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  * { box-sizing: border-box; }
+  @keyframes ci-pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+  @keyframes ci-spin { to { transform: rotate(360deg); } }
+</style>
+</helmet>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="ci-mark" viewBox="0 0 437.283 436.696">
+    <g fill="currentColor">
+      <path d="M89.481,222.795l83.219-.42c.03.497.196,2.27.255,2.976,1.073,13.001,5.39,25.3,12.702,36.033,1.037,1.522,3.325,4.378,3.85,5.036.002.002.215.368.213.37-.132.132-1.217.648-1.493.764-23.567,9.876-46.405,21.317-68.952,33.283-18.913-21.236-29.392-49.548-29.793-78.043Z"/>
+      <path d="M188.359,172.342c-.211.246-.246.351-.47.633-.913,1.148-3.63,4.968-4.658,6.651-5.816,9.512-9.302,20.605-10.275,31.729-.167,1.91-.251,3.826-.274,5.784l-83.349.289c-.151-28.109,9.091-56.388,27.268-77.797.767-.196,12.39,6.138,14.166,7.013,13.3,6.552,26.769,12.982,40.39,18.847,5.542,2.386,11.519,4.888,17.203,6.852Z"/>
+      <path d="M123.243,131.887c17.236-18.583,40.431-32.747,65.534-37.724,1.358-.269,6.112-1.397,6.995-.543,9.782,16.416,21.26,31.836,34.265,45.838.35.377,4.263,3.987,4.037,4.173-15.817,2.543-28.618,11.046-39.989,21.8-.873.826-2.161,2.355-2.285,2.345-24.208-9.463-48.15-20.729-71.085-32.899-.048-.206,2.161-2.595,2.528-2.99Z"/>
+      <path d="M132.664,314.779c-3.147-2.858-6.232-6.022-9.002-9.189l.284-.536c22.629-12.157,45.571-23.811,69.402-33.483.479.409,2.44,2.186,3.123,2.829,10.988,10.35,25.035,17.852,39.958,20.637-.237.395-4.112,4.335-5.456,5.841-12.044,13.491-22.274,28.954-31.394,44.537-.142.284-.342.379-.644.437-1.118.216-6.256-.875-7.725-1.165-21.877-4.318-42.124-14.992-58.547-29.907Z"/>
+      <path d="M293.579,154.672c-.301.308-4.526-2.628-5.203-3.007-14.226-7.952-30.584-10.731-46.757-9.248-15.465-14.667-28.045-32.049-39.31-50.079.183-.262.352-.35.666-.403.869-.148,2.738-.215,3.759-.28,28.838-1.835,57.02,5.169,80.739,21.601,1.724,1.194,5.378,3.525,6.659,4.919.234.255.504.443.525.833-1.534,11.82-2.654,23.779-1.078,35.663Z"/>
+      <path d="M206.072,346.923c-.19-.169,1.678-3.16,1.934-3.583,10.181-16.849,22.022-33.399,36.036-47.165,14.21.128,28.379-1.141,41.249-7.487l9.904-5.576c-1.394,11.911.024,23.893,1.892,35.66-.091.581-.583.856-.957,1.218-1.826,1.772-5.006,4.004-7.144,5.512-24.219,17.079-53.377,23.721-82.913,21.422Z"/>
+      <path d="M179.413,222.256l51.969-.269c.222,9.558,3.314,18.151,8.665,25.935.346.503,2.22,2.497,1.836,2.876-15.894,2.589-31.123,8.102-46.137,13.712-10.139-11.722-15.743-26.722-16.333-42.253Z"/>
+      <path d="M179.413,217.143c-.089-15.318,5.172-30.417,14.726-42.293,15.377,5.107,30.789,10.807,46.935,12.944.074.39-.07.66-.212.998-.766,1.833-3.382,4.863-4.505,7.073-3.185,6.267-4.938,13.704-4.974,20.74l-51.97.539Z"/>
+      <path d="M343.932,221.18c.686,35.076-14.866,69.454-40.79,92.628-.389.006-1.138-6.971-1.212-7.679-.677-6.486-1.109-13.7-.539-20.189.164-1.869.948-8.518,1.968-9.747,1.402-1.69,4.068-3.668,5.707-5.465,12.281-13.461,19.771-31.112,19.517-49.547h15.348Z"/>
+      <path d="M328.582,216.066c-.294-21.225-10.852-41.313-26.805-54.915-3.603-11.95-2.294-25.21-1.195-37.504.285.158.597.395.865.606,1.98,1.559,8.535,8.473,11.658,12.107,19.207,22.348,30.258,49.694,30.828,79.436l-15.351.269Z"/>
+      <path d="M270.163,169.015c.018.009-.369.124-.653.227-1.727.629-3.486,1.002-5.271,1.731-4.4,1.796-8.855,4.413-12.641,7.284-1.257.953-4.72,4.421-5.688,4.812-1.403.567-7.597-.907-9.465-1.283-13.115-2.639-25.996-6.849-38.447-11.63,9.279-9.847,20.986-17.427,34.237-20.686,1.478-.363,5.253-1.356,6.554-1.283.958.054,4.597,3.729,5.658,4.595,7.022,5.732,14.518,10.739,22.649,14.778.451.224,2.921,1.382,3.067,1.455Z"/>
+      <path d="M270.692,269.11c.104.476-.138.534-.445.764-1.211.911-4.044,1.926-5.56,2.787-8.494,4.826-16.254,10.852-23.239,17.654-12.907-1.658-24.864-6.936-34.962-15.025-.913-.731-6.751-5.685-6.608-6.312,14.854-6.094,30.289-11.043,46.192-13.616l.652.149c6.813,6.227,14.897,11.51,23.969,13.599Z"/>
+      <path d="M247.538,147.405c17.414-.549,34.566,4.833,47.912,16.034l2.437,6.042c-3.274-.594-6.482-1.658-9.829-1.881-2.044-.136-4.417.241-6.395-.067-2.26-.352-6.754-2.392-8.998-3.388-7.38-3.274-19.048-10.256-24.674-15.984-.232-.236-.418-.562-.452-.757Z"/>
+      <path d="M249.691,290.916c7.114-6.94,16.059-13.115,25.128-17.277,1.714-.787,5.429-2.586,7.113-2.85,1.908-.299,4.179.067,6.139-.054,3.599-.222,7.117-1.157,10.623-1.894-.634,1.407-.995,3.644-1.677,4.917-1.013,1.891-7.96,6.426-10.087,7.685-11.345,6.712-24.053,9.59-37.241,9.473Z"/>
+      <path d="M237.844,221.719h21.945c.624,0,.359,2.517.406,3.094.712,8.629,3.145,17.19,7.537,24.637-3.514-.501-7.09-.67-10.648-.549-2.13.073-5.278.753-7.274.568-1.454-.135-2.944-2.5-3.839-3.7-5.13-6.884-7.995-15.445-8.127-24.05Z"/>
+      <path d="M237.574,216.603c.53-7.903,2.679-15.604,6.887-22.328.682-1.09,2.92-4.428,3.752-5.132.297-.251.389-.291.789-.291,1.478,0,3.56.515,5.118.568,4.103.139,8.2-.078,12.263-.55-4.26,8.624-6.373,18.081-6.461,27.732h-22.348Z"/>
+      <path d="M272.234,255.992c.284.243.598,1.103,1.015,1.542,2.537,2.672,5.349,5.513,8.752,7.001.155.603-.246.633-.735.73-3.74.74-12.277-2.035-15.87-3.649-1.437-.645-10.844-6.016-10.853-6.913-.003-.29.652-.387.924-.417,2.743-.301,14.855.068,16.767,1.706Z"/>
+      <path d="M253.999,184.02c-.031-.577.94-1.119,1.369-1.457,7.288-5.74,16.234-9.276,25.557-9.847-2.66,1.989-5.128,3.733-7.408,6.186-.617.664-2.585,3.486-3.009,3.722-.982.547-6.59,1.258-8.029,1.395-2.74.261-5.78.465-8.48,0Z"/>
+    </g>
+  </symbol>
+</svg>
+
+<div style="min-height:100vh; width:100%; background: radial-gradient(1100px circle at 50% -8%, oklch(0.34 0.05 264 / 0.55), transparent 56%), oklch(0.118 0.035 264.7); font-family:'Montserrat',system-ui,sans-serif; color:#eef2f7; padding:56px 32px 80px; display:flex; flex-direction:column; align-items:center; gap:18px;">
+
+  <!-- ============ HEADER ============ -->
+  <div style="width:100%; max-width:900px; display:flex; align-items:center; gap:16px; margin-bottom:14px;">
+    <div style="width:46px; height:46px; border-radius:13px; background:linear-gradient(140deg,#5C8DFF,#7C6BFF 52%,#2DD4BF); display:flex; align-items:center; justify-content:center; box-shadow:0 8px 24px -8px rgba(124,107,255,0.6);">
+      <svg width="28" height="28" style="color:#fff;"><use href="#ci-mark"></use></svg>
+    </div>
+    <div style="flex:1;">
+      <div style="font-size:22px; font-weight:300; letter-spacing:-0.01em; line-height:1.1;">CI&#8209;Applet <span style="font-weight:200; color:oklch(0.7 0.04 256);">/ redesigned</span></div>
+      <div style="font-size:12.5px; color:oklch(0.66 0.03 256); font-weight:400; margin-top:3px;">Capture-layer applet, restyled in the Companion Intelligence system.</div>
+    </div>
+    <div style="display:flex; gap:8px;">
+      <div style="display:flex; align-items:center; gap:7px; background:oklch(0.2 0.04 265); border:1px solid rgba(255,255,255,0.08); border-radius:999px; padding:6px 12px; font-size:11.5px; color:oklch(0.78 0.03 256);"><span style="width:7px;height:7px;border-radius:99px;background:#5C8DFF;"></span>Screenshots</div>
+      <div style="display:flex; align-items:center; gap:7px; background:oklch(0.2 0.04 265); border:1px solid rgba(255,255,255,0.08); border-radius:999px; padding:6px 12px; font-size:11.5px; color:oklch(0.78 0.03 256);"><span style="width:7px;height:7px;border-radius:99px;background:#7C6BFF;"></span>Activity</div>
+      <div style="display:flex; align-items:center; gap:7px; background:oklch(0.2 0.04 265); border:1px solid rgba(255,255,255,0.08); border-radius:999px; padding:6px 12px; font-size:11.5px; color:oklch(0.78 0.03 256);"><span style="width:7px;height:7px;border-radius:99px;background:#2DD4BF;"></span>Files</div>
+    </div>
+  </div>
+
+  <!-- ============ 01 · TRAY ============ -->
+  <div style="width:100%; max-width:900px; display:flex; align-items:baseline; gap:12px; margin-top:8px;">
+    <span style="font-family:'Source Code Pro',monospace; font-size:11px; letter-spacing:0.18em; color:#2DD4BF;">01</span>
+    <span style="font-family:'Source Code Pro',monospace; font-size:11px; letter-spacing:0.14em; text-transform:uppercase; color:oklch(0.62 0.03 256);">Menu-bar tray</span>
+  </div>
+
+  <div style="width:100%; max-width:900px; position:relative; height:540px; border-radius:18px; overflow:hidden; background:linear-gradient(155deg,#1b2348,#11142b 55%,#181c34); box-shadow:0 30px 80px -28px rgba(0,0,0,0.75), inset 0 0 0 1px rgba(255,255,255,0.05);">
+    <div style="position:absolute; inset:0; background:radial-gradient(600px circle at 78% 8%, rgba(124,107,255,0.28), transparent 60%), radial-gradient(540px circle at 12% 90%, rgba(45,212,191,0.16), transparent 60%);"></div>
+
+    <!-- macOS menu bar -->
+    <div style="position:absolute; top:0; left:0; right:0; height:30px; background:rgba(15,17,30,0.55); backdrop-filter:blur(16px); border-bottom:1px solid rgba(255,255,255,0.07); display:flex; align-items:center; padding:0 14px; gap:18px; font-size:12.5px; color:#e8eaf2;">
+      <svg width="14" height="14" style="color:#fff; opacity:0.92;"><use href="#ci-mark"></use></svg>
+      <span style="font-weight:600;">CI-Applet</span>
+      <span style="color:oklch(0.72 0.02 256); font-weight:400;">File</span>
+      <span style="color:oklch(0.72 0.02 256); font-weight:400;">View</span>
+      <div style="flex:1;"></div>
+      <span style="color:oklch(0.78 0.02 256); font-size:12px;">100%</span>
+      <span style="font-variant-numeric:tabular-nums; font-size:12px;">Wed&nbsp;&nbsp;2:32&#8201;PM</span>
+      <!-- active tray tile -->
+      <div style="width:24px; height:21px; border-radius:6px; background:linear-gradient(135deg,#5C8DFF,#7C6BFF); display:flex; align-items:center; justify-content:center; box-shadow:0 0 0 1.5px rgba(255,255,255,0.35), 0 4px 12px -3px rgba(92,141,255,0.7);">
+        <svg width="14" height="14" style="color:#fff;"><use href="#ci-mark"></use></svg>
+      </div>
+    </div>
+
+    <!-- dropdown -->
+    <div style="position:absolute; top:38px; right:14px; width:318px; background:oklch(0.2 0.035 265 / 0.97); backdrop-filter:blur(24px); border:1px solid rgba(255,255,255,0.1); border-radius:15px; box-shadow:0 28px 60px -16px rgba(0,0,0,0.7); padding:9px; font-size:13px;">
+
+      <!-- status header -->
+      <div style="display:flex; align-items:center; gap:9px; padding:7px 9px 9px;">
+        <span style="width:8px;height:8px;border-radius:99px;background:#34d399;box-shadow:0 0 10px #34d399;animation:ci-pulse 2s ease-in-out infinite;"></span>
+        <span style="font-weight:600; font-size:13px; color:#f2f5fa;">Monitoring</span>
+        <div style="flex:1;"></div>
+        <span style="font-family:'Source Code Pro',monospace; font-size:10.5px; color:oklch(0.6 0.03 256);">v0.1.0</span>
+      </div>
+
+      <!-- lane board -->
+      <div style="background:rgba(0,0,0,0.22); border:1px solid rgba(255,255,255,0.06); border-radius:11px; padding:5px; margin-bottom:6px;">
+        <div style="display:flex; align-items:center; gap:10px; padding:8px 9px;">
+          <span style="width:8px;height:8px;border-radius:99px; background:{{ laneShot }};"></span>
+          <span style="flex:1; color:#dfe4ee;">Screenshots</span>
+          <span style="font-family:'Source Code Pro',monospace; font-size:11px; color:oklch(0.64 0.03 256);">every 300s</span>
+        </div>
+        <div style="height:1px; background:rgba(255,255,255,0.05); margin:0 8px;"></div>
+        <div style="display:flex; align-items:center; gap:10px; padding:8px 9px;">
+          <span style="width:8px;height:8px;border-radius:99px; background:{{ laneAct }};"></span>
+          <span style="flex:1; color:#dfe4ee;">Activity</span>
+          <span style="font-family:'Source Code Pro',monospace; font-size:11px; color:#7C6BFF;">live</span>
+        </div>
+        <div style="height:1px; background:rgba(255,255,255,0.05); margin:0 8px;"></div>
+        <div style="display:flex; align-items:center; gap:10px; padding:8px 9px;">
+          <span style="width:8px;height:8px;border-radius:99px; background:{{ laneFile }};"></span>
+          <span style="flex:1; color:#dfe4ee;">File tracking</span>
+          <span style="font-family:'Source Code Pro',monospace; font-size:11px; color:oklch(0.64 0.03 256);">3 folders &middot; q0</span>
+        </div>
+      </div>
+
+      <div style="padding:8px 10px; border-radius:8px; color:#e6eaf2; cursor:default;" style-hover="background:rgba(255,255,255,0.06);">Pause Captures</div>
+      <div style="padding:8px 10px; border-radius:8px; color:#e6eaf2; cursor:default;" style-hover="background:rgba(255,255,255,0.06);">Capture Now</div>
+      <div style="padding:8px 10px; border-radius:8px; color:#e6eaf2; cursor:default;" style-hover="background:rgba(255,255,255,0.06);">Upload Document&hellip;</div>
+
+      <div style="height:1px; background:rgba(255,255,255,0.08); margin:6px 4px;"></div>
+
+      <div style="padding:3px 10px; display:flex; gap:8px; font-size:11.5px; color:oklch(0.58 0.03 256);"><span>Portal</span><span style="flex:1;"></span><span style="font-family:'Source Code Pro',monospace; color:oklch(0.66 0.03 256);">memory.acme-co.ci</span></div>
+      <div style="padding:3px 10px 6px; display:flex; gap:8px; font-size:11.5px; color:oklch(0.58 0.03 256);"><span>Identity</span><span style="flex:1;"></span><span style="font-family:'Source Code Pro',monospace; color:oklch(0.66 0.03 256);">user a1b2 &middot; dev 9f3c</span></div>
+
+      <div style="padding:8px 10px; border-radius:8px; color:#2DD4BF; font-weight:500; cursor:default; display:flex; align-items:center; gap:8px;" style-hover="background:rgba(45,212,191,0.1);">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><path d="M10 17l5-5-5-5"/><path d="M15 12H3"/></svg>
+        Login via issuer
+      </div>
+
+      <div style="height:1px; background:rgba(255,255,255,0.08); margin:6px 4px;"></div>
+
+      <div style="padding:9px 10px; border-radius:8px; display:flex; align-items:center; gap:9px; background:linear-gradient(90deg, rgba(88,235,191,0.16), rgba(88,235,191,0.04)); box-shadow:inset 0 0 0 1px rgba(88,235,191,0.25); color:#eafff8; font-weight:500; cursor:default;">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg>
+        Open Settings&hellip;
+      </div>
+      <div style="padding:8px 10px; border-radius:8px; color:#e6eaf2; cursor:default;" style-hover="background:rgba(255,255,255,0.06);">Show Config Location</div>
+      <div style="padding:8px 10px; border-radius:8px; color:oklch(0.74 0.03 256); cursor:default;" style-hover="background:rgba(244,103,91,0.12); color:#f4675b;">Quit CI-Applet</div>
+    </div>
+  </div>
+
+  <!-- ============ 02 · SETTINGS ============ -->
+  <div style="width:100%; max-width:900px; display:flex; align-items:baseline; gap:12px; margin-top:24px;">
+    <span style="font-family:'Source Code Pro',monospace; font-size:11px; letter-spacing:0.18em; color:#2DD4BF;">02</span>
+    <span style="font-family:'Source Code Pro',monospace; font-size:11px; letter-spacing:0.14em; text-transform:uppercase; color:oklch(0.62 0.03 256);">Settings window &middot; interactive</span>
+  </div>
+
+  <div style="width:100%; max-width:900px; border-radius:16px; overflow:hidden; background:oklch(0.205 0.04 265.8); box-shadow:0 30px 80px -24px rgba(0,0,0,0.7), inset 0 0 0 1px rgba(255,255,255,0.06);">
+    <!-- titlebar -->
+    <div style="height:46px; display:flex; align-items:center; padding:0 16px; background:linear-gradient(180deg, oklch(0.235 0.04 265), oklch(0.205 0.04 265)); border-bottom:1px solid rgba(255,255,255,0.06);">
+      <div style="display:flex; gap:8px;">
+        <span style="width:12px;height:12px;border-radius:99px;background:#ff5f57;"></span>
+        <span style="width:12px;height:12px;border-radius:99px;background:#febc2e;"></span>
+        <span style="width:12px;height:12px;border-radius:99px;background:#28c840;"></span>
+      </div>
+      <div style="flex:1; display:flex; align-items:center; justify-content:center; gap:8px; font-size:13px; color:oklch(0.78 0.02 256); font-weight:500;">
+        <svg width="13" height="13" style="color:oklch(0.78 0.02 256);"><use href="#ci-mark"></use></svg>
+        CI-Applet Settings
+      </div>
+      <div style="width:60px;"></div>
+    </div>
+
+    <div style="display:flex; min-height:484px;">
+      <!-- sidebar -->
+      <div style="width:236px; flex-shrink:0; border-right:1px solid rgba(255,255,255,0.06); padding:14px 12px; display:flex; flex-direction:column;">
+
+        <div onClick="{{ go_identity }}" style="position:relative; padding:11px 12px; border-radius:10px; cursor:pointer; margin-bottom:3px;">
+          <div style="{{ identityLayer }}"></div><div style="{{ identityBar }}"></div>
+          <div style="{{ identityContent }}">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="3.4"/><path d="M5.5 19.5c0-3.6 2.9-6 6.5-6s6.5 2.4 6.5 6"/></svg>
+            <div><div style="font-size:13.5px; font-weight:500; letter-spacing:-0.01em; line-height:1.2;">Identity</div><div style="font-size:11px; color:oklch(0.56 0.03 256); margin-top:1px;">Server &amp; auth</div></div>
+          </div>
+        </div>
+
+        <div onClick="{{ go_capture }}" style="position:relative; padding:11px 12px; border-radius:10px; cursor:pointer; margin-bottom:3px;">
+          <div style="{{ captureLayer }}"></div><div style="{{ captureBar }}"></div>
+          <div style="{{ captureContent }}">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6.5" width="18" height="13" rx="2.5"/><circle cx="12" cy="13" r="3.3"/><path d="M8.5 6.5l1.2-2h4.6l1.2 2"/></svg>
+            <div><div style="font-size:13.5px; font-weight:500; letter-spacing:-0.01em; line-height:1.2;">Capture</div><div style="font-size:11px; color:oklch(0.56 0.03 256); margin-top:1px;">Cadence &amp; lanes</div></div>
+          </div>
+        </div>
+
+        <div onClick="{{ go_storage }}" style="position:relative; padding:11px 12px; border-radius:10px; cursor:pointer; margin-bottom:3px;">
+          <div style="{{ storageLayer }}"></div><div style="{{ storageBar }}"></div>
+          <div style="{{ storageContent }}">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="6" rx="7.5" ry="3"/><path d="M4.5 6v12c0 1.66 3.36 3 7.5 3s7.5-1.34 7.5-3V6"/><path d="M4.5 12c0 1.66 3.36 3 7.5 3s7.5-1.34 7.5-3"/></svg>
+            <div><div style="font-size:13.5px; font-weight:500; letter-spacing:-0.01em; line-height:1.2;">Storage</div><div style="font-size:11px; color:oklch(0.56 0.03 256); margin-top:1px;">MinIO object store</div></div>
+          </div>
+        </div>
+
+        <div onClick="{{ go_database }}" style="position:relative; padding:11px 12px; border-radius:10px; cursor:pointer; margin-bottom:3px;">
+          <div style="{{ databaseLayer }}"></div><div style="{{ databaseBar }}"></div>
+          <div style="{{ databaseContent }}">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="4.5" width="17" height="6" rx="2"/><rect x="3.5" y="13.5" width="17" height="6" rx="2"/><circle cx="7.5" cy="7.5" r="0.6" fill="currentColor"/><circle cx="7.5" cy="16.5" r="0.6" fill="currentColor"/></svg>
+            <div><div style="font-size:13.5px; font-weight:500; letter-spacing:-0.01em; line-height:1.2;">Database</div><div style="font-size:11px; color:oklch(0.56 0.03 256); margin-top:1px;">Postgres</div></div>
+          </div>
+        </div>
+
+        <div onClick="{{ go_vision }}" style="position:relative; padding:11px 12px; border-radius:10px; cursor:pointer; margin-bottom:3px;">
+          <div style="{{ visionLayer }}"></div><div style="{{ visionBar }}"></div>
+          <div style="{{ visionContent }}">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.6-6.5 10-6.5S22 12 22 12s-3.6 6.5-10 6.5S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg>
+            <div><div style="font-size:13.5px; font-weight:500; letter-spacing:-0.01em; line-height:1.2;">Vision</div><div style="font-size:11px; color:oklch(0.56 0.03 256); margin-top:1px;">Analysis model</div></div>
+          </div>
+        </div>
+
+        <div style="flex:1;"></div>
+
+        <!-- mini connection card -->
+        <div style="background:rgba(0,0,0,0.22); border:1px solid rgba(255,255,255,0.07); border-radius:12px; padding:12px;">
+          <div style="display:flex; align-items:center; gap:8px; margin-bottom:9px;">
+            <span style="{{ connDot }}"></span>
+            <span style="font-size:12.5px; font-weight:600; color:#eef2f7;">{{ connText }}</span>
+          </div>
+          <div style="font-size:11px; color:oklch(0.6 0.03 256); margin-bottom:11px;">{{ connSub }}</div>
+          <div style="display:flex; gap:6px;">
+            <span style="width:7px;height:7px;border-radius:99px;background:{{ laneShot }};"></span>
+            <span style="width:7px;height:7px;border-radius:99px;background:{{ laneAct }};"></span>
+            <span style="width:7px;height:7px;border-radius:99px;background:{{ laneFile }};"></span>
+            <span style="flex:1;"></span>
+            <span style="font-family:'Source Code Pro',monospace; font-size:10px; color:oklch(0.55 0.03 256);">3 lanes active</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- content -->
+      <div style="flex:1; padding:26px 30px; overflow:auto; max-height:560px;">
+
+        <!-- IDENTITY -->
+        <sc-if value="{{ isIdentity }}" hint-placeholder-val="{{ true }}">
+          <div>
+            <div style="font-size:18px; font-weight:300; letter-spacing:-0.01em;">Identity</div>
+            <div style="font-size:12.5px; color:oklch(0.62 0.03 256); margin-top:4px; margin-bottom:20px;">Where captures are sent, and how the applet authenticates.</div>
+
+            <div style="display:flex; align-items:center; gap:12px; background:rgba(52,211,153,0.07); border:1px solid rgba(52,211,153,0.2); border-radius:12px; padding:13px 15px; margin-bottom:22px;">
+              <span style="{{ connDot }}"></span>
+              <div style="flex:1;"><div style="font-size:13px; font-weight:600; color:#eafff5;">{{ connText }}</div><div style="font-size:11.5px; color:oklch(0.66 0.04 256); margin-top:1px;">{{ connSub }}</div></div>
+              <div style="font-family:'Source Code Pro',monospace; font-size:11px; color:oklch(0.66 0.03 256);">200 OK &middot; 84ms</div>
+            </div>
+
+            <div style="margin-bottom:18px;">
+              <label style="display:block; font-size:11px; font-weight:600; letter-spacing:0.05em; text-transform:uppercase; color:oklch(0.6 0.03 256); margin-bottom:7px;">CI-Server URL</label>
+              <input value="https://memory.acme-co.ci" style="width:100%; background:oklch(0.155 0.03 264); border:1px solid rgba(255,255,255,0.1); border-radius:10px; padding:11px 13px; color:#eef2f7; font-size:13px; font-family:'Source Code Pro',monospace; outline:none;" style-focus="border-color:#58ebbf; box-shadow:0 0 0 3px rgba(88,235,191,0.15);">
+            </div>
+
+            <div style="margin-bottom:18px;">
+              <label style="display:block; font-size:11px; font-weight:600; letter-spacing:0.05em; text-transform:uppercase; color:oklch(0.6 0.03 256); margin-bottom:7px;">Authentication</label>
+              <div style="display:inline-flex; background:oklch(0.155 0.03 264); border:1px solid rgba(255,255,255,0.1); border-radius:10px; padding:3px; gap:3px;">
+                <div onClick="{{ goApiKey }}" style="position:relative; padding:7px 18px; border-radius:8px; cursor:pointer;"><div style="{{ authKeyLayer }}"></div><span style="{{ authKeyLabel }}">API key</span></div>
+                <div onClick="{{ goOidc }}" style="position:relative; padding:7px 18px; border-radius:8px; cursor:pointer;"><div style="{{ authOidcLayer }}"></div><span style="{{ authOidcLabel }}">OIDC browser login</span></div>
+              </div>
+            </div>
+
+            <sc-if value="{{ isApiKey }}">
+              <div style="margin-bottom:18px;">
+                <label style="display:block; font-size:11px; font-weight:600; letter-spacing:0.05em; text-transform:uppercase; color:oklch(0.6 0.03 256); margin-bottom:7px;">API Key</label>
+                <input type="password" value="ci_sk_xxxxxxxxxxxxxxxxxxxx" style="width:100%; background:oklch(0.155 0.03 264); border:1px solid rgba(255,255,255,0.1); border-radius:10px; padding:11px 13px; color:#eef2f7; font-size:13px; font-family:'Source Code Pro',monospace; outline:none;" style-focus="border-color:#58ebbf; box-shadow:0 0 0 3px rgba(88,235,191,0.15);">
+                <div style="font-size:11.5px; color:oklch(0.56 0.03 256); margin-top:7px;">Sent as <span style="font-family:'Source Code Pro',monospace; color:oklch(0.7 0.03 256);">x-api-key</span>. Pasting a key clears any OIDC session.</div>
+              </div>
+            </sc-if>
+
+            <sc-if value="{{ isOidc }}">
+              <div style="display:grid; grid-template-columns:1fr 1fr; gap:14px; margin-bottom:18px;">
+                <div style="grid-column:1 / -1;">
+                  <label style="display:block; font-size:11px; font-weight:600; letter-spacing:0.05em; text-transform:uppercase; color:oklch(0.6 0.03 256); margin-bottom:7px;">OIDC Issuer URL</label>
+                  <input value="https://memory.acme-co.ci/api/auth" style="width:100%; background:oklch(0.155 0.03 264); border:1px solid rgba(255,255,255,0.1); border-radius:10px; padding:11px 13px; color:#eef2f7; font-size:13px; font-family:'Source Code Pro',monospace; outline:none;" style-focus="border-color:#58ebbf; box-shadow:0 0 0 3px rgba(88,235,191,0.15);">
+                </div>
+                <div>
+                  <label style="display:block; font-size:11px; font-weight:600; letter-spacing:0.05em; text-transform:uppercase; color:oklch(0.6 0.03 256); margin-bottom:7px;">Client ID</label>
+                  <input value="ci-applet" style="width:100%; background:oklch(0.155 0.03 264); border:1px solid rgba(255,255,255,0.1); border-radius:10px; padding:11px 13px; color:#eef2f7; font-size:13px; font-family:'Source Code Pro',monospace; outline:none;" style-focus="border-color:#58ebbf; box-shadow:0 0 0 3px rgba(88,235,191,0.15);">
+                </div>
+                <div>
+                  <label style="display:block; font-size:11px; font-weight:600; letter-spacing:0.05em; text-transform:uppercase; color:oklch(0.6 0.03 256); margin-bottom:7px;">Scopes</label>
+                  <input value="openid profile email" style="width:100%; background:oklch(0.155 0.03 264); border:1px solid rgba(255,255,255,0.1); border-radius:10px; padding:11px 13px; color:#eef2f7; font-size:13px; font-family:'Source Code Pro',monospace; outline:none;" style-focus="border-color:#58ebbf; box-shadow:0 0 0 3px rgba(88,235,191,0.15);">
+                </div>
+                <div style="grid-column:1 / -1;">
+                  <label style="display:block; font-size:11px; font-weight:600; letter-spacing:0.05em; text-transform:uppercase; color:oklch(0.6 0.03 256); margin-bottom:7px;">Redirect URI</label>
+                  <input value="http://127.0.0.1:49473/callback" style="width:100%; background:oklch(0.155 0.03 264); border:1px solid rgba(255,255,255,0.1); border-radius:10px; padding:11px 13px; color:#eef2f7; font-size:13px; font-family:'Source Code Pro',monospace; outline:none;" style-focus="border-color:#58ebbf; box-shadow:0 0 0 3px rgba(88,235,191,0.15);">
+                </div>
+              </div>
+            </sc-if>
+
+            <div style="border-top:1px solid rgba(255,255,255,0.07); padding-top:16px;">
+              <div style="font-size:11px; font-weight:600; letter-spacing:0.05em; text-transform:uppercase; color:oklch(0.52 0.03 256); margin-bottom:12px;">Advanced identity</div>
+              <div style="display:flex; gap:24px;">
+                <div style="flex:1;"><div style="font-size:11.5px; color:oklch(0.58 0.03 256); margin-bottom:5px;">User ID override</div><div style="font-family:'Source Code Pro',monospace; font-size:12px; color:oklch(0.72 0.03 256);">a1b2c3d4-&hellip;-9f3c</div></div>
+                <div style="flex:1;"><div style="font-size:11.5px; color:oklch(0.58 0.03 256); margin-bottom:5px;">Device ID <span style="color:oklch(0.46 0.03 256);">(auto)</span></div><div style="font-family:'Source Code Pro',monospace; font-size:12px; color:oklch(0.72 0.03 256);">9f3c-d21a-&hellip;</div></div>
+              </div>
+            </div>
+          </div>
+        </sc-if>
+
+        <!-- CAPTURE -->
+        <sc-if value="{{ isCapture }}">
+          <div>
+            <div style="font-size:18px; font-weight:300; letter-spacing:-0.01em;">Capture</div>
+            <div style="font-size:12.5px; color:oklch(0.62 0.03 256); margin-top:4px; margin-bottom:22px;">How often the desktop is perceived, and the diff gate that skips near-identical frames.</div>
+
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:22px;">
+              <div style="background:rgba(0,0,0,0.2); border:1px solid rgba(255,255,255,0.07); border-radius:13px; padding:16px;">
+                <div style="font-size:11px; font-weight:600; letter-spacing:0.05em; text-transform:uppercase; color:oklch(0.6 0.03 256); margin-bottom:14px;">Screenshot interval</div>
+                <div style="display:flex; align-items:center; gap:14px;">
+                  <div onClick="{{ decInterval }}" style="width:34px; height:34px; border-radius:9px; background:oklch(0.155 0.03 264); border:1px solid rgba(255,255,255,0.12); display:flex; align-items:center; justify-content:center; cursor:pointer; font-size:18px; color:#cfd6e0;" style-hover="border-color:#58ebbf; color:#58ebbf;">&minus;</div>
+                  <div style="flex:1; text-align:center;"><span style="font-size:30px; font-weight:300; font-variant-numeric:tabular-nums;">{{ interval }}</span><span style="font-size:14px; color:oklch(0.6 0.03 256); margin-left:3px;">s</span></div>
+                  <div onClick="{{ incInterval }}" style="width:34px; height:34px; border-radius:9px; background:oklch(0.155 0.03 264); border:1px solid rgba(255,255,255,0.12); display:flex; align-items:center; justify-content:center; cursor:pointer; font-size:18px; color:#cfd6e0;" style-hover="border-color:#58ebbf; color:#58ebbf;">+</div>
+                </div>
+                <div style="font-size:11px; color:oklch(0.54 0.03 256); margin-top:12px; text-align:center;">Floored to 30s &middot; default 300s</div>
+              </div>
+
+              <div style="background:rgba(0,0,0,0.2); border:1px solid rgba(255,255,255,0.07); border-radius:13px; padding:16px;">
+                <div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:14px;">
+                  <span style="font-size:11px; font-weight:600; letter-spacing:0.05em; text-transform:uppercase; color:oklch(0.6 0.03 256);">Diff threshold</span>
+                  <span><span style="font-size:22px; font-weight:300; font-variant-numeric:tabular-nums; color:#58ebbf;">{{ diff }}</span><span style="font-size:13px; color:#58ebbf;">%</span></span>
+                </div>
+                <input type="range" min="0" max="100" value="{{ diff }}" onInput="{{ setDiff }}" style="width:100%; accent-color:#58ebbf; cursor:pointer;">
+                <div style="font-size:11px; color:oklch(0.54 0.03 256); margin-top:14px;">Frames changing less than this are skipped.</div>
+              </div>
+            </div>
+
+            <div style="font-size:11px; font-weight:600; letter-spacing:0.05em; text-transform:uppercase; color:oklch(0.52 0.03 256); margin-bottom:12px;">Capture lanes</div>
+            <div style="display:flex; flex-direction:column; gap:10px;">
+              <div style="display:flex; align-items:center; gap:13px; background:rgba(0,0,0,0.18); border:1px solid rgba(255,255,255,0.06); border-radius:11px; padding:13px 15px;">
+                <span style="width:9px;height:9px;border-radius:99px;background:{{ laneShot }}; box-shadow:0 0 9px {{ laneShot }};"></span>
+                <div style="flex:1;"><div style="font-size:13px; font-weight:500; color:#e8edf5;">Screenshots</div><div style="font-size:11.5px; color:oklch(0.58 0.03 256);">Primary display, diff-gated &amp; screensaver-aware</div></div>
+                <span style="font-family:'Source Code Pro',monospace; font-size:11px; color:oklch(0.62 0.03 256);">vision-analyzed</span>
+              </div>
+              <div style="display:flex; align-items:center; gap:13px; background:rgba(0,0,0,0.18); border:1px solid rgba(255,255,255,0.06); border-radius:11px; padding:13px 15px;">
+                <span style="width:9px;height:9px;border-radius:99px;background:{{ laneAct }}; box-shadow:0 0 9px {{ laneAct }};"></span>
+                <div style="flex:1;"><div style="font-size:13px; font-weight:500; color:#e8edf5;">Activity</div><div style="font-size:11.5px; color:oklch(0.58 0.03 256);">vizier perception &middot; app, window, filesystem deltas</div></div>
+                <span style="font-family:'Source Code Pro',monospace; font-size:11px; color:oklch(0.62 0.03 256);">JSON-Patch diffs</span>
+              </div>
+              <div style="display:flex; align-items:center; gap:13px; background:rgba(0,0,0,0.18); border:1px solid rgba(255,255,255,0.06); border-radius:11px; padding:13px 15px;">
+                <span style="width:9px;height:9px;border-radius:99px;background:{{ laneFile }}; box-shadow:0 0 9px {{ laneFile }};"></span>
+                <div style="flex:1;"><div style="font-size:13px; font-weight:500; color:#e8edf5;">File tracking</div><div style="font-size:11.5px; color:oklch(0.58 0.03 256);">Watched folders &rarr; Markdown &middot; durable queue</div></div>
+                <span style="font-family:'Source Code Pro',monospace; font-size:11px; color:oklch(0.62 0.03 256);">3 folders</span>
+              </div>
+            </div>
+          </div>
+        </sc-if>
+
+        <!-- STORAGE -->
+        <sc-if value="{{ isStorage }}">
+          <div>
+            <div style="font-size:18px; font-weight:300; letter-spacing:-0.01em;">Storage</div>
+            <div style="font-size:12.5px; color:oklch(0.62 0.03 256); margin-top:4px; margin-bottom:22px;">MinIO / S3-compatible object store for captured artifacts.</div>
+            <div style="display:grid; grid-template-columns:1.4fr 1fr 1fr; gap:14px; margin-bottom:18px;">
+              <div style="grid-column:1 / -1;">
+                <label style="display:block; font-size:11px; font-weight:600; letter-spacing:0.05em; text-transform:uppercase; color:oklch(0.6 0.03 256); margin-bottom:7px;">Endpoint</label>
+                <input value="https://minio.acme-co.ci:9000" style="width:100%; background:oklch(0.155 0.03 264); border:1px solid rgba(255,255,255,0.1); border-radius:10px; padding:11px 13px; color:#eef2f7; font-size:13px; font-family:'Source Code Pro',monospace; outline:none;" style-focus="border-color:#58ebbf; box-shadow:0 0 0 3px rgba(88,235,191,0.15);">
+              </div>
+              <div>
+                <label style="display:block; font-size:11px; font-weight:600; letter-spacing:0.05em; text-transform:uppercase; color:oklch(0.6 0.03 256); margin-bottom:7px;">Bucket</label>
+                <input value="ci-captures" style="width:100%; background:oklch(0.155 0.03 264); border:1px solid rgba(255,255,255,0.1); border-radius:10px; padding:11px 13px; color:#eef2f7; font-size:13px; font-family:'Source Code Pro',monospace; outline:none;" style-focus="border-color:#58ebbf; box-shadow:0 0 0 3px rgba(88,235,191,0.15);">
+              </div>
+              <div>
+                <label style="display:block; font-size:11px; font-weight:600; letter-spacing:0.05em; text-transform:uppercase; color:oklch(0.6 0.03 256); margin-bottom:7px;">Region</label>
+                <input value="us-east-1" style="width:100%; background:oklch(0.155 0.03 264); border:1px solid rgba(255,255,255,0.1); border-radius:10px; padding:11px 13px; color:#eef2f7; font-size:13px; font-family:'Source Code Pro',monospace; outline:none;" style-focus="border-color:#58ebbf; box-shadow:0 0 0 3px rgba(88,235,191,0.15);">
+              </div>
+              <div>
+                <label style="display:block; font-size:11px; font-weight:600; letter-spacing:0.05em; text-transform:uppercase; color:oklch(0.6 0.03 256); margin-bottom:7px;">Access Key</label>
+                <input value="AKIA&hellip;X7Q2" style="width:100%; background:oklch(0.155 0.03 264); border:1px solid rgba(255,255,255,0.1); border-radius:10px; padding:11px 13px; color:#eef2f7; font-size:13px; font-family:'Source Code Pro',monospace; outline:none;" style-focus="border-color:#58ebbf; box-shadow:0 0 0 3px rgba(88,235,191,0.15);">
+              </div>
+              <div style="grid-column:2 / -1;">
+                <label style="display:block; font-size:11px; font-weight:600; letter-spacing:0.05em; text-transform:uppercase; color:oklch(0.6 0.03 256); margin-bottom:7px;">Secret Key</label>
+                <input type="password" value="xxxxxxxxxxxxxxxxxxxxxxxx" style="width:100%; background:oklch(0.155 0.03 264); border:1px solid rgba(255,255,255,0.1); border-radius:10px; padding:11px 13px; color:#eef2f7; font-size:13px; font-family:'Source Code Pro',monospace; outline:none;" style-focus="border-color:#58ebbf; box-shadow:0 0 0 3px rgba(88,235,191,0.15);">
+              </div>
+            </div>
+            <div style="display:flex; align-items:center; gap:13px; background:rgba(0,0,0,0.18); border:1px solid rgba(255,255,255,0.06); border-radius:11px; padding:14px 16px;">
+              <div onClick="{{ toggleMinio }}" style="{{ minioTrack }}"><div style="{{ minioKnob }}"></div></div>
+              <div style="flex:1;"><div style="font-size:13px; font-weight:500; color:#e8edf5;">Use SSL</div><div style="font-size:11.5px; color:oklch(0.58 0.03 256);">Encrypt the connection to the object store.</div></div>
+            </div>
+          </div>
+        </sc-if>
+
+        <!-- DATABASE -->
+        <sc-if value="{{ isDatabase }}">
+          <div>
+            <div style="font-size:18px; font-weight:300; letter-spacing:-0.01em;">Database</div>
+            <div style="font-size:12.5px; color:oklch(0.62 0.03 256); margin-top:4px; margin-bottom:22px;">Postgres connection for capture metadata.</div>
+            <div style="display:grid; grid-template-columns:2fr 1fr; gap:14px; margin-bottom:18px;">
+              <div>
+                <label style="display:block; font-size:11px; font-weight:600; letter-spacing:0.05em; text-transform:uppercase; color:oklch(0.6 0.03 256); margin-bottom:7px;">Host</label>
+                <input value="db.acme-co.ci" style="width:100%; background:oklch(0.155 0.03 264); border:1px solid rgba(255,255,255,0.1); border-radius:10px; padding:11px 13px; color:#eef2f7; font-size:13px; font-family:'Source Code Pro',monospace; outline:none;" style-focus="border-color:#58ebbf; box-shadow:0 0 0 3px rgba(88,235,191,0.15);">
+              </div>
+              <div>
+                <label style="display:block; font-size:11px; font-weight:600; letter-spacing:0.05em; text-transform:uppercase; color:oklch(0.6 0.03 256); margin-bottom:7px;">Port</label>
+                <input value="5432" style="width:100%; background:oklch(0.155 0.03 264); border:1px solid rgba(255,255,255,0.1); border-radius:10px; padding:11px 13px; color:#eef2f7; font-size:13px; font-family:'Source Code Pro',monospace; outline:none;" style-focus="border-color:#58ebbf; box-shadow:0 0 0 3px rgba(88,235,191,0.15);">
+              </div>
+              <div>
+                <label style="display:block; font-size:11px; font-weight:600; letter-spacing:0.05em; text-transform:uppercase; color:oklch(0.6 0.03 256); margin-bottom:7px;">Database</label>
+                <input value="companion" style="width:100%; background:oklch(0.155 0.03 264); border:1px solid rgba(255,255,255,0.1); border-radius:10px; padding:11px 13px; color:#eef2f7; font-size:13px; font-family:'Source Code Pro',monospace; outline:none;" style-focus="border-color:#58ebbf; box-shadow:0 0 0 3px rgba(88,235,191,0.15);">
+              </div>
+              <div>
+                <label style="display:block; font-size:11px; font-weight:600; letter-spacing:0.05em; text-transform:uppercase; color:oklch(0.6 0.03 256); margin-bottom:7px;">User</label>
+                <input value="ci_applet" style="width:100%; background:oklch(0.155 0.03 264); border:1px solid rgba(255,255,255,0.1); border-radius:10px; padding:11px 13px; color:#eef2f7; font-size:13px; font-family:'Source Code Pro',monospace; outline:none;" style-focus="border-color:#58ebbf; box-shadow:0 0 0 3px rgba(88,235,191,0.15);">
+              </div>
+              <div style="grid-column:1 / -1;">
+                <label style="display:block; font-size:11px; font-weight:600; letter-spacing:0.05em; text-transform:uppercase; color:oklch(0.6 0.03 256); margin-bottom:7px;">Password</label>
+                <input type="password" value="xxxxxxxxxxxx" style="width:100%; background:oklch(0.155 0.03 264); border:1px solid rgba(255,255,255,0.1); border-radius:10px; padding:11px 13px; color:#eef2f7; font-size:13px; font-family:'Source Code Pro',monospace; outline:none;" style-focus="border-color:#58ebbf; box-shadow:0 0 0 3px rgba(88,235,191,0.15);">
+              </div>
+            </div>
+            <div style="display:flex; align-items:center; gap:13px; background:rgba(0,0,0,0.18); border:1px solid rgba(255,255,255,0.06); border-radius:11px; padding:14px 16px;">
+              <div onClick="{{ togglePg }}" style="{{ pgTrack }}"><div style="{{ pgKnob }}"></div></div>
+              <div style="flex:1;"><div style="font-size:13px; font-weight:500; color:#e8edf5;">Require SSL</div><div style="font-size:11.5px; color:oklch(0.58 0.03 256);">Refuse unencrypted database connections.</div></div>
+            </div>
+          </div>
+        </sc-if>
+
+        <!-- VISION -->
+        <sc-if value="{{ isVision }}">
+          <div>
+            <div style="font-size:18px; font-weight:300; letter-spacing:-0.01em;">Vision</div>
+            <div style="font-size:12.5px; color:oklch(0.62 0.03 256); margin-top:4px; margin-bottom:22px;">The vision model that interprets screenshots before they reach memory.</div>
+            <div style="margin-bottom:18px;">
+              <label style="display:block; font-size:11px; font-weight:600; letter-spacing:0.05em; text-transform:uppercase; color:oklch(0.6 0.03 256); margin-bottom:7px;">Endpoint</label>
+              <input value="https://api.anthropic.com/v1/messages" style="width:100%; background:oklch(0.155 0.03 264); border:1px solid rgba(255,255,255,0.1); border-radius:10px; padding:11px 13px; color:#eef2f7; font-size:13px; font-family:'Source Code Pro',monospace; outline:none;" style-focus="border-color:#58ebbf; box-shadow:0 0 0 3px rgba(88,235,191,0.15);">
+            </div>
+            <div style="margin-bottom:18px;">
+              <label style="display:block; font-size:11px; font-weight:600; letter-spacing:0.05em; text-transform:uppercase; color:oklch(0.6 0.03 256); margin-bottom:7px;">API Key</label>
+              <input type="password" value="sk-ant-xxxxxxxxxxxxxxxx" style="width:100%; background:oklch(0.155 0.03 264); border:1px solid rgba(255,255,255,0.1); border-radius:10px; padding:11px 13px; color:#eef2f7; font-size:13px; font-family:'Source Code Pro',monospace; outline:none;" style-focus="border-color:#58ebbf; box-shadow:0 0 0 3px rgba(88,235,191,0.15);">
+            </div>
+            <div style="margin-bottom:8px;">
+              <label style="display:block; font-size:11px; font-weight:600; letter-spacing:0.05em; text-transform:uppercase; color:oklch(0.6 0.03 256); margin-bottom:7px;">Model</label>
+              <input value="claude-sonnet-4" style="width:100%; background:oklch(0.155 0.03 264); border:1px solid rgba(255,255,255,0.1); border-radius:10px; padding:11px 13px; color:#eef2f7; font-size:13px; font-family:'Source Code Pro',monospace; outline:none;" style-focus="border-color:#58ebbf; box-shadow:0 0 0 3px rgba(88,235,191,0.15);">
+            </div>
+          </div>
+        </sc-if>
+      </div>
+    </div>
+
+    <!-- footer -->
+    <div style="display:flex; align-items:center; padding:14px 22px; border-top:1px solid rgba(255,255,255,0.06); background:oklch(0.19 0.04 265);">
+      <div style="flex:1; font-family:'Source Code Pro',monospace; font-size:11px; color:oklch(0.52 0.03 256);">~/.config/com.compint/config.json</div>
+      <div style="display:flex; gap:10px;">
+        <button style="background:transparent; color:#cfd6e0; border:1px solid rgba(255,255,255,0.14); border-radius:10px; padding:9px 18px; font-weight:500; font-size:13px; cursor:pointer; font-family:inherit;" style-hover="background:rgba(255,255,255,0.05);">Close</button>
+        <button style="background:linear-gradient(135deg,#58ebbf,#409b9b); color:#041620; border:none; border-radius:10px; padding:9px 22px; font-weight:600; font-size:13px; cursor:pointer; font-family:inherit; box-shadow:0 0 22px -6px rgba(88,235,191,0.65);" style-hover="filter:brightness(1.06);">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 03 · UPLOAD ============ -->
+  <div style="width:100%; max-width:900px; display:flex; align-items:baseline; gap:12px; margin-top:24px;">
+    <span style="font-family:'Source Code Pro',monospace; font-size:11px; letter-spacing:0.18em; color:#2DD4BF;">03</span>
+    <span style="font-family:'Source Code Pro',monospace; font-size:11px; letter-spacing:0.14em; text-transform:uppercase; color:oklch(0.62 0.03 256);">Upload documents</span>
+  </div>
+
+  <div style="width:100%; max-width:620px; align-self:center; border-radius:16px; overflow:hidden; background:oklch(0.205 0.04 265.8); box-shadow:0 30px 80px -24px rgba(0,0,0,0.7), inset 0 0 0 1px rgba(255,255,255,0.06);">
+    <div style="height:46px; display:flex; align-items:center; padding:0 16px; background:linear-gradient(180deg, oklch(0.235 0.04 265), oklch(0.205 0.04 265)); border-bottom:1px solid rgba(255,255,255,0.06);">
+      <div style="display:flex; gap:8px;">
+        <span style="width:12px;height:12px;border-radius:99px;background:#ff5f57;"></span>
+        <span style="width:12px;height:12px;border-radius:99px;background:#febc2e;"></span>
+        <span style="width:12px;height:12px;border-radius:99px;background:#28c840;"></span>
+      </div>
+      <div style="flex:1; text-align:center; font-size:13px; color:oklch(0.78 0.02 256); font-weight:500;">Upload Documents &mdash; CI-Applet</div>
+      <div style="width:60px;"></div>
+    </div>
+
+    <div style="padding:20px 22px;">
+      <div style="display:flex; align-items:center; margin-bottom:16px;">
+        <div style="flex:1; display:flex; align-items:center; gap:8px; font-size:12px; color:oklch(0.64 0.03 256);">
+          <span style="width:7px;height:7px;border-radius:99px;background:#34d399;"></span>Signed in as <span style="font-family:'Source Code Pro',monospace; color:oklch(0.74 0.03 256);">user a1b2</span>
+        </div>
+        <div style="display:flex; gap:9px;">
+          <button style="background:transparent; color:#cfd6e0; border:1px solid rgba(255,255,255,0.14); border-radius:10px; padding:8px 16px; font-weight:500; font-size:12.5px; cursor:pointer; font-family:inherit;" style-hover="background:rgba(255,255,255,0.05);">Add Files&hellip;</button>
+          <button style="background:linear-gradient(135deg,#58ebbf,#409b9b); color:#041620; border:none; border-radius:10px; padding:8px 20px; font-weight:600; font-size:12.5px; cursor:pointer; font-family:inherit; box-shadow:0 0 22px -6px rgba(88,235,191,0.65);" style-hover="filter:brightness(1.06);">Upload</button>
+        </div>
+      </div>
+
+      <div style="border:1.5px dashed rgba(255,255,255,0.16); border-radius:13px; padding:22px; text-align:center; margin-bottom:16px; background:rgba(0,0,0,0.12);">
+        <div style="font-size:13px; color:oklch(0.74 0.03 256); margin-bottom:5px;">Drop documents to upload</div>
+        <div style="font-family:'Source Code Pro',monospace; font-size:11px; color:oklch(0.52 0.03 256);">PDF &middot; MD &middot; DOCX &middot; CSV &middot; TXT &middot; JSON</div>
+      </div>
+
+      <div style="display:flex; flex-direction:column; gap:1px; background:rgba(0,0,0,0.18); border:1px solid rgba(255,255,255,0.06); border-radius:12px; overflow:hidden;">
+        <div style="display:flex; align-items:center; gap:12px; padding:13px 15px;">
+          <div style="width:30px; height:30px; border-radius:8px; background:rgba(92,141,255,0.16); display:flex; align-items:center; justify-content:center; font-family:'Source Code Pro',monospace; font-size:9px; font-weight:600; color:#8fb0ff;">PDF</div>
+          <span style="flex:1; font-size:13px; color:#e6ebf3;">quarterly-report.pdf</span>
+          <span style="display:flex; align-items:center; gap:6px; font-size:11.5px; font-weight:500; color:#34d399; background:rgba(52,211,153,0.12); padding:4px 11px; border-radius:999px;"><span style="width:6px;height:6px;border-radius:99px;background:#34d399;"></span>Ready</span>
+        </div>
+        <div style="height:1px; background:rgba(255,255,255,0.05);"></div>
+        <div style="display:flex; align-items:center; gap:12px; padding:13px 15px;">
+          <div style="width:30px; height:30px; border-radius:8px; background:rgba(45,212,191,0.16); display:flex; align-items:center; justify-content:center; font-family:'Source Code Pro',monospace; font-size:9px; font-weight:600; color:#5fe3cf;">MD</div>
+          <span style="flex:1; font-size:13px; color:#e6ebf3;">meeting-notes.md</span>
+          <span style="display:flex; align-items:center; gap:7px; font-size:11.5px; font-weight:500; color:#f59e0b; background:rgba(245,158,11,0.12); padding:4px 11px; border-radius:999px;"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#f59e0b" stroke-width="2.4" stroke-linecap="round" style="animation:ci-spin 0.9s linear infinite;"><path d="M21 12a9 9 0 1 1-6.2-8.5"/></svg>Processing</span>
+        </div>
+        <div style="height:1px; background:rgba(255,255,255,0.05);"></div>
+        <div style="display:flex; align-items:center; gap:12px; padding:13px 15px;">
+          <div style="width:30px; height:30px; border-radius:8px; background:rgba(124,107,255,0.16); display:flex; align-items:center; justify-content:center; font-family:'Source Code Pro',monospace; font-size:9px; font-weight:600; color:#a99bff;">DOCX</div>
+          <span style="flex:1; font-size:13px; color:#e6ebf3;">design-spec.docx</span>
+          <span style="font-size:11.5px; font-weight:500; color:oklch(0.62 0.03 256); background:rgba(255,255,255,0.06); padding:4px 11px; border-radius:999px;">Queued</span>
+        </div>
+        <div style="height:1px; background:rgba(255,255,255,0.05);"></div>
+        <div style="display:flex; align-items:center; gap:12px; padding:13px 15px;">
+          <div style="width:30px; height:30px; border-radius:8px; background:rgba(255,255,255,0.07); display:flex; align-items:center; justify-content:center; font-family:'Source Code Pro',monospace; font-size:9px; font-weight:600; color:oklch(0.66 0.03 256);">XLSX</div>
+          <span style="flex:1; font-size:13px; color:#e6ebf3;">budget.xlsx</span>
+          <span style="font-size:11.5px; font-weight:500; color:oklch(0.62 0.03 256); background:rgba(255,255,255,0.06); padding:4px 11px; border-radius:999px;">Uploaded &middot; not parsed</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div style="font-family:'Source Code Pro',monospace; font-size:10.5px; letter-spacing:0.1em; color:oklch(0.46 0.03 256); margin-top:30px;">COMPANION INTELLIGENCE &middot; CAPTURE LAYER</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;startTab&quot;: {&quot;editor&quot;: &quot;enum&quot;, &quot;options&quot;: [&quot;identity&quot;, &quot;capture&quot;, &quot;storage&quot;, &quot;database&quot;, &quot;vision&quot;], &quot;default&quot;: &quot;identity&quot;, &quot;tsType&quot;: &quot;string&quot;, &quot;section&quot;: &quot;Demo&quot;}, &quot;connection&quot;: {&quot;editor&quot;: &quot;enum&quot;, &quot;options&quot;: [&quot;connected&quot;, &quot;verifying&quot;, &quot;offline&quot;], &quot;default&quot;: &quot;connected&quot;, &quot;tsType&quot;: &quot;string&quot;, &quot;section&quot;: &quot;Demo&quot;}, &quot;showLaneColors&quot;: {&quot;editor&quot;: &quot;boolean&quot;, &quot;default&quot;: true, &quot;tsType&quot;: &quot;boolean&quot;, &quot;section&quot;: &quot;Demo&quot;}}">
+class Component extends DCLogic {
+  state = {
+    tab: this.props.startTab || 'identity',
+    auth: 'oidc',
+    interval: 300,
+    diff: 10,
+    minioSsl: true,
+    pgSsl: true,
+    conn: this.props.connection || 'connected',
+  };
+
+  renderVals() {
+    const t = this.state.tab;
+    const tabs = ['identity', 'capture', 'storage', 'database', 'vision'];
+    const activeLayer = { position: 'absolute', inset: '0', borderRadius: '10px', background: 'linear-gradient(90deg, rgba(88,235,191,0.16), rgba(88,235,191,0.03))', boxShadow: 'inset 0 0 0 1px rgba(88,235,191,0.22)' };
+    const idleLayer = { position: 'absolute', inset: '0', borderRadius: '10px', background: 'transparent' };
+    const out = {};
+    tabs.forEach((k) => {
+      const a = t === k;
+      out[k + 'Layer'] = a ? activeLayer : idleLayer;
+      out[k + 'Bar'] = { position: 'absolute', left: '2px', top: '50%', transform: 'translateY(-50%)', width: '3px', height: a ? '24px' : '0px', borderRadius: '999px', background: 'linear-gradient(180deg,#58ebbf,#409b9b)', boxShadow: a ? '0 0 10px rgba(88,235,191,0.6)' : 'none', transition: 'height .2s ease' };
+      out[k + 'Content'] = { position: 'relative', display: 'flex', alignItems: 'center', gap: '11px', color: a ? '#e9fff9' : 'oklch(0.76 0.025 256)' };
+      out['is' + k.charAt(0).toUpperCase() + k.slice(1)] = a;
+      out['go_' + k] = () => this.setState({ tab: k });
+    });
+
+    const ak = this.state.auth === 'apikey';
+    out.isApiKey = ak;
+    out.isOidc = !ak;
+    out.goApiKey = () => this.setState({ auth: 'apikey' });
+    out.goOidc = () => this.setState({ auth: 'oidc' });
+    const segActive = { position: 'absolute', inset: '0', borderRadius: '8px', background: 'linear-gradient(135deg,#58ebbf,#409b9b)', boxShadow: '0 0 18px -6px rgba(88,235,191,0.6)' };
+    const segIdle = { position: 'absolute', inset: '0', borderRadius: '8px', background: 'transparent' };
+    out.authKeyLayer = ak ? segActive : segIdle;
+    out.authOidcLayer = !ak ? segActive : segIdle;
+    out.authKeyLabel = { position: 'relative', fontSize: '12.5px', fontWeight: '600', color: ak ? '#041620' : 'oklch(0.72 0.03 256)' };
+    out.authOidcLabel = { position: 'relative', fontSize: '12.5px', fontWeight: '600', color: !ak ? '#041620' : 'oklch(0.72 0.03 256)' };
+
+    out.interval = this.state.interval;
+    out.incInterval = () => this.setState((s) => ({ interval: Math.min(86400, s.interval + 30) }));
+    out.decInterval = () => this.setState((s) => ({ interval: Math.max(30, s.interval - 30) }));
+
+    out.diff = this.state.diff;
+    out.setDiff = (e) => this.setState({ diff: Number(e.target.value) });
+
+    const trackOn = { width: '42px', height: '24px', borderRadius: '999px', padding: '2px', cursor: 'pointer', background: 'linear-gradient(135deg,#58ebbf,#409b9b)', boxShadow: '0 0 16px -5px rgba(88,235,191,0.7)', transition: 'all .18s', display: 'flex', justifyContent: 'flex-end', alignItems: 'center', flexShrink: '0' };
+    const trackOff = { width: '42px', height: '24px', borderRadius: '999px', padding: '2px', cursor: 'pointer', background: 'rgba(255,255,255,0.13)', transition: 'all .18s', display: 'flex', justifyContent: 'flex-start', alignItems: 'center', flexShrink: '0' };
+    const knob = { width: '20px', height: '20px', borderRadius: '999px', background: '#fff', boxShadow: '0 1px 3px rgba(0,0,0,0.4)' };
+    out.minioTrack = this.state.minioSsl ? trackOn : trackOff;
+    out.minioKnob = knob;
+    out.pgTrack = this.state.pgSsl ? trackOn : trackOff;
+    out.pgKnob = knob;
+    out.toggleMinio = () => this.setState((s) => ({ minioSsl: !s.minioSsl }));
+    out.togglePg = () => this.setState((s) => ({ pgSsl: !s.pgSsl }));
+
+    const cm = {
+      connected: { col: '#34d399', t: 'Connected', s: 'Streaming to portal' },
+      verifying: { col: '#f59e0b', t: 'Verifying\u2026', s: 'Checking server reachability' },
+      offline: { col: '#f4675b', t: 'Offline', s: 'Captures queued locally' },
+    }[this.state.conn];
+    out.connDot = { width: '9px', height: '9px', borderRadius: '999px', background: cm.col, boxShadow: '0 0 10px ' + cm.col, animation: 'ci-pulse 2s ease-in-out infinite', flexShrink: '0' };
+    out.connText = cm.t;
+    out.connSub = cm.s;
+
+    const lc = this.props.showLaneColors !== false;
+    out.laneShot = lc ? '#5C8DFF' : 'oklch(0.6 0.02 256)';
+    out.laneAct = lc ? '#7C6BFF' : 'oklch(0.6 0.02 256)';
+    out.laneFile = lc ? '#2DD4BF' : 'oklch(0.6 0.02 256)';
+
+    return out;
+  }
+}
+</script>
+</body>
+</html>

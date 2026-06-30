@@ -1,9 +1,21 @@
 # settings_ui.rs
 
 ## Purpose
-Provides the standalone egui settings window for CI-Applet configuration, including CI-Server URL, API-key/OIDC auth mode, manual identity overrides, and infrastructure settings.
+Provides the standalone egui settings window for CI-Applet configuration, including CI-Server URL, API-key/OIDC auth mode, manual identity overrides, and infrastructure settings. Styled with the Companion Intelligence design system via [`theme`](theme.md): a left sidebar nav (Identity / Capture / Storage / Database / Vision) + connection card, a scrollable themed content pane, and a bottom footer showing the config path with Close/Save.
 
 ## Components
+
+### `SettingsApp::render_sidebar` / `render_footer`
+- **Does**: Draw the left nav (`theme::nav_item` per tab, logo header, bottom connection card) and the bottom footer (config path or current error, plus `theme::ghost_button`/`primary_button`). `connection_status` derives a coarse Configured/Incomplete/Not-configured hint from config presence (no network probe).
+- **Interacts with**: `theme`, `ConfigManager::path`.
+- **Advanced toggle**: Storage (MinIO) and Database (Postgres) are legacy direct-write connections (`SettingsTab::is_advanced`) — the supported path streams everything through CI-Server, so they're hidden behind a sidebar "Advanced" toggle (`show_advanced`, default off). Toggling off while viewing one falls back to Identity. See [connection_test.md](connection_test.md) and the worker's `server_ingest` vs `build_legacy_recorder` branch.
+
+### Connection tests (`run_test` / `drain_tests` / `render_test_row` / `build_config`)
+- **Does**: Each connection tab gets a "Test connection" button that probes the *current* form values off-thread (settings owns a tokio runtime), reporting an inline Connected/Failed badge + detail. `build_config` layers the form onto the saved config and is shared with `save` so a test probes exactly what's shown.
+- **Interacts with**: `connection_test`.
+
+### `field` / `page_header` / `stepper_button` (helpers)
+- **Does**: Shared themed building blocks for the tab bodies — a labelled `theme::text_field`, a title+subtitle header, and the Capture interval ± buttons. Keep the tab renderers DRY.
 
 ### `SettingsApp::save`
 - **Does**: Validates and persists the edited config, treating `user_id` and `server.applet_auth_token` as independent optional overrides.

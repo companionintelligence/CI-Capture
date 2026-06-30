@@ -10,13 +10,15 @@
 //! It never mutates anything on the server — it's safe to run anytime to
 //! answer "can this machine actually talk to my CI-Server?".
 
-use std::{error::Error, time::Duration};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use reqwest::Client;
 
 use crate::config::{AppConfig, ConfigManager};
-use crate::server_common::{AuthCredential, graphql_urls, server_origin, upload_urls};
+use crate::server_common::{
+    AuthCredential, friendly_error, graphql_urls, server_origin, upload_urls,
+};
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -133,7 +135,7 @@ async fn report(config: &AppConfig) -> Result<()> {
     {
         match client.get(health.clone()).send().await {
             Ok(resp) => println!("GET /health           : HTTP {}", resp.status().as_u16()),
-            Err(err) => println!("GET /health           : ✗ {}", short_err(&err)),
+            Err(err) => println!("GET /health           : ✗ {}", friendly_error(&err)),
         }
     }
 
@@ -173,7 +175,7 @@ async fn report(config: &AppConfig) -> Result<()> {
                             break;
                         }
                     }
-                    Err(err) => last_err = Some(short_err(&err)),
+                    Err(err) => last_err = Some(friendly_error(&err)),
                 }
             }
             if let Some(err) = last_err {
@@ -199,30 +201,3 @@ fn join_urls(urls: &[reqwest::Url]) -> String {
         .join(" | ")
 }
 
-fn short_err(err: &reqwest::Error) -> String {
-    let chain = error_chain(err);
-    let lower = chain.to_ascii_lowercase();
-    if lower.contains("certificate") || lower.contains("unknownissuer") {
-        "TLS certificate rejected; use a trusted CI-Server URL or install the server certificate"
-            .to_string()
-    } else if lower.contains("tls") || lower.contains("ssl") || lower.contains("alert") {
-        "TLS handshake failed; check the CI-Server URL and certificate".to_string()
-    } else if err.is_connect() {
-        "connection refused / host unreachable".to_string()
-    } else if err.is_timeout() {
-        "timed out".to_string()
-    } else {
-        err.to_string()
-    }
-}
-
-fn error_chain(err: &reqwest::Error) -> String {
-    let mut text = err.to_string();
-    let mut source = err.source();
-    while let Some(err) = source {
-        text.push_str(": ");
-        text.push_str(&err.to_string());
-        source = err.source();
-    }
-    text
-}

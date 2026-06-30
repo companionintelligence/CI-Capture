@@ -1,7 +1,39 @@
+use std::error::Error;
+
 use anyhow::{Context, Result};
 use reqwest::{RequestBuilder, Url};
 
 use crate::config::AppConfig;
+
+/// Turn a `reqwest::Error` into a short, user-facing explanation. Shared by the
+/// CLI `--check-server` report and the settings-window connection tests.
+pub fn friendly_error(err: &reqwest::Error) -> String {
+    let chain = error_chain(err);
+    let lower = chain.to_ascii_lowercase();
+    if lower.contains("certificate") || lower.contains("unknownissuer") {
+        "TLS certificate rejected; use a trusted CI-Server URL or install the server certificate"
+            .to_string()
+    } else if lower.contains("tls") || lower.contains("ssl") || lower.contains("alert") {
+        "TLS handshake failed; check the URL and certificate".to_string()
+    } else if err.is_connect() {
+        "connection refused / host unreachable".to_string()
+    } else if err.is_timeout() {
+        "timed out".to_string()
+    } else {
+        err.to_string()
+    }
+}
+
+fn error_chain(err: &reqwest::Error) -> String {
+    let mut text = err.to_string();
+    let mut source = err.source();
+    while let Some(err) = source {
+        text.push_str(": ");
+        text.push_str(&err.to_string());
+        source = err.source();
+    }
+    text
+}
 
 pub fn server_origin(portal_url: &str) -> Result<Url> {
     let parsed =

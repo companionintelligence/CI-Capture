@@ -1,6 +1,7 @@
 mod analysis;
 mod capture;
 mod config;
+mod connection_test;
 mod conversion;
 mod db;
 mod extractors;
@@ -16,6 +17,7 @@ mod server_upload;
 mod settings_ui;
 mod svg_icon;
 mod sync;
+mod theme;
 mod upload_ui;
 mod watcher;
 mod worker;
