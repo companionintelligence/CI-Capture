@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 use crate::config::AppConfig;
 use crate::db::VizierEventRecord;
-use crate::server_common::{AuthCredential, events_urls, upload_urls};
+use crate::server_common::{AuthCredential, events_urls, files_urls, upload_urls};
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -64,6 +64,8 @@ pub async fn ingest_capture(
     config: &AppConfig,
     filename: &str,
     png_bytes: &[u8],
+    inventory: bool,
+    model: Option<&str>,
 ) -> Result<String> {
     let credential = AuthCredential::from_config(config)?;
 
@@ -74,7 +76,7 @@ pub async fn ingest_capture(
 
     let mut last_error = None;
     for upload_url in upload_urls(&config.server.portal_url)? {
-        let form = capture_upload_form(filename, png_bytes, &config.analysis.model)?;
+        let form = capture_upload_form(filename, png_bytes, inventory, model)?;
         let response = credential
             .apply(client.post(upload_url.clone()))
             .multipart(form)
@@ -163,8 +165,8 @@ pub async fn ingest_file_event(
             source_system: "ci-applet",
             source_id: event.event_id.clone(),
             kind: "file_event".to_string(),
-            occurred_at: event.occurred_at.to_rfc3339(),
-            observed_at: Some(event.observed_at.to_rfc3339()),
+            occurred_at: event.occurred_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            observed_at: Some(event.observed_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)),
             title: path,
             description: Some(format!("{:?}", event.event_type)),
             payload,
@@ -199,8 +201,8 @@ pub async fn ingest_vizier_event(
                 event.session_id, event.monotonic_ms, event.event_kind
             ),
             kind: format!("vizier_{}", event.event_kind),
-            occurred_at: event.observed_at.to_rfc3339(),
-            observed_at: Some(event.observed_at.to_rfc3339()),
+            occurred_at: event.observed_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            observed_at: Some(event.observed_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)),
             title: event
                 .focus_title
                 .clone()
@@ -273,17 +275,77 @@ async fn post_capture_event(config: &AppConfig, event: CaptureEvent) -> Result<(
 fn capture_upload_form(
     filename: &str,
     png_bytes: &[u8],
-    model: &str,
+    inventory: bool,
+    model: Option<&str>,
 ) -> Result<reqwest::multipart::Form> {
     let part = reqwest::multipart::Part::bytes(png_bytes.to_vec())
         .file_name(filename.to_string())
         .mime_str("image/png")
         .context("setting MIME type on capture upload part")?;
 
-    Ok(reqwest::multipart::Form::new()
+    let mut form = reqwest::multipart::Form::new()
         .part("files", part)
-        .text("inventoryCapture", "true")
-        .text("model", model.to_string()))
+        .text("inventoryCapture", if inventory { "true" } else { "false" });
+    // Only forward a model when we want CI-Server to run its own (Ollama)
+    // analysis — sending the applet's own vision-model name would make the
+    // server reject the job. When the applet analyses locally, omit it.
+    if let Some(model) = model.filter(|m| !m.trim().is_empty()) {
+        form = form.text("model", model.to_string());
+    }
+    Ok(form)
+}
+
+/// Set the title and/or description on an uploaded file. Used when the applet
+/// ran its own vision analysis (its configured endpoint) and wants that result
+/// stored on the file instead of CI-Server's Ollama description.
+pub async fn set_file_metadata(
+    config: &AppConfig,
+    file_id: &str,
+    title: Option<&str>,
+    description: Option<&str>,
+) -> Result<()> {
+    if title.is_none() && description.is_none() {
+        return Ok(());
+    }
+    let credential = AuthCredential::from_config(config)?;
+    let client = Client::builder()
+        .use_rustls_tls()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .context("building file metadata client")?;
+
+    let mut body = serde_json::Map::new();
+    if let Some(title) = title {
+        body.insert("title".into(), Value::String(title.to_string()));
+    }
+    if let Some(description) = description {
+        body.insert("description".into(), Value::String(description.to_string()));
+    }
+    let body = Value::Object(body);
+
+    let mut last_error = None;
+    for url in files_urls(&config.server.portal_url, file_id)? {
+        let response = credential
+            .apply(client.patch(url.clone()))
+            .json(&body)
+            .send()
+            .await
+            .with_context(|| format!("sending file metadata update to {url}"))?;
+
+        let status = response.status();
+        if should_try_next_endpoint(status) {
+            let text = response.text().await.unwrap_or_default();
+            last_error = Some(anyhow!("file metadata update failed with HTTP {status}: {text}"));
+            continue;
+        }
+        if !status.is_success() {
+            let text = response.text().await.unwrap_or_default();
+            return Err(anyhow!("file metadata update failed with HTTP {status}: {text}"));
+        }
+        return Ok(());
+    }
+
+    Err(last_error.unwrap_or_else(|| anyhow!("no file metadata endpoint candidates")))
 }
 
 fn should_try_next_endpoint(status: StatusCode) -> bool {

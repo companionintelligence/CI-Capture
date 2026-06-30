@@ -10,8 +10,12 @@ Wraps the CI-Server upload and unified event-ingest endpoints used after browser
 - **Interacts with**: `worker.rs`.
 
 ### `ingest_capture`
-- **Does**: Uploads a screenshot to CI-Server file upload with `inventoryCapture=true`.
+- **Does**: Uploads a screenshot to CI-Server file upload. Takes `inventory: bool` (sent as `inventoryCapture`) and `model: Option<&str>`. The applet sends `inventory=false`/no model when it analysed locally (its own vision endpoint) so the server skips its Ollama pass; `inventory=true`/no model asks the server to analyse with its default model. Returns the server file id.
 - **Interacts with**: `AuthCredential` in `server_common.rs` and CI-Server file ingestion.
+
+### `set_file_metadata`
+- **Does**: `PATCH /files/{id}` to write a `title`/`description` the applet derived from its local analysis (parity with the server's Ollama image description). No-op when both are `None`.
+- **Interacts with**: `files_urls` in `server_common.rs`; called by `worker.rs` only when a vision endpoint is configured.
 
 ### `ingest_vizier_event`, `ingest_file_event`
 - **Does**: Serializes applet activity into CI-Server's capture-ingest envelope.

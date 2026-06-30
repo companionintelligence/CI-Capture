@@ -8,7 +8,10 @@ use serde_json::{Value, json};
 
 use crate::config::AnalysisConfig;
 
-const ANALYSIS_MAX_TOKENS: u32 = 1_800;
+// Generous headroom: reasoning-capable models (e.g. Qwen3-VL) may spend tokens
+// "thinking" before emitting the JSON, so a tight budget can truncate the
+// answer. The schema itself is small.
+const ANALYSIS_MAX_TOKENS: u32 = 4_096;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AnalysisResult {
@@ -256,33 +259,39 @@ fn extract_content_text(payload: &Value) -> Result<String> {
     let message = first_choice
         .get("message")
         .context("analysis response missing message field")?;
-    let content = message
-        .get("content")
-        .context("analysis response missing content field")?;
 
+    // Primary path: the assistant's `content`. But some reasoning models
+    // (e.g. Qwen3 via LM Studio) leave `content` empty and emit the whole
+    // answer — JSON included — in `reasoning_content`. Fall back to that so the
+    // analysis isn't lost just because the model "thought" its reply.
+    let content = message.get("content").map(content_to_text).unwrap_or_default();
+    if !content.trim().is_empty() {
+        return Ok(content);
+    }
+    let reasoning = message
+        .get("reasoning_content")
+        .map(content_to_text)
+        .unwrap_or_default();
+    if !reasoning.trim().is_empty() {
+        return Ok(reasoning);
+    }
+
+    Err(anyhow!(
+        "analysis response had no content or reasoning_content"
+    ))
+}
+
+/// Flatten an OpenAI-style message field that may be a plain string or an array
+/// of `{type:"text", text:"…"}` parts into a single string.
+fn content_to_text(content: &Value) -> String {
     match content {
-        Value::String(s) => Ok(s.clone()),
-        Value::Array(parts) => {
-            let mut buffer = String::new();
-            for part in parts {
-                if part
-                    .get("type")
-                    .and_then(|v| v.as_str())
-                    .map(|kind| kind == "text")
-                    .unwrap_or(false)
-                {
-                    if let Some(text) = part.get("text").and_then(|v| v.as_str()) {
-                        buffer.push_str(text);
-                    }
-                }
-            }
-            if buffer.is_empty() {
-                Err(anyhow!("analysis content array had no text entries"))
-            } else {
-                Ok(buffer)
-            }
-        }
-        _ => Err(anyhow!("analysis content format unsupported")),
+        Value::String(s) => s.clone(),
+        Value::Array(parts) => parts
+            .iter()
+            .filter(|part| part.get("type").and_then(|v| v.as_str()) == Some("text"))
+            .filter_map(|part| part.get("text").and_then(|v| v.as_str()))
+            .collect(),
+        _ => String::new(),
     }
 }
 
@@ -303,14 +312,33 @@ fn sanitize_json_block(raw: &str) -> String {
     trimmed.to_string()
 }
 
+/// Drop `<think>…</think>` reasoning blocks some models emit before the answer.
+/// An unclosed `<think>` (no closing tag) means the model never reached the
+/// JSON, so everything from the tag onward is dropped.
+fn strip_reasoning(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut rest = raw;
+    while let Some(start) = rest.find("<think>") {
+        out.push_str(&rest[..start]);
+        match rest[start..].find("</think>") {
+            Some(end) => rest = &rest[start + end + "</think>".len()..],
+            None => return out,
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 fn parse_analysis_json(raw_content: &str) -> Result<Value> {
-    let cleaned = sanitize_json_block(raw_content);
+    let cleaned = sanitize_json_block(&strip_reasoning(raw_content));
     if let Ok(value) = serde_json::from_str::<Value>(&cleaned) {
         return Ok(value);
     }
 
-    if let Some(candidate) = extract_first_json_object(&cleaned) {
-        if let Ok(value) = serde_json::from_str::<Value>(&candidate) {
+    // Reasoning models can emit a draft object inside their prose before the
+    // final answer, so prefer the LAST balanced object that parses.
+    for candidate in extract_balanced_objects(&cleaned).iter().rev() {
+        if let Ok(value) = serde_json::from_str::<Value>(candidate) {
             return Ok(value);
         }
     }
@@ -318,7 +346,10 @@ fn parse_analysis_json(raw_content: &str) -> Result<Value> {
     Err(anyhow!("analysis content is not JSON"))
 }
 
-fn extract_first_json_object(raw: &str) -> Option<String> {
+/// Every balanced top-level `{…}` object in `raw`, in order. Quote- and
+/// escape-aware so braces inside strings don't throw off the depth count.
+fn extract_balanced_objects(raw: &str) -> Vec<String> {
+    let mut objects = Vec::new();
     let mut start: Option<usize> = None;
     let mut depth: i32 = 0;
     let mut in_string = false;
@@ -355,13 +386,65 @@ fn extract_first_json_object(raw: &str) -> Option<String> {
                 depth -= 1;
                 if depth == 0 {
                     if let Some(start_idx) = start {
-                        return Some(raw[start_idx..=idx].to_string());
+                        objects.push(raw[start_idx..=idx].to_string());
                     }
+                    start = None;
                 }
             }
             _ => {}
         }
     }
 
-    None
+    objects
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_analysis_json;
+
+    const FIELDS: &str = r#""activity_summary":"s","primary_application":"p","activity_category":"c","applications":[],"ui_elements":[],"contains_sensitive":false,"contains_pii":false,"ocr_text":"""#;
+
+    #[test]
+    fn parses_plain_json() {
+        let raw = format!("{{{FIELDS}}}");
+        assert!(parse_analysis_json(&raw).is_ok());
+    }
+
+    #[test]
+    fn strips_reasoning_block_before_json() {
+        let raw = format!("<think>The user seems to be coding. I'll emit {{a draft}}.</think>\n{{{FIELDS}}}");
+        let v = parse_analysis_json(&raw).expect("should parse JSON after </think>");
+        assert_eq!(v["primary_application"], "p");
+    }
+
+    #[test]
+    fn prefers_final_object_over_draft_in_prose() {
+        let raw = format!("Here is a draft: {{\"foo\":1}} and the final answer:\n{{{FIELDS}}}");
+        let v = parse_analysis_json(&raw).expect("should pick the last balanced object");
+        assert_eq!(v["activity_category"], "c");
+    }
+
+    #[test]
+    fn handles_fenced_json() {
+        let raw = format!("```json\n{{{FIELDS}}}\n```");
+        assert!(parse_analysis_json(&raw).is_ok());
+    }
+
+    #[test]
+    fn unclosed_think_yields_error_not_panic() {
+        let raw = "<think>reasoning forever with no answer and an open brace {";
+        assert!(parse_analysis_json(raw).is_err());
+    }
+
+    #[test]
+    fn falls_back_to_reasoning_content_when_content_empty() {
+        // Mirrors Qwen3/LM Studio: empty `content`, answer in `reasoning_content`.
+        let payload = serde_json::json!({
+            "choices": [{ "message": { "content": "", "reasoning_content": format!("{{{FIELDS}}}") } }]
+        });
+        let text = super::extract_content_text(&payload)
+            .expect("should fall back to reasoning_content");
+        let v = parse_analysis_json(&text).expect("reasoning JSON should parse");
+        assert_eq!(v["primary_application"], "p");
+    }
 }

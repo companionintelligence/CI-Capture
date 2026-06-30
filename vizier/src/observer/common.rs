@@ -48,12 +48,21 @@ impl BaselineObserver {
     }
 
     fn collect_fs_events(&mut self) -> Vec<FSEvent> {
-        let mut events = Vec::new();
-
+        // Always drain the watcher channel fully so it can't grow unbounded,
+        // but keep only high-signal events: the watch root is broad (the home
+        // dir by default), so without filtering + a cap a busy filesystem
+        // (node_modules, caches, build output, browser profiles) floods a
+        // single snapshot into the megabytes. Snapshots are meant to be tiny.
+        let mut raw: Vec<(String, PathBuf)> = Vec::new();
         if let Some(rx) = &self.rx {
             while let Ok(msg) = rx.try_recv() {
                 if let Ok(event) = msg {
-                    events.extend(map_notify_event(event));
+                    let kind = notify_event_kind(&event);
+                    for path in event.paths {
+                        if !is_noise_fs_path(&path) {
+                            raw.push((kind.clone(), path));
+                        }
+                    }
                 }
             }
         }
@@ -63,8 +72,97 @@ impl BaselineObserver {
             return Vec::new();
         }
 
-        events
+        // Collapse repeat events for the same path (editors emit several per
+        // save), keeping the most recent, then cap to the newest MAX_FS_EVENTS.
+        let mut seen = std::collections::HashSet::new();
+        let mut deduped: Vec<(String, PathBuf)> = Vec::with_capacity(raw.len());
+        for (kind, path) in raw.into_iter().rev() {
+            if seen.insert(path.clone()) {
+                deduped.push((kind, path));
+            }
+        }
+        deduped.reverse();
+        if deduped.len() > MAX_FS_EVENTS {
+            let drop_to = deduped.len() - MAX_FS_EVENTS;
+            deduped.drain(0..drop_to);
+        }
+
+        // Only now stat the survivors — never the thousands we just dropped.
+        let now = SystemTime::now();
+        let ts = current_ts();
+        deduped
+            .into_iter()
+            .map(|(kind, path)| FSEvent {
+                path: path.display().to_string(),
+                kind,
+                ts,
+                file_activity: file_activity_for_path(&path, now),
+            })
+            .collect()
     }
+}
+
+/// Upper bound on filesystem events carried in one snapshot. Keeps perception
+/// payloads small (snapshots are meant to be ~kilobytes, not megabytes); excess
+/// churn is sampled down to the most recent events.
+const MAX_FS_EVENTS: usize = 64;
+
+/// High-churn / low-signal paths excluded from perception. These are package,
+/// cache, build, and VCS internals that would otherwise drown a snapshot.
+fn is_noise_fs_path(path: &Path) -> bool {
+    // Directory names (lowercased) that mark a high-churn / low-signal subtree.
+    // Matched per path component so both the directory itself and anything
+    // under it are excluded (a substring like "/node_modules/" would miss the
+    // directory's own create event, which has no trailing slash).
+    const NOISE_DIRS: &[&str] = &[
+        ".git",
+        "node_modules",
+        ".cache",
+        "caches",
+        "library",
+        ".trash",
+        "target",
+        "dist",
+        "build",
+        ".next",
+        ".gradle",
+        ".venv",
+        "__pycache__",
+        ".npm",
+        ".cargo",
+        ".rustup",
+        "deriveddata",
+        ".idea",
+        ".vscode",
+    ];
+    const NOISE_SUFFIXES: &[&str] = &[".ds_store", ".tmp", ".swp", ".swx", "~", ".lock"];
+
+    let has_noise_component = path.components().any(|c| {
+        let part = c.as_os_str().to_string_lossy().to_lowercase();
+        NOISE_DIRS.contains(&part.as_str())
+    });
+    if has_noise_component {
+        return true;
+    }
+
+    let s = path.to_string_lossy().to_lowercase();
+    NOISE_SUFFIXES.iter().any(|suf| s.ends_with(suf))
+}
+
+fn notify_event_kind(event: &Event) -> String {
+    match event.kind {
+        EventKind::Create(_) => "Create",
+        EventKind::Remove(_) => "Delete",
+        EventKind::Modify(modify_kind) => {
+            if matches!(modify_kind, notify::event::ModifyKind::Name(_)) {
+                "Rename"
+            } else {
+                "Modify"
+            }
+        }
+        _ => "Modify",
+    }
+    .to_string()
 }
 
 impl Observer for BaselineObserver {
@@ -261,36 +359,6 @@ fn setup_watcher(
     }
 
     (Some(watcher), Some(rx))
-}
-
-fn map_notify_event(event: Event) -> Vec<FSEvent> {
-    let kind = match event.kind {
-        EventKind::Create(_) => "Create",
-        EventKind::Remove(_) => "Delete",
-        EventKind::Modify(modify_kind) => {
-            if matches!(modify_kind, notify::event::ModifyKind::Name(_)) {
-                "Rename"
-            } else {
-                "Modify"
-            }
-        }
-        _ => "Modify",
-    }
-    .to_string();
-
-    let ts = current_ts();
-    let now = SystemTime::now();
-
-    event
-        .paths
-        .into_iter()
-        .map(|path| FSEvent {
-            path: path.display().to_string(),
-            kind: kind.clone(),
-            ts,
-            file_activity: file_activity_for_path(&path, now),
-        })
-        .collect()
 }
 
 fn current_terminal_context(shell: Option<String>) -> Option<TerminalCtx> {

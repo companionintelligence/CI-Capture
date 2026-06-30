@@ -5,10 +5,14 @@ Shared CI-Server URL and authentication helpers. This file centralizes endpoint 
 
 ## Components
 
-### `server_origin`, `graphql_url`, `upload_url`, `events_url`, `devices_url`
-- **Does**: Normalize configured CI-Server URLs to an origin and derive API endpoints.
+### `server_origin`, `graphql_urls`, `upload_urls`, `events_urls`, `devices_urls`, `files_urls`
+- **Does**: Normalize configured CI-Server URLs to an origin and derive API endpoint candidates. `files_urls(portal, id)` builds `/api/files/{id}` (+ bare fallback) for file metadata updates.
 - **Interacts with**: `server_check.rs`, `server_ingest.rs`, and `server_upload.rs`.
 - **Rationale**: Reverse-proxied deployments often expose endpoints below `/api`, while direct API deployments often expose the same routes without that prefix.
+
+### `friendly_error`
+- **Does**: Maps a `reqwest::Error` to a short user-facing string (TLS/cert, connection refused, timeout, …). Shared by the CLI `--check-server` report and the settings-window connection tests.
+- **Interacts with**: `server_check.rs`, `connection_test.rs`.
 
 ### `AuthCredential`
 - **Does**: Represents either a bearer token or a CI-Server API key and applies the correct request header.

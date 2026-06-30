@@ -65,6 +65,12 @@ pub fn devices_urls(portal_url: &str) -> Result<Vec<Url>> {
     api_endpoint_urls(portal_url, "/api/devices")
 }
 
+/// Candidate URLs for a single file resource (`/api/files/{id}` and the bare
+/// `/files/{id}` fallback), used for metadata updates.
+pub fn files_urls(portal_url: &str, file_id: &str) -> Result<Vec<Url>> {
+    api_endpoint_urls(portal_url, &format!("/api/files/{file_id}"))
+}
+
 pub fn api_endpoint_urls(portal_url: &str, prefixed_path: &str) -> Result<Vec<Url>> {
     let parsed =
         Url::parse(portal_url).with_context(|| format!("parsing portal URL {portal_url}"))?;

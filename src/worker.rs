@@ -27,6 +27,9 @@ use crate::server_ingest;
 
 const MIN_INTERVAL_SECS: u64 = 30;
 const ANALYSIS_QUEUE_CAPACITY: usize = 2;
+/// Largest vizier payload we'll attempt to POST. Sits under CI-Server's 10 MB
+/// ingest body limit so an oversized snapshot is skipped, not bounced as 413.
+const MAX_VIZIER_PAYLOAD_BYTES: usize = 9 * 1024 * 1024;
 
 pub struct WorkerHandle {
     tx: UnboundedSender<WorkerCommand>,
@@ -153,6 +156,13 @@ async fn run_analysis_loop(rx: &mut Receiver<PendingCapture>) {
             }
         };
 
+        if server_ingest::is_configured(&capture.config) {
+            ingest_capture_to_server(&analyzer, &capture, &png_bytes).await;
+            continue;
+        }
+
+        // No CI-Server: fall back to the legacy local path (still needs the
+        // local analysis result).
         let analysis = match analyzer.analyze(&capture.config.analysis, &png_bytes).await {
             Ok(result) => result,
             Err(err) => {
@@ -160,20 +170,6 @@ async fn run_analysis_loop(rx: &mut Receiver<PendingCapture>) {
                 AnalysisResult::default()
             }
         };
-
-        if server_ingest::is_configured(&capture.config) {
-            if let Err(err) =
-                server_ingest::ingest_capture(&capture.config, &capture.filename, &png_bytes).await
-            {
-                log::error!(
-                    "failed to ingest screenshot: {err:?} (file={}, size={:.1} KB)",
-                    capture.filename,
-                    png_bytes.len() as f64 / 1024.0
-                );
-            }
-            continue;
-        }
-
         #[cfg(feature = "legacy-minio")]
         if let Err(err) = record_capture_legacy(&capture, &png_bytes, &analysis).await {
             log::error!("failed to write legacy capture rows: {err:?}");
@@ -185,6 +181,72 @@ async fn run_analysis_loop(rx: &mut Receiver<PendingCapture>) {
                 "no CI-Server token configured; screenshot dropped (rebuild with --features legacy-minio for the MinIO fallback)"
             );
         }
+    }
+}
+
+/// Upload a capture to CI-Server. When the applet has its own vision endpoint
+/// configured, it analyses the screenshot locally and writes the result onto
+/// the file as title/description (CI-Server skips its own Ollama analysis).
+/// Otherwise it asks CI-Server to analyse the image itself (Ollama fallback).
+async fn ingest_capture_to_server(
+    analyzer: &VisionAnalyzer,
+    capture: &PendingCapture,
+    png_bytes: &[u8],
+) {
+    let config = &capture.config;
+    let has_endpoint = !config.analysis.endpoint.trim().is_empty();
+
+    // `inventoryCapture` doubles as "let the server analyse this": false when we
+    // analysed locally, true to invoke the server's Ollama fallback.
+    let file_id = match server_ingest::ingest_capture(
+        config,
+        &capture.filename,
+        png_bytes,
+        !has_endpoint,
+        None,
+    )
+    .await
+    {
+        Ok(id) => id,
+        Err(err) => {
+            log::error!(
+                "failed to ingest screenshot: {err:?} (file={}, size={:.1} KB)",
+                capture.filename,
+                png_bytes.len() as f64 / 1024.0
+            );
+            return;
+        }
+    };
+
+    if !has_endpoint {
+        return; // Server runs its own analysis.
+    }
+
+    let analysis = match analyzer.analyze(&config.analysis, png_bytes).await {
+        Ok(result) => result,
+        Err(err) => {
+            // The screenshot is already stored; just skip metadata this round.
+            log::warn!("vision analysis failed: {err:?}");
+            return;
+        }
+    };
+
+    let title = analysis
+        .primary_application
+        .clone()
+        .or_else(|| analysis.activity_category.clone())
+        .unwrap_or_else(|| "Screen capture".to_string());
+    let description = analysis.activity_summary.clone();
+
+    if let Err(err) = server_ingest::set_file_metadata(
+        config,
+        &file_id,
+        Some(&title),
+        description.as_deref(),
+    )
+    .await
+    {
+        log::warn!("failed to set file metadata for {file_id}: {err:?}");
     }
 }
 
@@ -403,16 +465,33 @@ impl WorkerState {
         };
 
         if server_configured {
-            server_ingest::ingest_vizier_event(&self.config, device_id, &event)
-                .await
-                .context("writing vizier event via CI-Server GraphQL")?;
+            // Guard against payloads CI-Server's JSON body limit will reject.
+            // Skipping (or failing) is non-fatal and we still advance the
+            // baseline below, so we never wedge re-sending the same oversized
+            // snapshot every tick.
+            let payload_bytes = serde_json::to_vec(&event.payload)
+                .map(|v| v.len())
+                .unwrap_or(0);
+            if payload_bytes > MAX_VIZIER_PAYLOAD_BYTES {
+                log::warn!(
+                    "vizier {} payload is {:.1} MB (over the {} MB cap); skipping send",
+                    event.event_kind,
+                    payload_bytes as f64 / 1_048_576.0,
+                    MAX_VIZIER_PAYLOAD_BYTES / 1_048_576
+                );
+            } else if let Err(err) =
+                server_ingest::ingest_vizier_event(&self.config, device_id, &event).await
+            {
+                log::warn!("failed to write vizier event via CI-Server: {err:?}");
+            }
         } else if let Some(recorder) = build_legacy_recorder(&self.config) {
-            recorder
-                .record_vizier_event(event)
-                .await
-                .context("writing vizier event")?;
+            if let Err(err) = recorder.record_vizier_event(event).await {
+                log::warn!("failed to write vizier event to postgres: {err:?}");
+            }
         }
 
+        // Always advance the baseline — even on skip/failure — so the next tick
+        // produces a small diff rather than re-sending this snapshot.
         self.vizier_previous = Some(current);
         Ok(())
     }
