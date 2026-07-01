@@ -62,9 +62,9 @@ flowchart LR
 Download the installer for your OS from the [**Releases**](https://github.com/companionintelligence/CI-Applet/releases) page — a real `.dmg` / `.exe` / `.deb` / `.AppImage` / Arch pacman package, like CI-Hub.
 
 <details open>
-<summary><b>macOS</b> — <code>CI-Applet_*_aarch64.dmg</code> (Apple Silicon)</summary>
+<summary><b>macOS</b> — <code>CI-Applet_*_aarch64.dmg</code> (Apple Silicon) or <code>CI-Applet_*_x64.dmg</code> / <code>*x86_64*.dmg</code> (Intel)</summary>
 
-Open the `.dmg` and drag **CI-Applet** to **Applications**. The build is **ad‑hoc signed**, so on first launch Gatekeeper warns it's from an unidentified developer — **right‑click → Open** once. It lives in the menu bar (no Dock icon). Grant **Screen Recording** and **Accessibility** in *System Settings → Privacy & Security* when prompted.
+Open the `.dmg` and drag **CI-Applet** to **Applications**. Production builds are Developer ID signed and notarized when Apple release secrets are configured. It lives in the menu bar (no Dock icon). Grant **Screen Recording** and **Accessibility** in *System Settings → Privacy & Security* when prompted.
 </details>
 
 <details>
@@ -184,16 +184,23 @@ Every push and PR is built and tested on macOS by [`.github/workflows/ci.yml`](.
 
 ### Cutting a release
 
-[`.github/workflows/release.yml`](.github/workflows/release.yml) builds **native installers** with [`cargo-packager`](https://github.com/crabnebula-dev/cargo-packager) on each OS's runner — `.dmg` (macOS Apple Silicon), `.exe` NSIS installer (Windows), `.deb` + `.AppImage` (Ubuntu), and Arch pacman package, all `--features rich-extractors`. Tag to publish:
+Actions → **Desktop Release** builds **native installers** with [`cargo-packager`](https://github.com/crabnebula-dev/cargo-packager) on each OS's runner — `.dmg` (macOS Apple Silicon + Intel), `.exe` NSIS installer (Windows), `.deb` + `.AppImage` (Ubuntu), and Arch pacman package, all `--features rich-extractors`. Run it with the release tag to publish:
 
 ```bash
-# 1. bump `version` in Cargo.toml, commit
-# 2. tag and push:
+# 1. bump `version` in Cargo.toml to match the release tag, then commit
+# 2. for production: tag the committed release ref and push it
 git tag v0.1.0
 git push origin v0.1.0
+
+# 3. optional dev/prerelease run, using a prerelease tag:
+# Actions → Desktop Release → Run workflow → tag: v0.1.0-dev.1, environment: dev
 ```
 
-The tag triggers a GitHub Release with every installer + `SHA256SUMS`. To dry‑run the full build without publishing, run it manually: **Actions → Release → Run workflow** (uploads the installers as artifacts, creates no Release). Installer config lives in `[package.metadata.packager]` in [`Cargo.toml`](Cargo.toml); icons are in `packaging/icons/`. macOS builds are **ad‑hoc signed** — proper Developer ID signing + notarization is a drop‑in once Apple secrets exist.
+The workflow refuses to release if `Cargo.toml` does not match the tag version, then runs `cargo test --locked --features rich-extractors` before packaging. Production releases must run from the matching `v*` tag and require configured signing secrets for every selected platform; manual branch runs are for prerelease dev builds and must use a prerelease tag such as `v0.1.0-dev.1`.
+
+The GitHub Release includes every installer, `latest.json`, `SHA256SUMS`, GitHub artifact attestations, and any detached `.asc` signatures. It signs macOS with Developer ID and notarizes when Apple secrets are configured, signs Windows installers through Azure Artifact Signing when Azure secrets are configured, and signs release files with GPG when `LINUX_GPG_PRIVATE_KEY` is configured. Installer config lives in `[package.metadata.packager]` in [`Cargo.toml`](Cargo.toml); icons are in `packaging/icons/`.
+
+**Release secrets:** GitHub Environment setup, CI-Hub copy list, Azure OIDC subjects, and a password-manager note template are in [`docs/DESKTOP-RELEASE-SECRETS.md`](docs/DESKTOP-RELEASE-SECRETS.md) and [`config/release/password-manager-note.md`](config/release/password-manager-note.md).
 
 ## Sign in & configure
 
