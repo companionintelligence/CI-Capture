@@ -155,14 +155,42 @@ async fn run_analysis_loop(rx: &mut Receiver<PendingCapture>) {
         };
 
         if server_ingest::is_configured(&capture.config) {
-            if let Err(err) =
-                server_ingest::ingest_capture(&capture.config, &capture.filename, &png_bytes).await
+            // When our own vision pass produced a usable result, write it back
+            // via PATCH and tell the server to skip its Ollama description.
+            // Otherwise fall back to the server describing the image itself.
+            let self_description = analysis.self_description();
+
+            match server_ingest::ingest_capture(
+                &capture.config,
+                &capture.filename,
+                &png_bytes,
+                self_description.is_some(),
+            )
+            .await
             {
-                log::error!(
-                    "failed to ingest screenshot: {err:?} (file={}, size={:.1} KB)",
-                    capture.filename,
-                    png_bytes.len() as f64 / 1024.0
-                );
+                Ok(file_id) => {
+                    if let Some(description) = self_description {
+                        if let Err(err) = server_ingest::patch_file_description(
+                            &capture.config,
+                            &file_id,
+                            description.title.as_deref(),
+                            description.description.as_deref(),
+                        )
+                        .await
+                        {
+                            log::error!(
+                                "failed to write applet description for file {file_id}: {err:?}"
+                            );
+                        }
+                    }
+                }
+                Err(err) => {
+                    log::error!(
+                        "failed to ingest screenshot: {err:?} (file={}, size={:.1} KB)",
+                        capture.filename,
+                        png_bytes.len() as f64 / 1024.0
+                    );
+                }
             }
             continue;
         }

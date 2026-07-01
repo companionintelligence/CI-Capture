@@ -10,8 +10,12 @@ Wraps the CI-Server GraphQL mutations used after browser pairing so the worker c
 - **Interacts with**: `worker.rs`.
 
 ### `ingest_capture`
-- **Does**: Uploads a screenshot to `POST /api/files/upload` with `inventoryCapture=true`.
-- **Interacts with**: `AnalysisResult` from `analysis.rs` and CI-Server file ingestion.
+- **Does**: Uploads a screenshot to `POST /api/files/upload` with `inventoryCapture=true`. When `skip_description` is set, also sends `skipDescription=true` so the server suppresses its own Ollama image description (the applet writes it via `patch_file_description` instead). Returns the file ID.
+- **Interacts with**: `worker.rs` (which derives `skip_description` from its local vision result) and CI-Server file ingestion.
+
+### `patch_file_description`
+- **Does**: Writes the applet's own title/description to an uploaded file via `PATCH /api/files/:id`. Sends only the fields that are present; a no-op when both are absent.
+- **Interacts with**: `SelfDescription` derived from `AnalysisResult` in `analysis.rs` and CI-Server file metadata update.
 
 ### `ingest_vizier_event`
 - **Does**: Serializes a `VizierEventRecord` into the generic `ingestUserSnapshot` mutation.

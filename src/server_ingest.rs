@@ -87,13 +87,18 @@ pub fn is_configured(config: &AppConfig) -> bool {
 
 /// Upload a captured screenshot to the server via `POST /files/upload`.
 ///
-/// The server runs its own vision analysis on the uploaded image via the
-/// inventory pipeline (`inventoryCapture=true`). Returns the server-assigned
-/// file ID on success.
+/// The server runs its inventory pipeline over the uploaded image
+/// (`inventoryCapture=true`). When `skip_description` is true the applet has
+/// generated its own title/description (via its local vision endpoint) and will
+/// write them with [`patch_file_description`], so the upload sets
+/// `skipDescription=true` to suppress the server's redundant Ollama description
+/// pass. When false, the server describes the image as before. Returns the
+/// server-assigned file ID on success.
 pub async fn ingest_capture(
     config: &AppConfig,
     filename: &str,
     png_bytes: &[u8],
+    skip_description: bool,
 ) -> Result<String> {
     let auth_token = config
         .server
@@ -116,10 +121,14 @@ pub async fn ingest_capture(
         .mime_str("image/png")
         .context("setting MIME type on capture upload part")?;
 
-    let form = reqwest::multipart::Form::new()
+    let mut form = reqwest::multipart::Form::new()
         .part("files", part)
         .text("inventoryCapture", "true")
         .text("model", config.analysis.model.clone());
+
+    if skip_description {
+        form = form.text("skipDescription", "true");
+    }
 
     let response = client
         .post(upload_url)
@@ -149,6 +158,70 @@ pub async fn ingest_capture(
     log::debug!("capture uploaded: file_id={file_id} filename={filename}");
 
     Ok(file_id)
+}
+
+/// Write applet-generated title/description to an uploaded file via
+/// `PATCH /files/:id`.
+///
+/// Used on the self-analyzed capture path, where the upload set
+/// `skipDescription=true` so the server did not run its own image description.
+/// The server accepts either or both of `title`/`description`; passing neither
+/// is treated as a no-op here rather than sent as an empty request.
+pub async fn patch_file_description(
+    config: &AppConfig,
+    file_id: &str,
+    title: Option<&str>,
+    description: Option<&str>,
+) -> Result<()> {
+    let mut body = serde_json::Map::new();
+    if let Some(title) = title {
+        body.insert("title".to_string(), Value::String(title.to_string()));
+    }
+    if let Some(description) = description {
+        body.insert(
+            "description".to_string(),
+            Value::String(description.to_string()),
+        );
+    }
+    if body.is_empty() {
+        return Ok(());
+    }
+
+    let auth_token = config
+        .server
+        .applet_auth_token
+        .as_deref()
+        .filter(|t| !t.trim().is_empty())
+        .context("applet auth token is not configured")?;
+
+    let patch_url = server_origin(&config.server.portal_url)?
+        .join(&format!("/api/files/{file_id}"))
+        .context("building file metadata patch URL")?;
+
+    let client = Client::builder()
+        .use_rustls_tls()
+        .build()
+        .context("building file metadata patch client")?;
+
+    let response = client
+        .patch(patch_url)
+        .bearer_auth(auth_token)
+        .json(&Value::Object(body))
+        .send()
+        .await
+        .context("sending file metadata patch request")?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_default();
+        return Err(anyhow!(
+            "file metadata patch failed with HTTP {status}: {body}"
+        ));
+    }
+
+    log::debug!("capture description patched: file_id={file_id}");
+
+    Ok(())
 }
 
 pub async fn ingest_vizier_event(
