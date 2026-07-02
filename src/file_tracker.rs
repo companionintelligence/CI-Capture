@@ -349,3 +349,201 @@ mod tests {
         assert_eq!(truncate_on_char_boundary("hi", 100), "hi");
     }
 }
+
+/// End-to-end tests: the real lane (watcher → queue → extract → classify →
+/// POST → ack/park) against a scripted in-process mock CI-Server. This is
+/// the closest CI can get to the live-server round-trip without credentials.
+#[cfg(test)]
+mod e2e {
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::net::TcpListener;
+    use std::sync::{Arc, Mutex};
+
+    use super::*;
+
+    /// One recorded request: (path, x-api-key header value, body).
+    type Recorded = (String, Option<String>, String);
+
+    /// Minimal HTTP/1.1 responder. Each incoming request pops the next
+    /// scripted status (default 200). 200s answer with a valid
+    /// `/v1/events` ingest body; 4xx/5xx answer with that status.
+    fn spawn_mock_server(
+        script: Vec<u16>,
+    ) -> (String, Arc<Mutex<Vec<Recorded>>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let recorded: Arc<Mutex<Vec<Recorded>>> = Arc::default();
+        let script = Arc::new(Mutex::new(script));
+        let rec = recorded.clone();
+
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let mut reader = BufReader::new(stream);
+                let mut request_line = String::new();
+                if reader.read_line(&mut request_line).is_err() {
+                    continue;
+                }
+                let path = request_line.split_whitespace().nth(1).unwrap_or("").to_string();
+
+                let mut content_length = 0usize;
+                let mut api_key = None;
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).is_err() || line.trim().is_empty() {
+                        break;
+                    }
+                    let lower = line.to_ascii_lowercase();
+                    if let Some(v) = lower.strip_prefix("content-length:") {
+                        content_length = v.trim().parse().unwrap_or(0);
+                    }
+                    if let Some(v) = line
+                        .split_once(':')
+                        .filter(|(k, _)| k.eq_ignore_ascii_case("x-api-key"))
+                        .map(|(_, v)| v.trim().to_string())
+                    {
+                        api_key = Some(v);
+                    }
+                }
+                let mut body = vec![0u8; content_length];
+                let _ = reader.read_exact(&mut body);
+                let body = String::from_utf8_lossy(&body).to_string();
+                rec.lock().unwrap().push((path, api_key, body));
+
+                let status = {
+                    let mut s = script.lock().unwrap();
+                    if s.is_empty() { 200 } else { s.remove(0) }
+                };
+                let response = if status == 200 {
+                    let payload = r#"{"ingested":1,"duplicate":0,"rejected":[]}"#;
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
+                        payload.len(),
+                        payload
+                    )
+                } else {
+                    format!(
+                        "HTTP/1.1 {status} X\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
+                    )
+                };
+                let _ = reader.into_inner().write_all(response.as_bytes());
+            }
+        });
+
+        (origin, recorded)
+    }
+
+    fn lane_config(origin: &str, watched: PathBuf) -> AppConfig {
+        let mut config = AppConfig::default();
+        config.server.portal_url = origin.to_string();
+        // 64 lowercase hex → classified as an x-api-key credential.
+        config.server.applet_auth_token = Some("ab".repeat(32));
+        config.file_tracker.watched_paths = vec![watched];
+        config.file_tracker.send_content = true;
+        config
+    }
+
+    async fn wait_until(timeout: Duration, mut done: impl FnMut() -> bool) -> bool {
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            if done() {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        false
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn file_edit_reaches_server_with_content_and_api_key_and_drains_queue() {
+        let (origin, recorded) = spawn_mock_server(vec![]);
+        let dir = tempfile::tempdir().unwrap();
+        let watched = dir.path().join("watched");
+        std::fs::create_dir_all(&watched).unwrap();
+        let queue_path = dir.path().join("queue.db");
+
+        let config = lane_config(&origin, watched.clone());
+        let lane = tokio::spawn(run(config, queue_path.clone()));
+
+        // Give the watcher a beat to arm, then edit a file.
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        std::fs::write(watched.join("notes.md"), "# Plan\n\nremember the tailscale rollout").unwrap();
+
+        let got_event = wait_until(Duration::from_secs(30), || {
+            recorded
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(_, _, body)| body.contains("file_event"))
+        })
+        .await;
+        lane.abort();
+        assert!(got_event, "file event never reached the mock server");
+
+        let requests = recorded.lock().unwrap();
+        let (path, api_key, body) = requests
+            .iter()
+            .find(|(_, _, b)| b.contains("file_event"))
+            .unwrap();
+        assert!(path.contains("/v1/events"), "unexpected ingest path {path}");
+        assert_eq!(
+            api_key.as_deref(),
+            Some("ab".repeat(32).as_str()),
+            "credential must ride x-api-key"
+        );
+        // The recall quick win: extracted content in the description field.
+        assert!(
+            body.contains("remember the tailscale rollout"),
+            "description must carry extracted markdown"
+        );
+
+        // Ack drained the durable queue.
+        let queue = Queue::open(&queue_path).unwrap();
+        assert_eq!(queue.depth().unwrap(), 0, "acked event must leave the queue");
+        assert_eq!(queue.dead_letter_count().unwrap(), 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn rejected_event_is_parked_while_outage_event_is_retried() {
+        // Script: first POST → 400 (permanent), second → 500 (transient),
+        // third → 200. One file edit per phase.
+        let (origin, recorded) = spawn_mock_server(vec![400, 500, 200]);
+        let dir = tempfile::tempdir().unwrap();
+        let watched = dir.path().join("watched");
+        std::fs::create_dir_all(&watched).unwrap();
+        let queue_path = dir.path().join("queue.db");
+
+        let config = lane_config(&origin, watched.clone());
+        let lane = tokio::spawn(run(config, queue_path.clone()));
+
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        std::fs::write(watched.join("poison.md"), "rejected payload").unwrap();
+
+        // 400 → parked in dead_letters, not retried, not lost.
+        let parked = wait_until(Duration::from_secs(30), || {
+            Queue::open(&queue_path)
+                .map(|q| q.dead_letter_count().unwrap_or(0) == 1)
+                .unwrap_or(false)
+        })
+        .await;
+        assert!(parked, "permanently rejected event was not parked");
+
+        // Next edit: first attempt hits the scripted 500 (transient), the
+        // retry hits 200 — the event must survive the outage and drain.
+        std::fs::write(watched.join("survivor.md"), "survives the outage").unwrap();
+        let drained = wait_until(Duration::from_secs(45), || {
+            recorded
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(_, _, b)| b.contains("survives the outage"))
+                && Queue::open(&queue_path).map(|q| q.depth().unwrap_or(99) == 0).unwrap_or(false)
+        })
+        .await;
+        lane.abort();
+        assert!(drained, "transient failure must retry to success, not drop");
+
+        // The poison event is still recoverable on disk.
+        let queue = Queue::open(&queue_path).unwrap();
+        assert_eq!(queue.dead_letter_count().unwrap(), 1);
+    }
+}
