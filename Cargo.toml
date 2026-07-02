@@ -5,9 +5,12 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1"
-aws-config = "1"
-aws-credential-types = "1"
-aws-sdk-s3 = { version = "1", features = ["behavior-version-latest"] }
+# Legacy MinIO upload path — heavy (pulls aws-lc-sys, which doesn't build on
+# some MSVC toolchains) and rarely used. Off by default; enable with
+# `--features legacy-minio`.
+aws-config = { version = "1", optional = true }
+aws-credential-types = { version = "1", optional = true }
+aws-sdk-s3 = { version = "1", features = ["behavior-version-latest"], optional = true }
 base64 = "0.21"
 chrono = { version = "0.4", features = ["serde"] }
 directories = "5"
@@ -15,21 +18,88 @@ env_logger = "0.11"
 image = { version = "0.25", default-features = false, features = ["png"] }
 log = "0.4"
 parking_lot = "0.12"
-reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls"] }
+# rustls + ring (not aws-lc-rs) so it builds cleanly on every platform.
+# Native roots let local CI-Server Caddy certificates work once trusted by the OS.
+reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls-native-roots-no-provider", "__rustls-ring"] }
 screenshots = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tao = "0.29"
 thiserror = "1"
 tinyfiledialogs = "3"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync", "net", "io-util"] }
 tokio-postgres = { version = "0.7", features = ["with-uuid-1", "with-chrono-0_4", "with-serde_json-1"] }
 deadpool-postgres = "0.8"
 tray-icon = "0.11"
 uuid = { version = "1", features = ["v4", "serde"] }
 egui = "0.33.2"
-eframe = { version = "0.33.2", default-features = false, features = ["glow"] }
+eframe = { version = "0.33.2", default-features = false, features = ["glow", "x11", "wayland"] }
 whoami = "1"
 vizier = { path = "vizier" }
 resvg = { version = "0.45", default-features = false, features = ["text"] }
 usvg = "0.45"
+
+# Phase 2 — file-activity watcher. See docs/plan/02-file-watcher.md.
+notify = "8"
+rusqlite = { version = "0.32", features = ["bundled"] }
+globset = "0.4"
+sha2 = "0.10"
+
+# Phase 3 — Markdown conversion (text family). See docs/plan/03-conversion.md.
+csv = "1"
+
+# Phase 3 — rich extractors (html/eml/epub), opt-in via `--features rich-extractors`.
+# Off by default to keep the standard build fast and dependency-light; the
+# text/code/markdown/json/csv family covers the files users actually edit.
+html2md = { version = "0.2", optional = true }
+mail-parser = { version = "0.9", optional = true }
+epub = { version = "2", optional = true }
+
+[features]
+default = []
+rich-extractors = ["dep:html2md", "dep:mail-parser", "dep:epub"]
+# Legacy screenshot upload straight to MinIO/S3 (bypasses CI-Server). Off by
+# default — the server ingest path is the supported one.
+legacy-minio = ["dep:aws-config", "dep:aws-credential-types", "dep:aws-sdk-s3"]
+
+[dev-dependencies]
+tempfile = "3"
+
+# Native installers (.dmg / .msi / .nsis / .deb / .AppImage) via cargo-packager
+# — https://github.com/crabnebula-dev/cargo-packager. Produces the same kind of
+# distributables a Tauri app does, without making this a Tauri app.
+[package.metadata.packager]
+product-name = "CI-Applet"
+identifier = "com.compint.CI-Applet"
+description = "Companion Intelligence capture applet — screen, activity & file capture for CI-Server"
+long-description = "A lightweight cross-platform menu-bar / system-tray applet that grows your Companion Memory by capturing screen activity and the files you edit, and streaming them to your CI-Server."
+authors = ["LifeScope Inc."]
+publisher = "LifeScope Inc."
+homepage = "https://github.com/companionintelligence/CI-Applet"
+license-file = "LICENSE.md"
+icons = [
+  "packaging/icons/32x32.png",
+  "packaging/icons/128x128.png",
+  "packaging/icons/128x128@2x.png",
+  "packaging/icons/icon.icns",
+  "packaging/icons/icon.ico",
+]
+# Build the release binary (with rich extractors) before packaging.
+before-packaging-command = "cargo build --release --features rich-extractors"
+
+[package.metadata.packager.deb]
+depends = [
+  "libgtk-3-0",
+  "libayatana-appindicator3-1",
+  "libxdo3",
+  "libxcb1",
+]
+
+[package.metadata.packager.macos]
+minimum-system-version = "11.0"
+# Inject LSUIElement (menu-bar accessory, no Dock icon) into the bundle plist.
+info-plist-path = "packaging/macos/Info.plist"
+
+[package.metadata.packager.nsis]
+# Per-user install so no admin elevation is needed.
+installer-mode = "currentUser"

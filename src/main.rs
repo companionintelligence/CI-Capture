@@ -1,15 +1,25 @@
 mod analysis;
 mod capture;
 mod config;
+mod connection_test;
+mod conversion;
 mod db;
+mod extractors;
+mod file_tracker;
+#[cfg(feature = "legacy-minio")]
 mod minio;
-mod server_auth;
+mod oidc;
+mod queue;
+mod server_check;
 mod server_common;
 mod server_ingest;
 mod server_upload;
 mod settings_ui;
 mod svg_icon;
+mod sync;
+mod theme;
 mod upload_ui;
+mod watcher;
 mod worker;
 
 use std::process::Command;
@@ -18,15 +28,14 @@ use std::thread;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
-use config::{AppConfig, ConfigManager, PostgresConfig};
+use chrono::Utc;
+use config::{AppConfig, ConfigManager};
 use env_logger::Env;
 use parking_lot::Mutex;
-use server_auth::{start_pairing, wait_for_pairing};
 use tao::event::Event;
 use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy, EventLoopWindowTarget};
 use tinyfiledialogs::{self as dialogs, MessageBoxIcon};
 use tokio::runtime::Runtime;
-use tokio_postgres::NoTls;
 use tray_icon::menu::{MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use uuid::Uuid;
@@ -56,11 +65,15 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    if std::env::args().any(|arg| arg == "--check-server") {
+        server_check::run(parse_portal_override())?;
+        return Ok(());
+    }
+
     let manager = ConfigManager::new().context("building config manager")?;
-    let mut config = manager
+    let config = manager
         .load_or_default()
         .context("loading persisted configuration")?;
-    ensure_device_registration(&manager, &mut config)?;
     let shared_config = Arc::new(Mutex::new(config.clone()));
     let initial_config = config;
 
@@ -243,30 +256,29 @@ impl AppController {
         }
 
         let snapshot = self.current_config();
-        let portal_url = snapshot.server.portal_url.trim().to_string();
-        if portal_url.is_empty() {
-            show_error("Portal URL is not configured.");
+        let issuer = snapshot.oidc.issuer.trim().to_string();
+        let client_id = snapshot.oidc.client_id.clone();
+        if issuer.is_empty() {
+            show_error("OIDC issuer is not configured (config.json → oidc.issuer).");
             return;
         }
 
         self.pairing_in_progress = true;
 
         let proxy = self.proxy.clone();
-        let portal_url_for_error = portal_url.clone();
         thread::spawn(move || {
-            let result = pair_with_portal(&portal_url);
+            let result = login_with_portal();
             let event = match result {
                 Ok(message) => AppEvent::PairingFinished {
                     success: true,
                     message,
                 },
                 Err(err) => {
-                    log::error!("portal pairing failed: {err:?}");
+                    log::error!("portal sign-in failed: {err:?}");
                     AppEvent::PairingFinished {
                         success: false,
                         message: format!(
-                            "Unable to complete portal login against {portal_url_for_error}: {err}. \
-Check Settings > Identity and point Portal URL at the CI-Server web origin that serves both /applet/pair and /api/graphql."
+                            "Unable to sign in to {issuer}: {err}.\n\nCheck that the portal is reachable and that the applet's OIDC client \"{client_id}\" is registered with the loopback redirect (config.json → oidc)."
                         ),
                     }
                 }
@@ -292,11 +304,10 @@ Check Settings > Identity and point Portal URL at the CI-Server web origin that 
     }
 
     fn reload_config_from_disk(&mut self) -> Result<()> {
-        let mut new_config = self
+        let new_config = self
             .manager
             .load_or_default()
             .context("reloading configuration")?;
-        ensure_device_registration(&self.manager, &mut new_config)?;
         {
             let mut guard = self.shared_config.lock();
             *guard = new_config.clone();
@@ -421,13 +432,13 @@ impl MenuState {
         ));
         self.server_item
             .set_text(&format!("Portal URL: {}", config.server.portal_url));
-        let host_display = config
-            .server
-            .portal_url
+        let issuer_display = config
+            .oidc
+            .issuer
             .trim_start_matches("https://")
             .trim_start_matches("http://");
         self.login_item
-            .set_text(&format!("Login to {}", host_display));
+            .set_text(&format!("Login via {}", issuer_display));
         self.postgres_item.set_text(&format!(
             "Postgres: {}:{} / {}",
             config.postgres.host, config.postgres.port, config.postgres.database
@@ -479,6 +490,45 @@ fn show_error(message: &str) {
     dialogs::message_box_ok("CI-Applet", message, MessageBoxIcon::Error);
 }
 
+/// Open a URL in the user's default browser, cross-platform.
+fn open_url(url: &str) -> std::io::Result<std::process::ExitStatus> {
+    #[cfg(target_os = "macos")]
+    let mut cmd = {
+        let mut c = Command::new("open");
+        c.arg(url);
+        c
+    };
+    #[cfg(target_os = "windows")]
+    let mut cmd = {
+        let mut c = Command::new("cmd");
+        // The empty "" is `start`'s window-title argument.
+        c.args(["/C", "start", "", url]);
+        c
+    };
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut cmd = {
+        let mut c = Command::new("xdg-open");
+        c.arg(url);
+        c
+    };
+    cmd.status()
+}
+
+/// Parse an optional `--portal <url>` / `--portal=<url>` override used by
+/// `--check-server` to probe an arbitrary endpoint without mutating config.
+fn parse_portal_override() -> Option<String> {
+    let args: Vec<String> = std::env::args().collect();
+    for (i, arg) in args.iter().enumerate() {
+        if let Some(rest) = arg.strip_prefix("--portal=") {
+            return Some(rest.to_string());
+        }
+        if arg == "--portal" {
+            return args.get(i + 1).cloned();
+        }
+    }
+    None
+}
+
 fn short_uuid(id: Option<Uuid>) -> String {
     match id {
         Some(uuid) => uuid
@@ -491,139 +541,136 @@ fn short_uuid(id: Option<Uuid>) -> String {
     }
 }
 
-fn ensure_device_registration(manager: &ConfigManager, config: &mut AppConfig) -> Result<()> {
-    let Some(user_id) = config.identity.user_id else {
-        config.identity.device_id = None;
-        return Ok(());
-    };
-    if config.identity.device_id.is_some() {
-        return Ok(());
-    }
-
-    let hostname = whoami::fallible::hostname().unwrap_or_else(|_| "unknown".to_string());
-    let device_name = format!("ci-applet-{}", hostname);
-    let platform = std::env::consts::OS.to_string();
-    let model = whoami::devicename();
-    let os_version = whoami::distro();
-    let app_version = env!("CARGO_PKG_VERSION").to_string();
-    let postgres = config.postgres.clone();
-
-    let runtime = Runtime::new().context("creating runtime for device registration")?;
-    let device_id = runtime.block_on(async move {
-        register_or_create_device(
-            postgres,
-            user_id,
-            device_name,
-            platform,
-            model,
-            os_version,
-            app_version,
-        )
-        .await
-    })?;
-
-    config.identity.device_id = Some(device_id);
-    manager
-        .save(config)
-        .context("saving config after device registration")?;
-    Ok(())
-}
-
-async fn register_or_create_device(
-    postgres: PostgresConfig,
-    user_id: Uuid,
-    device_name: String,
-    platform: String,
-    model: String,
-    os_version: String,
-    app_version: String,
-) -> Result<Uuid> {
-    let mut pg = tokio_postgres::Config::new();
-    pg.host(&postgres.host);
-    pg.port(postgres.port);
-    pg.user(&postgres.user);
-    pg.password(&postgres.password);
-    pg.dbname(&postgres.database);
-    pg.application_name("ci-Applet");
-
-    let (client, connection) = pg.connect(NoTls).await.context("connecting to postgres")?;
-    tokio::spawn(async move {
-        if let Err(err) = connection.await {
-            log::error!("device registry connection error: {err}");
-        }
-    });
-
-    if let Some(row) = client
-        .query_opt(
-            "SELECT device_id FROM ci.devices WHERE user_id=$1 AND device_name=$2 LIMIT 1",
-            &[&user_id, &device_name],
-        )
-        .await
-        .context("querying existing device")?
-    {
-        return Ok(row.get("device_id"));
-    }
-
-    let device_type = "desktop";
-    let row = client
-        .query_one(
-            "INSERT INTO ci.devices (
-                user_id,
-                device_name,
-                device_type,
-                platform,
-                model,
-                os_version,
-                app_version,
-                last_seen,
-                is_active
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,NOW(),TRUE)
-            RETURNING device_id",
-            &[
-                &user_id,
-                &device_name,
-                &device_type,
-                &platform,
-                &model,
-                &os_version,
-                &app_version,
-            ],
-        )
-        .await
-        .context("inserting device")?;
-    Ok(row.get("device_id"))
-}
-
-fn pair_with_portal(portal_url: &str) -> Result<String> {
-    let runtime = Runtime::new().context("creating runtime for portal pairing")?;
-
-    let launch = runtime.block_on(async { start_pairing(portal_url).await })?;
-    if let Err(err) = Command::new("open").arg(&launch.pairing_url).status() {
-        return Err(anyhow!("failed to open pairing URL: {err}"));
-    }
-
-    let completion = runtime.block_on(async {
-        wait_for_pairing(portal_url, &launch, Duration::from_secs(15 * 60)).await
-    })?;
-
-    let manager = ConfigManager::new().context("reloading config manager after pairing")?;
+/// Sign in to the portal via OIDC (Authorization Code + PKCE), persist the
+/// resulting tokens + identity, and best-effort register this device.
+fn login_with_portal() -> Result<String> {
+    let manager = ConfigManager::new().context("loading config manager for sign-in")?;
     let mut config = manager
         .load_or_default()
-        .context("loading config after pairing")?;
-    config.identity.user_id = Some(completion.user_id);
-    config.identity.device_id = Some(completion.device_id);
-    config.server.applet_auth_token = Some(completion.applet_auth_token);
+        .context("loading config for sign-in")?;
+
+    let runtime = Runtime::new().context("creating runtime for portal sign-in")?;
+    let outcome = runtime
+        .block_on(async {
+            oidc::login(&config.oidc, |url| {
+                if let Err(err) = open_url(url) {
+                    log::error!("failed to open browser for sign-in: {err:?}");
+                }
+            })
+            .await
+        })
+        .context("OIDC sign-in")?;
+
+    let id_token = outcome.tokens.id_token.clone();
+    let expires_at = outcome
+        .tokens
+        .expires_in
+        .map(|secs| Utc::now() + chrono::Duration::seconds(secs));
+
+    config.oidc_session = Some(config::OidcSession {
+        id_token: id_token.clone(),
+        access_token: Some(outcome.tokens.access_token.clone()),
+        refresh_token: outcome.tokens.refresh_token.clone(),
+        expires_at,
+        subject: outcome.claims.sub.clone(),
+        email: outcome.claims.email.clone(),
+        name: outcome.claims.name.clone(),
+    });
+
+    // The id_token is the bearer CI-Server validates on ingest.
+    if let Some(token) = id_token.clone() {
+        config.server.applet_auth_token = Some(token);
+    }
+
+    // Map the OIDC subject onto the user id when it's a UUID.
+    if let Some(sub) = &outcome.claims.sub
+        && let Ok(uid) = Uuid::parse_str(sub)
+    {
+        config.identity.user_id = Some(uid);
+    }
+
+    // Best-effort: register this device so ingest has a server-side device id.
+    if config.identity.device_id.is_none()
+        && let Some(token) = id_token.as_deref()
+    {
+        match runtime.block_on(async { register_device(&config, token).await }) {
+            Ok(device_id) => {
+                config.identity.device_id = Some(device_id);
+                log::info!("registered device {device_id} with CI-Server");
+            }
+            Err(err) => log::warn!("device registration deferred (will retry later): {err:?}"),
+        }
+    }
+
     manager
         .save(&config)
-        .context("saving config after portal pairing")?;
+        .context("saving config after sign-in")?;
 
-    let display_name = completion
-        .user_name
-        .or(completion.user_email)
-        .unwrap_or_else(|| completion.user_id.to_string());
-
+    let who = outcome
+        .claims
+        .name
+        .or(outcome.claims.email)
+        .or(outcome.claims.sub)
+        .unwrap_or_else(|| "your account".to_string());
     Ok(format!(
-        "Linked this computer to {display_name}. CI-Applet will now attribute captures to that account."
+        "Signed in as {who}. CI-Applet will now attribute captures to that account."
     ))
 }
 
+/// Register this machine with CI-Server (`POST /devices`, bearer-authed).
+async fn register_device(config: &AppConfig, bearer: &str) -> Result<Uuid> {
+    let hostname = whoami::fallible::hostname().unwrap_or_else(|_| "unknown".to_string());
+    let payload = serde_json::json!({
+        "device_name": format!("ci-applet-{hostname}"),
+        "device_type": "desktop",
+        "platform": std::env::consts::OS,
+        "model": whoami::devicename(),
+        "os_version": whoami::distro(),
+        "app_version": env!("CARGO_PKG_VERSION"),
+        "is_active": true,
+    });
+    let client = reqwest::Client::builder()
+        .use_rustls_tls()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .context("building device-registration client")?;
+
+    let mut last_error = None;
+    for url in server_common::devices_urls(&config.server.portal_url)? {
+        match client
+            .post(url.clone())
+            .bearer_auth(bearer)
+            .json(&payload)
+            .send()
+            .await
+        {
+            Ok(resp) if resp.status().is_success() => {
+                let v: serde_json::Value = resp.json().await.context("decoding device response")?;
+                let obj = if v.is_array() {
+                    v.get(0).cloned().unwrap_or(serde_json::Value::Null)
+                } else {
+                    v
+                };
+                let id_str = obj
+                    .get("device_id")
+                    .or_else(|| obj.get("id"))
+                    .and_then(|x| x.as_str())
+                    .context("device response missing device_id")?;
+                return Uuid::parse_str(id_str).context("parsing device_id");
+            }
+            Ok(resp)
+                if matches!(
+                    resp.status(),
+                    reqwest::StatusCode::NOT_FOUND | reqwest::StatusCode::METHOD_NOT_ALLOWED
+                ) =>
+            {
+                last_error = Some(anyhow!("POST {url} → HTTP {}", resp.status()));
+                continue;
+            }
+            Ok(resp) => return Err(anyhow!("POST {url} → HTTP {}", resp.status())),
+            Err(err) => return Err(anyhow!("POST {url}: {err}")),
+        }
+    }
+
+    Err(last_error.unwrap_or_else(|| anyhow!("device registration failed")))
+}

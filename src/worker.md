@@ -15,18 +15,20 @@ Runs CI-Applet background capture loops. It manages screenshot capture/analysis 
 - **Rationale**: Uses a small bounded analysis queue so capture throughput cannot grow memory unbounded if upload/analysis lags.
 
 ### `WorkerState::capture_vizier`
-- **Does**: Captures a `vizier` snapshot, turns later snapshots into diff envelopes, and records them through CI-Server GraphQL when paired, otherwise through the legacy Postgres writer.
+- **Does**: Captures a `vizier` snapshot, turns later snapshots into diff envelopes, and records them through CI-Server when paired, otherwise through the legacy Postgres writer.
 - **Interacts with**: `vizier::observer`, `vizier::diff`, `server_ingest.rs`, and `db.rs`.
 - **Rationale**: Embeds the observation pipeline directly instead of shelling out to `vz`, which avoids subprocess/PATH issues.
+- **Resilience**: Skips payloads larger than `MAX_VIZIER_PAYLOAD_BYTES` (under CI-Server's body limit) and treats send failures as non-fatal — `vizier_previous` advances regardless, so a rejected baseline becomes a small diff next tick instead of re-sending forever.
 
 ### `WorkerState::capture_once`
 - **Does**: Preserves the existing screenshot path and analysis queue behavior while snapshotting the current config into each queued capture so later config changes apply without a restart.
 - **Interacts with**: `capture.rs` and `run_analysis_loop`.
-- **Rationale**: Skips capture ticks while the macOS screensaver is active so lock-screen frames are not uploaded/analyzed, and drops captures when analysis is backlogged to keep memory bounded.
+- **Rationale**: Skips capture ticks while the macOS screensaver is active so lock-screen frames are not uploaded/analyzed, permits bearer-auth CI-Server uploads without local identity IDs, and drops captures when analysis is backlogged to keep memory bounded.
 
-### `run_analysis_loop`
-- **Does**: Analyzes queued screenshots, then routes them to CI-Server GraphQL when the applet has a bearer token or to the legacy MinIO/Postgres path otherwise.
+### `run_analysis_loop` / `ingest_capture_to_server`
+- **Does**: Routes queued screenshots. In server mode (`ingest_capture_to_server`): if a vision endpoint is configured, the applet analyses locally and writes the result onto the file as title/description (`set_file_metadata`), uploading with `inventoryCapture=false` so CI-Server skips its own Ollama analysis; with no endpoint it uploads `inventoryCapture=true` (no model) and lets CI-Server's default model analyse (the fallback). Without a server credential it falls back to the legacy local MinIO/Postgres path (which still runs the local analyzer).
 - **Interacts with**: `VisionAnalyzer`, `server_ingest.rs`, `MinioUploader`, and `PostgresRecorder`.
+- **Rationale**: The applet never forwards its own (non-Ollama) vision-model name to the server, which previously made CI-Server reject the image-description job.
 
 ## Contracts
 

@@ -1,0 +1,16 @@
+# Keep the build context small. The build needs src/, vizier/, Cargo.*,
+# build.rs (none yet), and not much else.
+target
+**/target
+.git
+.github
+.claude
+docs
+packaging
+*.md
+!Cargo.toml
+node_modules
+*.png
+*.zip
+*.tar.gz
+CI-Applet.app

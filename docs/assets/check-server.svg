@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 568" width="760" height="568" role="img" aria-label="cargo run -- --check-server output">
+  <defs>
+    <filter id="sh" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="8" stdDeviation="16" flood-color="#000" flood-opacity="0.4"/>
+    </filter>
+  </defs>
+  <g filter="url(#sh)">
+    <rect x="8" y="8" width="744" height="552" rx="11" fill="#0d1117" stroke="#30363d"/>
+    <rect x="8" y="8" width="744" height="36" rx="11" fill="#161b22"/>
+    <rect x="8" y="32" width="744" height="12" fill="#161b22"/>
+    <circle cx="30" cy="26" r="6" fill="#ff5f57"/>
+    <circle cx="50" cy="26" r="6" fill="#febc2e"/>
+    <circle cx="70" cy="26" r="6" fill="#28c840"/>
+    <text x="380" y="30" text-anchor="middle" font-family="-apple-system,'Helvetica Neue',sans-serif" font-size="12.5" fill="#8b949e">CI-Applet — check-server</text>
+  </g>
+
+  <g font-family="'SF Mono','Source Code Pro',Menlo,Consolas,monospace" font-size="13" xml:space="preserve">
+    <text x="24" y="72"><tspan fill="#3fb950">$</tspan><tspan fill="#c9d1d9"> cargo run -- --check-server --portal https://your-ci-server.example.com</tspan></text>
+
+    <text x="24" y="112" fill="#d2e3ff" font-weight="700">CI-Applet → CI-Server connection check</text>
+    <text x="24" y="132" fill="#444c56">======================================</text>
+
+    <text x="24" y="160" fill="#8b949e">Portal URL : <tspan fill="#56b6c2">https://your-ci-server.example.com</tspan></text>
+    <text x="24" y="180" fill="#8b949e">Origin     : <tspan fill="#56b6c2">https://your-ci-server.example.com/</tspan></text>
+    <text x="24" y="200" fill="#8b949e">GraphQL    : <tspan fill="#56b6c2">/api/graphql | /graphql</tspan></text>
+    <text x="24" y="220" fill="#8b949e">File upload: <tspan fill="#56b6c2">/api/files/upload | /files/upload</tspan></text>
+
+    <text x="24" y="252" fill="#5c8dff" font-weight="700">Local config</text>
+    <text x="24" y="272" fill="#444c56">------------</text>
+    <text x="24" y="292" fill="#8b949e">user_id    : <tspan fill="#e5534b">✗</tspan> unset</text>
+    <text x="24" y="312" fill="#8b949e">device_id  : <tspan fill="#e5534b">✗</tspan> unset</text>
+    <text x="24" y="332" fill="#8b949e">auth cred  : <tspan fill="#e5534b">✗</tspan> not configured (login or paste API key)</text>
+    <text x="24" y="352" fill="#8b949e">file lane  : idle (needs server credential and ≥1 watched folder)</text>
+
+    <text x="24" y="384" fill="#5c8dff" font-weight="700">Live probe</text>
+    <text x="24" y="404" fill="#444c56">----------</text>
+    <text x="24" y="424" fill="#8b949e">GET /health           : <tspan fill="#3fb950">HTTP 200</tspan></text>
+    <text x="24" y="444" fill="#8b949e">POST /api/graphql     : <tspan fill="#3fb950">HTTP 200 ✓ reachable</tspan></text>
+
+    <text x="24" y="488" fill="#6e7681">Note: API keys are sent as x-api-key; JWT/OIDC tokens</text>
+    <text x="24" y="508" fill="#6e7681">are sent as bearer auth.</text>
+    <text x="24" y="536"><tspan fill="#3fb950">$</tspan><tspan fill="#c9d1d9"> </tspan><tspan fill="#3fb950">▋</tspan></text>
+  </g>
+</svg>

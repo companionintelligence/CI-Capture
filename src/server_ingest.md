@@ -1,36 +1,37 @@
 # server_ingest.rs
 
 ## Purpose
-Wraps the CI-Server GraphQL mutations used after browser pairing so the worker can ingest screenshots and vizier events without embedding raw Postgres or MinIO credentials.
+Wraps the CI-Server upload and unified event-ingest endpoints used after browser login or API-key configuration. It keeps screenshot, vizier, and file-event delivery behind the same saved server credential.
 
 ## Components
 
 ### `is_configured`
-- **Does**: Reports whether the current app config has a non-empty applet bearer token.
+- **Does**: Reports whether the current app config has a non-empty applet credential.
 - **Interacts with**: `worker.rs`.
 
 ### `ingest_capture`
-- **Does**: Uploads a screenshot to `POST /api/files/upload` with `inventoryCapture=true`. When `skip_description` is set, also sends `skipDescription=true` so the server suppresses its own Ollama image description (the applet writes it via `patch_file_description` instead). Returns the file ID.
-- **Interacts with**: `worker.rs` (which derives `skip_description` from its local vision result) and CI-Server file ingestion.
+- **Does**: Uploads a screenshot to CI-Server file upload. Takes `inventory: bool` (sent as `inventoryCapture`) and `model: Option<&str>`. The applet sends `inventory=false`/no model when it analysed locally (its own vision endpoint) so the server skips its Ollama pass; `inventory=true`/no model asks the server to analyse with its default model. Returns the server file id.
+- **Interacts with**: `AuthCredential` in `server_common.rs` and CI-Server file ingestion.
 
-### `patch_file_description`
-- **Does**: Writes the applet's own title/description to an uploaded file via `PATCH /api/files/:id`. Sends only the fields that are present; a no-op when both are absent.
-- **Interacts with**: `SelfDescription` derived from `AnalysisResult` in `analysis.rs` and CI-Server file metadata update.
+### `set_file_metadata`
+- **Does**: `PATCH /files/{id}` to write a `title`/`description` the applet derived from its local analysis (parity with the server's Ollama image description). No-op when both are `None`.
+- **Interacts with**: `files_urls` in `server_common.rs`; called by `worker.rs` only when a vision endpoint is configured.
 
-### `ingest_vizier_event`
-- **Does**: Serializes a `VizierEventRecord` into the generic `ingestUserSnapshot` mutation.
-- **Interacts with**: `db.rs` event types and CI-Server GraphQL.
+### `ingest_vizier_event`, `ingest_file_event`
+- **Does**: Serializes applet activity into CI-Server's capture-ingest envelope.
+- **Interacts with**: `db.rs` event types, watcher events, and CI-Server event ingest.
 
-### `build_gql_client`, `graphql_url`, `graphql`
-- **Does**: Build the authenticated GraphQL client and normalize transport errors.
-- **Interacts with**: `reqwest`, `server.portal_url`, and `server.applet_auth_token`.
+### `post_capture_event`
+- **Does**: Authenticates and posts one capture event, treating server-side rejections as errors.
+- **Interacts with**: `AuthCredential`, `server.portal_url`, and CI-Server `/api/v1/events`.
 
 ## Contracts
 
 | Dependent | Expects | Breaking changes |
 |-----------|---------|------------------|
-| `worker.rs` | Token presence alone is enough to choose server ingest and mutation names match CI-Server schema | Renaming ingest mutations or changing auth to cookies only |
-| CI-Server GraphQL | Inputs stay camelCase and accept RFC3339 timestamps/base64 PNGs | Renaming input fields or changing payload encoding |
+| `worker.rs` | Credential presence alone is enough to choose server ingest | Requiring local Postgres/MinIO credentials for server mode |
+| CI-Server `/api/v1/events` | Events use `source_system`, `source_id`, `kind`, timestamps, and JSON payload | Removing unified capture ingest or changing auth headers |
 
 ## Notes
-- This module intentionally keeps GraphQL transport separate from the pairing client in `server_auth.rs` because the auth model is different after pairing.
+- `AuthCredential` sends JWT/OIDC tokens as bearer auth and 64-character CI-Server API keys as `x-api-key`.
+- Endpoint candidates from `server_common` allow either `/api/...` or bare API routes.
