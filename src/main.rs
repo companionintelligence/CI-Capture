@@ -547,14 +547,15 @@ fn short_uuid(id: Option<Uuid>) -> String {
 /// resulting tokens + identity, and best-effort register this device.
 fn login_with_portal() -> Result<String> {
     let manager = ConfigManager::new().context("loading config manager for sign-in")?;
-    let mut config = manager
+    let oidc_config = manager
         .load_or_default()
-        .context("loading config for sign-in")?;
+        .context("loading config for sign-in")?
+        .oidc;
 
     let runtime = Runtime::new().context("creating runtime for portal sign-in")?;
     let outcome = runtime
         .block_on(async {
-            oidc::login(&config.oidc, |url| {
+            oidc::login(&oidc_config, |url| {
                 if let Err(err) = open_url(url) {
                     log::error!("failed to open browser for sign-in: {err:?}");
                 }
@@ -563,11 +564,25 @@ fn login_with_portal() -> Result<String> {
         })
         .context("OIDC sign-in")?;
 
+    // The interactive flow can take minutes — reload before mutating so a
+    // settings save made meanwhile isn't clobbered by a stale snapshot.
+    let mut config = manager
+        .load_or_default()
+        .context("reloading config after sign-in")?;
+
     let id_token = outcome.tokens.id_token.clone();
+    // Prefer the id_token's own exp claim (the id_token is the ingest
+    // bearer); expires_in describes the access token.
     let expires_at = outcome
-        .tokens
-        .expires_in
-        .map(|secs| Utc::now() + chrono::Duration::seconds(secs));
+        .claims
+        .exp
+        .and_then(|secs| chrono::DateTime::<Utc>::from_timestamp(secs, 0))
+        .or_else(|| {
+            outcome
+                .tokens
+                .expires_in
+                .map(|secs| Utc::now() + chrono::Duration::seconds(secs))
+        });
 
     config.oidc_session = Some(config::OidcSession {
         id_token: id_token.clone(),
@@ -680,10 +695,23 @@ async fn register_device(config: &AppConfig, bearer: &str) -> Result<Uuid> {
 /// How often the background loop checks token expiry / pending registration.
 const TOKEN_REFRESH_CHECK: Duration = Duration::from_secs(60);
 
-/// Background loop that keeps the portal session alive: refreshes the `id_token`
-/// before it expires and retries device registration if it hasn't happened yet.
-/// Re-reads `config.json` each tick (so a fresh sign-in is picked up, never
-/// clobbered), persists changes, and pushes them to the worker + shared state.
+/// Failure backoff for the refresh/registration concerns: skip this many
+/// ticks after `n` consecutive failures (doubling, capped at ~1 h) so a dead
+/// portal, revoked grant, or unreachable server isn't hammered every minute.
+fn failure_backoff_ticks(consecutive_failures: u32) -> u32 {
+    if consecutive_failures == 0 {
+        0
+    } else {
+        2u32.saturating_pow(consecutive_failures - 1).min(60)
+    }
+}
+
+/// Background loop that keeps the portal session alive: refreshes the
+/// `id_token` before it expires and retries device registration if it hasn't
+/// happened yet. Every mutation is a **reload → merge → save** of only the
+/// fields this loop owns — never a whole-config write from a stale snapshot —
+/// so concurrent saves from the settings process or a fresh sign-in are
+/// respected, and the atomic `ConfigManager::save` keeps the file untorn.
 fn spawn_token_refresh(worker: WorkerHandle, shared: Arc<Mutex<AppConfig>>) {
     thread::spawn(move || {
         let Ok(manager) = ConfigManager::new() else {
@@ -698,40 +726,89 @@ fn spawn_token_refresh(worker: WorkerHandle, shared: Arc<Mutex<AppConfig>>) {
             }
         };
         let skew = chrono::Duration::minutes(2);
+        let mut refresh_failures: u32 = 0;
+        let mut registration_failures: u32 = 0;
+        let mut skip_refresh_ticks: u32 = 0;
+        let mut skip_registration_ticks: u32 = 0;
         loop {
-            if let Err(err) = token_refresh_tick(&manager, &worker, &shared, &runtime, skew) {
-                log::warn!("token-refresh tick failed: {err:?}");
+            match token_refresh_tick(
+                &manager,
+                &worker,
+                &shared,
+                &runtime,
+                skew,
+                skip_refresh_ticks == 0,
+                skip_registration_ticks == 0,
+            ) {
+                Ok(outcome) => {
+                    match outcome.refresh {
+                        ConcernOutcome::Succeeded => refresh_failures = 0,
+                        ConcernOutcome::Failed => {
+                            refresh_failures += 1;
+                            skip_refresh_ticks = failure_backoff_ticks(refresh_failures);
+                        }
+                        ConcernOutcome::Idle => {}
+                    }
+                    match outcome.registration {
+                        ConcernOutcome::Succeeded => registration_failures = 0,
+                        ConcernOutcome::Failed => {
+                            registration_failures += 1;
+                            skip_registration_ticks =
+                                failure_backoff_ticks(registration_failures);
+                        }
+                        ConcernOutcome::Idle => {}
+                    }
+                }
+                Err(err) => log::warn!("token-refresh tick failed: {err:?}"),
             }
             thread::sleep(TOKEN_REFRESH_CHECK);
+            skip_refresh_ticks = skip_refresh_ticks.saturating_sub(1);
+            skip_registration_ticks = skip_registration_ticks.saturating_sub(1);
         }
     });
 }
 
-/// One iteration of the refresh loop. Returns `Ok` whether or not anything
-/// changed; only network/IO failures bubble up.
+/// Per-concern result of one tick, for the caller's backoff bookkeeping.
+enum ConcernOutcome {
+    Idle,
+    Succeeded,
+    Failed,
+}
+
+struct TickOutcome {
+    refresh: ConcernOutcome,
+    registration: ConcernOutcome,
+}
+
+/// One iteration of the refresh loop.
+#[allow(clippy::too_many_arguments)]
 fn token_refresh_tick(
     manager: &ConfigManager,
     worker: &WorkerHandle,
     shared: &Arc<Mutex<AppConfig>>,
     runtime: &Runtime,
     skew: chrono::Duration,
-) -> Result<()> {
-    let mut config = manager.load_or_default()?;
+    try_refresh: bool,
+    try_registration: bool,
+) -> Result<TickOutcome> {
+    let mut outcome = TickOutcome {
+        refresh: ConcernOutcome::Idle,
+        registration: ConcernOutcome::Idle,
+    };
+    let config = manager.load_or_default()?;
     let Some(session) = config.oidc_session.clone() else {
-        return Ok(()); // not signed in
+        return Ok(outcome); // not signed in (API-key installs land here too)
     };
 
-    let mut changed = false;
-
     // 1) Refresh the token if it's expiring and we hold a refresh token.
-    // (API-key installs have no oidc_session and returned above; an empty
-    // issuer means OIDC isn't configured, so there's nothing to refresh
+    // (An empty issuer means OIDC isn't configured — nothing to refresh
     // against.)
-    if let Some(refresh_token) = session.refresh_token.clone()
+    if try_refresh
+        && let Some(refresh_token) = session.refresh_token.clone()
         && !config.oidc.issuer.trim().is_empty()
         && oidc::token_expiring(session.expires_at, Utc::now(), skew)
     {
-        let tokens = runtime.block_on(async {
+        let refreshed = runtime.block_on(async {
             let client = reqwest::Client::builder()
                 .use_rustls_tls()
                 .timeout(Duration::from_secs(30))
@@ -739,49 +816,123 @@ fn token_refresh_tick(
                 .context("building refresh client")?;
             let disco = oidc::discover(&client, &config.oidc.issuer).await?;
             oidc::refresh(&client, &disco, &config.oidc, &refresh_token).await
-        })?;
-        apply_refreshed_tokens(&mut config, tokens);
-        changed = true;
-        log::info!("refreshed portal token");
+        });
+        match refreshed {
+            Ok(tokens) => {
+                // Reload → merge → save: the network round-trip may have
+                // taken a while, and the settings process or a fresh sign-in
+                // may have written config.json meanwhile. Apply the new
+                // tokens only if OUR session is still the live one.
+                let mut fresh = manager.load_or_default()?;
+                let still_ours = fresh
+                    .oidc_session
+                    .as_ref()
+                    .is_some_and(|s| s.refresh_token == session.refresh_token);
+                if still_ours {
+                    apply_refreshed_tokens(&mut fresh, &session, tokens);
+                    manager
+                        .save(&fresh)
+                        .context("persisting refreshed session")?;
+                    *shared.lock() = fresh.clone();
+                    worker.update_config(fresh);
+                    outcome.refresh = ConcernOutcome::Succeeded;
+                    log::info!("refreshed portal token");
+                } else {
+                    log::info!(
+                        "discarding refreshed token: session was superseded during refresh"
+                    );
+                }
+            }
+            Err(err) => {
+                outcome.refresh = ConcernOutcome::Failed;
+                log::warn!("portal token refresh failed (will back off): {err:#}");
+            }
+        }
     }
 
     // 2) Retry device registration if we have a token but no device id yet.
-    if config.identity.device_id.is_none()
+    let config = manager.load_or_default()?;
+    if try_registration
+        && config.identity.device_id.is_none()
         && let Some(token) = config.server.applet_auth_token.clone()
-        && let Ok(device_id) = runtime.block_on(async { register_device(&config, &token).await })
     {
-        config.identity.device_id = Some(device_id);
-        changed = true;
-        log::info!("registered device {device_id} with CI-Server (deferred)");
+        match runtime.block_on(async { register_device(&config, &token).await }) {
+            Ok(device_id) => {
+                // Same reload → merge → save discipline; only fill a still-
+                // empty device id.
+                let mut fresh = manager.load_or_default()?;
+                if fresh.identity.device_id.is_none() {
+                    fresh.identity.device_id = Some(device_id);
+                    manager
+                        .save(&fresh)
+                        .context("persisting registered device")?;
+                    *shared.lock() = fresh.clone();
+                    worker.update_config(fresh);
+                }
+                outcome.registration = ConcernOutcome::Succeeded;
+                log::info!("registered device {device_id} with CI-Server (deferred)");
+            }
+            Err(err) => {
+                outcome.registration = ConcernOutcome::Failed;
+                log::debug!("deferred device registration failed (will back off): {err:#}");
+            }
+        }
     }
 
-    if changed {
-        manager.save(&config).context("persisting refreshed session")?;
-        *shared.lock() = config.clone();
-        worker.update_config(config);
-    }
-    Ok(())
+    Ok(outcome)
 }
 
 /// Fold a refreshed token set into the stored session + ingest bearer.
-fn apply_refreshed_tokens(config: &mut AppConfig, tokens: oidc::TokenSet) {
-    let mut session = config.oidc_session.clone().unwrap_or_default();
-    if let Some(id_token) = tokens.id_token.clone() {
-        if let Ok(claims) = oidc::decode_id_claims(&id_token) {
-            session.subject = claims.sub.or(session.subject);
-            session.email = claims.email.or(session.email);
-            session.name = claims.name.or(session.name);
-        }
-        session.id_token = Some(id_token.clone());
-        config.server.applet_auth_token = Some(id_token);
-    }
+///
+/// Expiry discipline: `expires_at` advances **only when a new `id_token`
+/// arrived** (the id_token is the ingest bearer — advancing the clock while
+/// the bearer stays stale would silently disarm future refreshes and rot
+/// ingest auth). The id_token's own `exp` claim wins over `expires_in`,
+/// which per RFC 6749 describes the access token, not the id_token.
+fn apply_refreshed_tokens(
+    config: &mut AppConfig,
+    previous: &config::OidcSession,
+    tokens: oidc::TokenSet,
+) {
+    let mut session = previous.clone();
     session.access_token = Some(tokens.access_token);
-    // Honour refresh-token rotation; keep the old one if the server didn't send one.
+    // Honour refresh-token rotation; keep the old one if the server didn't
+    // send a replacement.
     if tokens.refresh_token.is_some() {
         session.refresh_token = tokens.refresh_token;
     }
-    session.expires_at = tokens
-        .expires_in
-        .map(|secs| Utc::now() + chrono::Duration::seconds(secs));
+
+    match tokens.id_token {
+        Some(id_token) => {
+            let claims = oidc::decode_id_claims(&id_token).unwrap_or_default();
+            session.subject = claims.sub.or(session.subject);
+            session.email = claims.email.or(session.email);
+            session.name = claims.name.or(session.name);
+            session.expires_at = claims
+                .exp
+                .and_then(|secs| chrono::DateTime::<Utc>::from_timestamp(secs, 0))
+                .or_else(|| {
+                    tokens
+                        .expires_in
+                        .map(|secs| Utc::now() + chrono::Duration::seconds(secs))
+                })
+                .or(session.expires_at);
+            session.id_token = Some(id_token.clone());
+            // Only replace the ingest bearer if it still is the old id_token —
+            // a pasted API key or other manual credential must never be
+            // overwritten by the background loop.
+            if config.server.applet_auth_token.is_none()
+                || config.server.applet_auth_token == previous.id_token
+            {
+                config.server.applet_auth_token = Some(id_token);
+            }
+        }
+        None => {
+            // No new id_token: the bearer is still the old one, so keep the
+            // old expiry — the loop will keep trying rather than silently
+            // marking a stale bearer as fresh.
+            log::warn!("token refresh response carried no id_token; bearer left unchanged");
+        }
+    }
     config.oidc_session = Some(session);
 }

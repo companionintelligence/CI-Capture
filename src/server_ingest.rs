@@ -74,20 +74,21 @@ impl IngestError {
         }
     }
 
-    /// Classify an HTTP error status. Only statuses that indict the payload
-    /// itself are permanent.
+    /// Classify an HTTP error status. Permanent is an **allowlist** of
+    /// statuses that unambiguously indict the payload itself — every other
+    /// status (auth, routing, proxy/env 4xx like 407/421/425, rate limits,
+    /// 5xx) is transient, because retrying can't lose data (the 24 h parking
+    /// valve still bounds head-of-queue liveness) but a wrong "permanent"
+    /// verdict parks an event that would have gone through.
     fn from_status(status: StatusCode, body: &str, url: &reqwest::Url) -> Self {
         let message = format!("event ingest to {url} failed with HTTP {status}: {body}");
-        let permanent = status.is_client_error()
-            && !matches!(
-                status,
-                StatusCode::UNAUTHORIZED           // expired/invalid credential
-                    | StatusCode::FORBIDDEN        // ditto
-                    | StatusCode::REQUEST_TIMEOUT
-                    | StatusCode::TOO_MANY_REQUESTS
-                    | StatusCode::NOT_FOUND        // route missing (server too old)
-                    | StatusCode::METHOD_NOT_ALLOWED
-            );
+        let permanent = matches!(
+            status,
+            StatusCode::BAD_REQUEST                     // validation rejection
+                | StatusCode::PAYLOAD_TOO_LARGE         // this payload will never fit
+                | StatusCode::UNSUPPORTED_MEDIA_TYPE
+                | StatusCode::UNPROCESSABLE_ENTITY      // schema rejection
+        );
         Self { permanent, message }
     }
 }
@@ -519,12 +520,15 @@ mod tests {
     }
 
     #[test]
-    fn classify_outages_and_auth_as_transient() {
+    fn classify_outages_auth_and_env_4xx_as_transient() {
         let url = reqwest::Url::parse("http://core/api/v1/events").unwrap();
         // Auth failures heal via token refresh; 404/405 mean the server is
-        // too old; 408/429/5xx are the server's problem — none indict the
-        // event payload.
-        for status in [401u16, 403, 404, 405, 408, 429, 500, 502, 503] {
+        // too old; 408/429/5xx are the server's problem; 407/410/421/423/425
+        // are environment/proxy states, not payload verdicts. None indict
+        // the event payload — permanent is an allowlist, not a default.
+        for status in [
+            401u16, 403, 404, 405, 407, 408, 410, 421, 423, 425, 429, 500, 502, 503,
+        ] {
             let e = IngestError::from_status(StatusCode::from_u16(status).unwrap(), "x", &url);
             assert!(!e.permanent, "HTTP {status} should be transient");
         }

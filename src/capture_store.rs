@@ -36,9 +36,12 @@ pub struct SweepPlan {
 }
 
 /// A frame younger than this is presumed still in flight on the fresh
-/// capture→analyze→upload path, so the sweep leaves it alone. (Server-side
-/// content-hash dedup makes a rare double upload harmless.)
-pub const RETRY_MIN_AGE: Duration = Duration::from_secs(5 * 60);
+/// capture→analyze→upload path, so the sweep leaves it alone. Generous on
+/// purpose: a backlogged local vision analysis can hold a frame for many
+/// minutes, and while CI-Server dedups uploads by content hash, avoiding the
+/// duplicate upload in the first place is cheaper. (A dropped frame simply
+/// waits one extra sweep.)
+pub const RETRY_MIN_AGE: Duration = Duration::from_secs(15 * 60);
 
 /// Backlog uploads attempted per sweep. Keeps a week-long outage's backlog
 /// from monopolizing the analysis loop when the server comes back.

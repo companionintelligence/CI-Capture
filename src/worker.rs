@@ -91,6 +91,15 @@ enum WorkerCommand {
     Shutdown,
 }
 
+/// What the analysis loop's storage sweep needs to know, fed over a watch
+/// channel: the current config plus whether capture is active (paused users
+/// must not have backlog uploads running behind their back).
+#[derive(Clone)]
+struct SweepContext {
+    config: AppConfig,
+    active: bool,
+}
+
 struct PendingCapture {
     image: CapturedImage,
     filename: String,
@@ -106,9 +115,13 @@ async fn run_worker(
     running_flag: Arc<AtomicBool>,
 ) -> Result<()> {
     let (analysis_tx, mut analysis_rx) = channel::<PendingCapture>(ANALYSIS_QUEUE_CAPACITY);
-    // Live config feed for the analysis loop's storage sweep, so retention
-    // and backlog retry keep working between captures and across reconfigs.
-    let (config_watch_tx, config_watch_rx) = tokio::sync::watch::channel(initial_config.clone());
+    // Live config + pause feed for the analysis loop's storage sweep, so
+    // retention and backlog retry keep working between captures and across
+    // reconfigs — and uploads stop while the user has captures paused.
+    let (config_watch_tx, config_watch_rx) = tokio::sync::watch::channel(SweepContext {
+        config: initial_config.clone(),
+        active: true,
+    });
 
     tokio::spawn(async move {
         run_analysis_loop(&mut analysis_rx, config_watch_rx).await;
@@ -154,7 +167,7 @@ const STORE_SWEEP_INTERVAL: Duration = Duration::from_secs(5 * 60);
 
 async fn run_analysis_loop(
     rx: &mut Receiver<PendingCapture>,
-    config_watch: tokio::sync::watch::Receiver<AppConfig>,
+    config_watch: tokio::sync::watch::Receiver<SweepContext>,
 ) {
     let analyzer = VisionAnalyzer::default();
     let mut sweep_tick = time::interval(STORE_SWEEP_INTERVAL);
@@ -167,8 +180,8 @@ async fn run_analysis_loop(
                 handle_fresh_capture(&analyzer, &capture).await;
             }
             _ = sweep_tick.tick() => {
-                let config = config_watch.borrow().clone();
-                sweep_capture_store(&analyzer, &config).await;
+                let ctx = config_watch.borrow().clone();
+                sweep_capture_store(&analyzer, &ctx).await;
             }
         }
     }
@@ -215,7 +228,8 @@ async fn handle_fresh_capture(analyzer: &VisionAnalyzer, capture: &PendingCaptur
 /// definition unacked — successful ingest deletes it — so this is what makes
 /// the screenshot lane durable across outages, auth expiry, dropped analysis
 /// slots, and restarts.
-async fn sweep_capture_store(analyzer: &VisionAnalyzer, config: &AppConfig) {
+async fn sweep_capture_store(analyzer: &VisionAnalyzer, ctx: &SweepContext) {
+    let config = &ctx.config;
     let storage_dir = config.capture.storage_dir.clone();
     let entries = tokio::task::spawn_blocking(move || crate::capture_store::scan(&storage_dir))
         .await
@@ -233,8 +247,10 @@ async fn sweep_capture_store(analyzer: &VisionAnalyzer, config: &AppConfig) {
         }
     }
 
-    if !server_ingest::is_configured(config) {
-        return; // nowhere to retry to; retention alone ran
+    // Retention (local disk hygiene) always runs; uploads stop when the user
+    // paused captures or no server is configured.
+    if !ctx.active || !server_ingest::is_configured(config) {
+        return;
     }
 
     for path in &plan.retry {
@@ -353,8 +369,8 @@ struct WorkerState {
     last_capture: Option<CapturedImage>,
     running_flag: Arc<AtomicBool>,
     analysis_tx: Sender<PendingCapture>,
-    /// Feeds config changes to the analysis loop's storage sweep.
-    config_watch: tokio::sync::watch::Sender<AppConfig>,
+    /// Feeds config + pause changes to the analysis loop's storage sweep.
+    config_watch: tokio::sync::watch::Sender<SweepContext>,
     vizier_observer: Box<dyn Observer>,
     vizier_previous: Option<Observation>,
     vizier_session_id: Uuid,
@@ -367,7 +383,7 @@ impl WorkerState {
         config: AppConfig,
         running_flag: Arc<AtomicBool>,
         analysis_tx: Sender<PendingCapture>,
-        config_watch: tokio::sync::watch::Sender<AppConfig>,
+        config_watch: tokio::sync::watch::Sender<SweepContext>,
     ) -> Self {
         let vizier_observer = create_observer(ObserverConfig {
             watch_path: config.vizier.watch_path.clone(),
@@ -444,9 +460,16 @@ impl WorkerState {
             WorkerCommand::UpdateConfig(config) => {
                 let previous_watch_path = self.config.vizier.watch_path.clone();
                 let previous_all_connections = self.config.vizier.all_connections;
+                // Only churn the file lane when something it depends on
+                // actually changed — the token-refresh loop pushes configs
+                // autonomously (~hourly), and tearing the watcher down for an
+                // unrelated change silently misses file events in the gap.
+                let file_lane_changed = self.config.file_tracker != config.file_tracker
+                    || self.config.identity != config.identity
+                    || self.config.server != config.server;
 
                 self.config = config;
-                let _ = self.config_watch.send(self.config.clone());
+                self.publish_sweep_context();
                 *interval = build_interval(self.config.capture.screenshot_interval_secs);
 
                 if previous_watch_path != self.config.vizier.watch_path
@@ -455,17 +478,22 @@ impl WorkerState {
                     self.reset_vizier_observer();
                 }
 
-                // Pick up new watched folders / identity / server token.
-                self.restart_file_tracker().await;
+                // Pick up new watched folders / identity / server token —
+                // but never (re)start capture behind a paused user's back.
+                if file_lane_changed && self.is_active() {
+                    self.restart_file_tracker().await;
+                }
             }
             WorkerCommand::Pause => {
                 self.paused = true;
                 self.running_flag.store(false, Ordering::SeqCst);
+                self.publish_sweep_context();
                 self.stop_file_tracker().await;
             }
             WorkerCommand::Resume => {
                 self.paused = false;
                 self.running_flag.store(true, Ordering::SeqCst);
+                self.publish_sweep_context();
                 self.restart_file_tracker().await;
             }
             WorkerCommand::CaptureNow => match self.capture_once().await {
@@ -486,6 +514,14 @@ impl WorkerState {
             }
         }
         Ok(false)
+    }
+
+    /// Push the current config + pause state to the analysis loop's sweep.
+    fn publish_sweep_context(&self) {
+        let _ = self.config_watch.send(SweepContext {
+            config: self.config.clone(),
+            active: !self.paused,
+        });
     }
 
     fn reset_vizier_observer(&mut self) {

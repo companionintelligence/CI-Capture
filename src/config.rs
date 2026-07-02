@@ -72,7 +72,7 @@ impl Default for AnalysisConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct IdentityConfig {
     pub user_id: Option<Uuid>,
     pub device_id: Option<Uuid>,
@@ -140,7 +140,7 @@ impl Default for VizierConfig {
 ///
 /// Capture is **off until `watched_paths` is non-empty** — the applet never
 /// watches anything the user didn't explicitly add.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct FileTrackerConfig {
     pub enabled: bool,
     /// Folders to watch recursively. Empty = lane is a no-op.
@@ -192,7 +192,7 @@ pub struct AppConfig {
 
 /// OpenID Connect client config for portal sign-in (Authorization Code +
 /// PKCE). Discovery-driven, so only the issuer + client id usually change.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct OidcConfig {
     /// Issuer base; the applet fetches `<issuer>/.well-known/openid-configuration`.
     pub issuer: String,
@@ -217,7 +217,7 @@ impl Default for OidcConfig {
 }
 
 /// Tokens + identity from the last portal sign-in.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct OidcSession {
     pub id_token: Option<String>,
     pub access_token: Option<String>,
@@ -228,7 +228,7 @@ pub struct OidcSession {
     pub name: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ServerConfig {
     pub portal_url: String,
     #[serde(default)]
@@ -274,14 +274,25 @@ impl ConfigManager {
         }
     }
 
+    /// Atomic save: write to a sibling temp file, then rename over
+    /// `config.json`. Three writers share this file (tray process, settings
+    /// child process, token-refresh thread) — the rename guarantees a reader
+    /// never sees torn JSON, whichever writer lands last.
     pub fn save(&self, config: &AppConfig) -> Result<()> {
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent)
                 .with_context(|| format!("creating config dir {}", parent.display()))?;
         }
         let serialized = serde_json::to_string_pretty(config)?;
-        fs::write(&self.path, serialized)
-            .with_context(|| format!("writing config to {}", self.path.display()))?;
+        let tmp = self
+            .path
+            .with_extension(format!("json.tmp.{}", std::process::id()));
+        fs::write(&tmp, serialized)
+            .with_context(|| format!("writing config temp file {}", tmp.display()))?;
+        fs::rename(&tmp, &self.path).with_context(|| {
+            let _ = fs::remove_file(&tmp);
+            format!("committing config to {}", self.path.display())
+        })?;
         Ok(())
     }
 }

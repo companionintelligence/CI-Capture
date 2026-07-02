@@ -48,6 +48,13 @@ const PARK_AFTER: Duration = crate::sync::batching::DEAD_LETTER_AFTER;
 /// next tick.
 const TICK_BUDGET: Duration = Duration::from_secs(20);
 
+/// Cap on events parked per sync tick. Parking is meant for the rare poison
+/// event; a *systemic* 4xx (server-side schema change rejecting everything)
+/// must not flush the whole queue into dead_letters in seconds. Hitting the
+/// cap ends the tick and backs off like an outage, giving the operator time
+/// to notice before more events park.
+const MAX_PARKS_PER_TICK: usize = 5;
+
 /// True if the lane has everything it needs to run: enabled, an identity to
 /// attribute events to, a place to send them, and at least one folder.
 pub fn is_runnable(config: &AppConfig) -> bool {
@@ -137,6 +144,7 @@ pub async fn run(config: AppConfig, queue_path: PathBuf) -> Result<()> {
 
                 let tick_start = Instant::now();
                 let mut failed = false;
+                let mut parked = 0usize;
                 for queued in pending {
                     // Don't let one slow batch monopolize the task; the rest
                     // stay queued (still ready) and resume next tick.
@@ -164,7 +172,8 @@ pub async fn run(config: AppConfig, queue_path: PathBuf) -> Result<()> {
                             // The server rejected this payload — retrying the
                             // same bytes can never succeed. Park it (persisted,
                             // recoverable) and keep going: this is a per-event
-                            // problem, not an outage, so no backoff.
+                            // problem, not an outage, so no backoff — unless
+                            // parks pile up this tick, which smells systemic.
                             log::error!(
                                 "parking permanently rejected event {}: {err}",
                                 describe(&queued.event)
@@ -173,6 +182,14 @@ pub async fn run(config: AppConfig, queue_path: PathBuf) -> Result<()> {
                                 queue.dead_letter(&queued.event_id, &err.to_string())
                             {
                                 log::error!("failed to park rejected event: {park_err:?}");
+                            }
+                            parked += 1;
+                            if parked >= MAX_PARKS_PER_TICK {
+                                log::error!(
+                                    "{parked} events parked in one tick — treating as systemic rejection, backing off"
+                                );
+                                failed = true;
+                                break;
                             }
                         }
                         Err(err) => {
@@ -208,7 +225,10 @@ pub async fn run(config: AppConfig, queue_path: PathBuf) -> Result<()> {
                     }
                 }
 
-                if failed {
+                if failed || parked > 0 {
+                    // Parks are server rejections too — a tick that parked
+                    // must not read as success (which would grow the batch
+                    // and reset backoff against a rejecting server).
                     batch.record_failure();
                     backoff_until = Some(Instant::now() + batch.backoff());
                 } else {
