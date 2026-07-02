@@ -57,14 +57,19 @@ pub fn is_configured(config: &AppConfig) -> bool {
 
 /// Upload a captured screenshot to the server via `POST /files/upload`.
 ///
-/// The server runs its own vision analysis on the uploaded image via the
-/// inventory pipeline (`inventoryCapture=true`). Returns the server-assigned
+/// `inventory` toggles CI-Server's inventory pipeline (`inventoryCapture`).
+/// `skip_description=true` sends `skipDescription=true` so CI-Server skips its
+/// own Ollama image description — used when the applet analysed the image
+/// locally and will write the title/description itself via [`set_file_metadata`].
+/// (Since CI-Server #1615, `inventoryCapture=false` no longer suppresses the
+/// description, so it must be requested explicitly.) Returns the server-assigned
 /// file ID on success.
 pub async fn ingest_capture(
     config: &AppConfig,
     filename: &str,
     png_bytes: &[u8],
     inventory: bool,
+    skip_description: bool,
     model: Option<&str>,
 ) -> Result<String> {
     let credential = AuthCredential::from_config(config)?;
@@ -76,7 +81,7 @@ pub async fn ingest_capture(
 
     let mut last_error = None;
     for upload_url in upload_urls(&config.server.portal_url)? {
-        let form = capture_upload_form(filename, png_bytes, inventory, model)?;
+        let form = capture_upload_form(filename, png_bytes, inventory, skip_description, model)?;
         let response = credential
             .apply(client.post(upload_url.clone()))
             .multipart(form)
@@ -276,6 +281,7 @@ fn capture_upload_form(
     filename: &str,
     png_bytes: &[u8],
     inventory: bool,
+    skip_description: bool,
     model: Option<&str>,
 ) -> Result<reqwest::multipart::Form> {
     let part = reqwest::multipart::Part::bytes(png_bytes.to_vec())
@@ -286,6 +292,13 @@ fn capture_upload_form(
     let mut form = reqwest::multipart::Form::new()
         .part("files", part)
         .text("inventoryCapture", if inventory { "true" } else { "false" });
+    // Explicitly suppress CI-Server's own Ollama image description when the
+    // applet already produced its own title/description locally (written via
+    // `set_file_metadata`). Required since CI-Server #1615, where
+    // `inventoryCapture=false` no longer implies "skip description".
+    if skip_description {
+        form = form.text("skipDescription", "true");
+    }
     // Only forward a model when we want CI-Server to run its own (Ollama)
     // analysis — sending the applet's own vision-model name would make the
     // server reject the job. When the applet analyses locally, omit it.
