@@ -6,7 +6,7 @@
 //! watcher (notify → normalize → settle → fingerprint)
 //!     → durable SQLite queue
 //!         → extract changed file to Markdown (text family; rich formats opt-in)
-//!             → POST to CI-Server via /api/v1/events
+//!             → POST to CI-Server via /v1/events (canonical; /api/v1/events fallback)
 //! ```
 //!
 //! Design: a single Tokio task owns the [`Queue`] (a `rusqlite::Connection`
