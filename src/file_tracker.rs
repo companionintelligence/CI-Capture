@@ -20,6 +20,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
+use chrono::Utc;
 use tokio::time::{Duration, interval};
 use uuid::Uuid;
 
@@ -34,11 +35,12 @@ use crate::watcher::{self, WatcherConfig, ignore};
 /// How often the lane attempts to drain the queue to CI-Server.
 const SYNC_INTERVAL: Duration = Duration::from_secs(5);
 
-/// After this many failed delivery attempts, an event is dropped to the
-/// dead-letter log instead of being retried forever. Without this, a single
-/// poison event (one the server permanently rejects) would sit at the head
-/// of the FIFO queue and block every newer event behind it.
-const MAX_ATTEMPTS: u32 = 50;
+/// After failing continuously for this long, an event is *parked* in the
+/// queue's persisted dead-letter table so it can't block the FIFO head
+/// forever. Parking is a liveness valve, not a drop: transient failures
+/// (outages, 5xx, expired auth) otherwise retry indefinitely, permanently
+/// rejected events (4xx) park immediately, and parked events stay on disk.
+const PARK_AFTER: Duration = crate::sync::batching::DEAD_LETTER_AFTER;
 
 /// Upper bound on wall-clock spent POSTing in one sync tick. Keeps a slow
 /// server from monopolizing the lane's single task (which also drains the
@@ -87,9 +89,10 @@ pub async fn run(config: AppConfig, queue_path: PathBuf) -> Result<()> {
     let mut sync_tick = interval(SYNC_INTERVAL);
 
     log::info!(
-        "file tracker running: {} folder(s), queue depth {}",
+        "file tracker running: {} folder(s), queue depth {}, {} parked dead-letter(s)",
         config.file_tracker.watched_paths.len(),
-        queue.depth().unwrap_or(0)
+        queue.depth().unwrap_or(0),
+        queue.dead_letter_count().unwrap_or(0)
     );
 
     loop {
@@ -157,17 +160,43 @@ pub async fn run(config: AppConfig, queue_path: PathBuf) -> Result<()> {
                                 log::error!("failed to ack synced event: {err:?}");
                             }
                         }
+                        Err(err) if err.permanent => {
+                            // The server rejected this payload — retrying the
+                            // same bytes can never succeed. Park it (persisted,
+                            // recoverable) and keep going: this is a per-event
+                            // problem, not an outage, so no backoff.
+                            log::error!(
+                                "parking permanently rejected event {}: {err}",
+                                describe(&queued.event)
+                            );
+                            if let Err(park_err) =
+                                queue.dead_letter(&queued.event_id, &err.to_string())
+                            {
+                                log::error!("failed to park rejected event: {park_err:?}");
+                            }
+                        }
                         Err(err) => {
+                            // Transient (outage, 5xx, expired auth): retry
+                            // forever with backoff — an offline weekend must
+                            // not cost data. The one exception is liveness: an
+                            // event that has been failing continuously for
+                            // PARK_AFTER gets parked so it can't pin the FIFO
+                            // head indefinitely.
                             let attempts = queued.attempts + 1;
-                            if attempts >= MAX_ATTEMPTS {
-                                // Dead-letter: drop the poison event so it
-                                // can't block the queue forever. Keep going —
-                                // this is a per-event problem, not an outage.
+                            let blocking_since = queued.first_failed_at.map(|t| Utc::now() - t);
+                            if let Some(elapsed) = blocking_since
+                                && elapsed.to_std().unwrap_or_default() >= PARK_AFTER
+                            {
                                 log::error!(
-                                    "dead-letter: dropping {} after {attempts} attempts; last error: {err}",
-                                    describe(&queued.event)
+                                    "parking {} after {attempts} attempts over {}h (head-of-queue liveness): {err}",
+                                    describe(&queued.event),
+                                    elapsed.num_hours()
                                 );
-                                let _ = queue.ack(&queued.event_id);
+                                if let Err(park_err) =
+                                    queue.dead_letter(&queued.event_id, &err.to_string())
+                                {
+                                    log::error!("failed to park stuck event: {park_err:?}");
+                                }
                                 continue;
                             }
                             failed = true;

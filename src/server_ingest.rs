@@ -45,6 +45,66 @@ struct UploadResponse {
     id: String,
 }
 
+/// An event-ingest failure, classified for the retry-vs-dead-letter decision.
+///
+/// `permanent = true` means the server rejected *this event's payload*
+/// (validation 4xx or an explicit per-event rejection) — retrying the same
+/// bytes can never succeed, so the caller should park it. Everything that can
+/// heal without changing the event is transient: transport errors, timeouts,
+/// 5xx, missing routes (server too old), and auth failures (401/403 — the
+/// token refresh loop fixes those; the event is not at fault).
+#[derive(Debug)]
+pub struct IngestError {
+    pub permanent: bool,
+    message: String,
+}
+
+impl IngestError {
+    fn permanent(message: impl Into<String>) -> Self {
+        Self {
+            permanent: true,
+            message: message.into(),
+        }
+    }
+
+    fn transient(message: impl Into<String>) -> Self {
+        Self {
+            permanent: false,
+            message: message.into(),
+        }
+    }
+
+    /// Classify an HTTP error status. Only statuses that indict the payload
+    /// itself are permanent.
+    fn from_status(status: StatusCode, body: &str, url: &reqwest::Url) -> Self {
+        let message = format!("event ingest to {url} failed with HTTP {status}: {body}");
+        let permanent = status.is_client_error()
+            && !matches!(
+                status,
+                StatusCode::UNAUTHORIZED           // expired/invalid credential
+                    | StatusCode::FORBIDDEN        // ditto
+                    | StatusCode::REQUEST_TIMEOUT
+                    | StatusCode::TOO_MANY_REQUESTS
+                    | StatusCode::NOT_FOUND        // route missing (server too old)
+                    | StatusCode::METHOD_NOT_ALLOWED
+            );
+        Self { permanent, message }
+    }
+}
+
+impl std::fmt::Display for IngestError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} ({})",
+            self.message,
+            if self.permanent { "permanent" } else { "transient" }
+        )
+    }
+}
+
+impl std::error::Error for IngestError {}
+
 // ── Public API ─────────────────────────────────────────────────────────────────
 
 pub fn is_configured(config: &AppConfig) -> bool {
@@ -145,7 +205,7 @@ pub async fn ingest_file_event(
     session_id: Uuid,
     event: &crate::watcher::types::NormalizedEvent,
     content: &FileEventContent,
-) -> Result<()> {
+) -> Result<(), IngestError> {
     let path = event
         .new_path
         .as_ref()
@@ -251,52 +311,67 @@ pub async fn ingest_vizier_event(
         },
     )
     .await
+    // The vizier lane is fire-and-forget (no durable queue), so the
+    // permanent/transient distinction has no consumer — flatten to anyhow.
+    .map_err(anyhow::Error::from)
 }
 
 // ── Internal ──────────────────────────────────────────────────────────────────
 
-async fn post_capture_event(config: &AppConfig, event: CaptureEvent) -> Result<()> {
-    let credential = AuthCredential::from_config(config)?;
+async fn post_capture_event(config: &AppConfig, event: CaptureEvent) -> Result<(), IngestError> {
+    // Setup failures (no credential, bad portal URL) are config problems, not
+    // event problems — always transient.
+    let credential =
+        AuthCredential::from_config(config).map_err(|e| IngestError::transient(e.to_string()))?;
     let client = Client::builder()
         .use_rustls_tls()
         .timeout(std::time::Duration::from_secs(30))
         .build()
-        .context("building event ingest client")?;
+        .map_err(|e| IngestError::transient(format!("building event ingest client: {e}")))?;
     let request = IngestEventsRequest {
         events: vec![event],
     };
 
     let mut last_error = None;
-    for url in events_urls(&config.server.portal_url)? {
-        let response = credential
-            .apply(client.post(url.clone()))
-            .json(&request)
-            .send()
-            .await
-            .with_context(|| format!("sending event ingest request to {url}"))?;
+    for url in
+        events_urls(&config.server.portal_url).map_err(|e| IngestError::transient(e.to_string()))?
+    {
+        let response = match credential.apply(client.post(url.clone())).json(&request).send().await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                // Transport error — try the next candidate; whole call is
+                // transient if none answers.
+                last_error = Some(IngestError::transient(format!(
+                    "sending event ingest request to {url}: {e}"
+                )));
+                continue;
+            }
+        };
 
         let status = response.status();
         if should_try_next_endpoint(status) {
             let body = response.text().await.unwrap_or_default();
-            last_error = Some(anyhow!("event ingest failed with HTTP {status}: {body}"));
+            last_error = Some(IngestError::from_status(status, &body, &url));
             continue;
         }
 
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
-            return Err(anyhow!("event ingest failed with HTTP {status}: {body}"));
+            return Err(IngestError::from_status(status, &body, &url));
         }
 
         let body: IngestEventsResponse = response
             .json()
             .await
-            .context("decoding event ingest response")?;
+            .map_err(|e| IngestError::transient(format!("decoding event ingest response: {e}")))?;
         if let Some(rejected) = body.rejected.first() {
-            return Err(anyhow!(
+            // The server accepted the request but rejected this event's
+            // payload — the one unambiguously permanent per-event outcome.
+            return Err(IngestError::permanent(format!(
                 "event ingest rejected event {}: {}",
-                rejected.index,
-                rejected.reason
-            ));
+                rejected.index, rejected.reason
+            )));
         }
 
         log::debug!(
@@ -308,7 +383,8 @@ async fn post_capture_event(config: &AppConfig, event: CaptureEvent) -> Result<(
         return Ok(());
     }
 
-    Err(last_error.unwrap_or_else(|| anyhow!("no event ingest endpoint candidates")))
+    Err(last_error
+        .unwrap_or_else(|| IngestError::transient("no event ingest endpoint candidates")))
 }
 
 fn capture_upload_form(
@@ -431,6 +507,29 @@ mod tests {
         assert!(d.starts_with("FileModified\n\n# Notes"));
         assert!(d.contains("remember the quarterly plan"));
         assert!(!d.contains("[truncated]"));
+    }
+
+    #[test]
+    fn classify_payload_rejections_as_permanent() {
+        let url = reqwest::Url::parse("http://core/api/v1/events").unwrap();
+        for status in [400u16, 413, 422] {
+            let e = IngestError::from_status(StatusCode::from_u16(status).unwrap(), "bad", &url);
+            assert!(e.permanent, "HTTP {status} should be permanent");
+        }
+    }
+
+    #[test]
+    fn classify_outages_and_auth_as_transient() {
+        let url = reqwest::Url::parse("http://core/api/v1/events").unwrap();
+        // Auth failures heal via token refresh; 404/405 mean the server is
+        // too old; 408/429/5xx are the server's problem — none indict the
+        // event payload.
+        for status in [401u16, 403, 404, 405, 408, 429, 500, 502, 503] {
+            let e = IngestError::from_status(StatusCode::from_u16(status).unwrap(), "x", &url);
+            assert!(!e.permanent, "HTTP {status} should be transient");
+        }
+        assert!(!IngestError::transient("net down").permanent);
+        assert!(IngestError::permanent("rejected").permanent);
     }
 
     #[test]
