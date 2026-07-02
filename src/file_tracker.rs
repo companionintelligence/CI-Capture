@@ -452,6 +452,18 @@ mod e2e {
         (origin, recorded)
     }
 
+    /// A watched-folder tempdir the ignore rules can't drop. The system temp
+    /// dir is unusable here: on Windows it lives under `AppData/Local/Temp`,
+    /// which DEFAULT_IGNORES (correctly) filters — so events from a
+    /// `tempfile::tempdir()` watch never surface and the lane starves. The
+    /// repo root matches no default or sensitive glob.
+    fn watchable_tempdir() -> tempfile::TempDir {
+        tempfile::Builder::new()
+            .prefix("ci-applet-e2e-")
+            .tempdir_in(env!("CARGO_MANIFEST_DIR"))
+            .unwrap()
+    }
+
     fn lane_config(origin: &str, watched: PathBuf) -> AppConfig {
         let mut config = AppConfig::default();
         config.server.portal_url = origin.to_string();
@@ -476,7 +488,7 @@ mod e2e {
     #[tokio::test(flavor = "multi_thread")]
     async fn file_edit_reaches_server_with_content_and_api_key_and_drains_queue() {
         let (origin, recorded) = spawn_mock_server(vec![]);
-        let dir = tempfile::tempdir().unwrap();
+        let dir = watchable_tempdir();
         let watched = dir.path().join("watched");
         std::fs::create_dir_all(&watched).unwrap();
         let queue_path = dir.path().join("queue.db");
@@ -527,7 +539,7 @@ mod e2e {
         // Script: first POST → 400 (permanent), second → 500 (transient),
         // third → 200. One file edit per phase.
         let (origin, recorded) = spawn_mock_server(vec![400, 500, 200]);
-        let dir = tempfile::tempdir().unwrap();
+        let dir = watchable_tempdir();
         let watched = dir.path().join("watched");
         std::fs::create_dir_all(&watched).unwrap();
         let queue_path = dir.path().join("queue.db");
