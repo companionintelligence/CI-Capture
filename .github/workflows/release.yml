@@ -1,45 +1,233 @@
-name: Release
+name: Desktop Release
 
-# Builds native installers for every platform with cargo-packager — the same
-# kind of distributables a Tauri app produces (.dmg / .deb / .AppImage /
-# .exe installer / Arch pacman package) — and publishes them to a GitHub
-# Release.
-#
-# Cut a versioned release:
-#   1. bump `version` in Cargo.toml, commit
-#   2. git tag v0.1.0 && git push origin v0.1.0
-#
-# Pushes to main/master publish a prerelease named from Cargo.toml + run number.
-# Manual runs build every package and upload the combined bundle as artifacts.
+# Builds native desktop installers with cargo-packager and publishes them to a
+# GitHub Release. The GHCR container image is intentionally handled separately
+# by packages.yml; this workflow is for signed end-user desktop downloads.
 
 on:
-  push:
-    branches: [main, master]
-    tags: ['v*']
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. v0.1.0)'
+        required: true
+        type: string
+      prerelease:
+        description: 'Mark as pre-release'
+        required: false
+        default: true
+        type: boolean
+      environment:
+        description: 'Target signing/release environment'
+        required: false
+        default: dev
+        type: choice
+        options:
+          - dev
+          - production
+      platforms:
+        description: 'Platforms to build'
+        required: false
+        default: all
+        type: choice
+        options:
+          - all
+          - macos-only
+          - linux-only
+          - windows-only
+  push:
+    tags:
+      - 'v*'
 
 permissions:
   contents: write
+  id-token: write
+  attestations: write
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_PACKAGER_VERSION: 0.11.8
+
+concurrency:
+  group: desktop-release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  cancel-in-progress: false
 
 jobs:
-  package:
-    name: ${{ matrix.label }}
+  release-metadata:
+    name: Resolve release metadata
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      version: ${{ steps.meta.outputs.version }}
+      prerelease: ${{ steps.meta.outputs.prerelease }}
+      environment: ${{ steps.meta.outputs.environment }}
+      platforms: ${{ steps.meta.outputs.platforms }}
+      matrix: ${{ steps.meta.outputs.matrix }}
+    steps:
+      - name: Resolve metadata
+        id: meta
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          DISPATCH_TAG: ${{ inputs.tag }}
+          DISPATCH_PRERELEASE: ${{ inputs.prerelease }}
+          DISPATCH_ENVIRONMENT: ${{ inputs.environment }}
+          DISPATCH_PLATFORMS: ${{ inputs.platforms }}
+          REF_NAME: ${{ github.ref_name }}
+          GITHUB_REF_FOR_RELEASE: ${{ github.ref }}
+        run: |
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            tag="$DISPATCH_TAG"
+            prerelease="$DISPATCH_PRERELEASE"
+            environment="$DISPATCH_ENVIRONMENT"
+            platforms="$DISPATCH_PLATFORMS"
+          else
+            tag="$REF_NAME"
+            environment="production"
+            platforms="all"
+            if [[ "$tag" == *"-"* ]]; then
+              prerelease="true"
+            else
+              prerelease="false"
+            fi
+          fi
+
+          version="${tag#v}"
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.+][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Release tag must be semver-like, for example v0.1.0 or v0.1.0-beta.1"
+            exit 1
+          fi
+
+          if [ "$environment" = "production" ] && [ "$GITHUB_REF_FOR_RELEASE" != "refs/tags/$tag" ]; then
+            echo "::error::Production desktop releases must run from the matching release tag ref ($tag). Select the tag when manually dispatching, or push the tag."
+            exit 1
+          fi
+
+          if [ "$environment" != "production" ] && [[ "$tag" != *"-"* ]]; then
+            echo "::error::Non-production desktop releases must use a prerelease tag such as v0.1.0-dev.1 so they do not consume the production v* tag."
+            exit 1
+          fi
+
+          if [ "$environment" != "production" ] && [ "$prerelease" != "true" ]; then
+            echo "::error::Non-production desktop releases must be marked as prerelease."
+            exit 1
+          fi
+
+          {
+            echo "tag=$tag"
+            echo "version=$version"
+            echo "prerelease=$prerelease"
+            echo "environment=$environment"
+            echo "platforms=$platforms"
+          } >> "$GITHUB_OUTPUT"
+
+          case "$platforms" in
+            all)
+              matrix='{"include":[{"os":"macos-latest","label":"macOS (Apple Silicon)","artifact":"macos-arm64","target":"aarch64-apple-darwin","formats":"dmg"},{"os":"macos-latest","label":"macOS (Intel)","artifact":"macos-intel","target":"x86_64-apple-darwin","formats":"dmg"},{"os":"ubuntu-22.04","label":"Linux (x86_64)","artifact":"linux-x64","target":"x86_64-unknown-linux-gnu","formats":"deb,appimage,pacman"},{"os":"windows-latest","label":"Windows (x86_64)","artifact":"windows-x64","target":"x86_64-pc-windows-msvc","formats":"nsis"}]}'
+              ;;
+            macos-only)
+              matrix='{"include":[{"os":"macos-latest","label":"macOS (Apple Silicon)","artifact":"macos-arm64","target":"aarch64-apple-darwin","formats":"dmg"},{"os":"macos-latest","label":"macOS (Intel)","artifact":"macos-intel","target":"x86_64-apple-darwin","formats":"dmg"}]}'
+              ;;
+            linux-only)
+              matrix='{"include":[{"os":"ubuntu-22.04","label":"Linux (x86_64)","artifact":"linux-x64","target":"x86_64-unknown-linux-gnu","formats":"deb,appimage,pacman"}]}'
+              ;;
+            windows-only)
+              matrix='{"include":[{"os":"windows-latest","label":"Windows (x86_64)","artifact":"windows-x64","target":"x86_64-pc-windows-msvc","formats":"nsis"}]}'
+              ;;
+            *)
+              echo "::error::Unsupported platforms value: $platforms"
+              exit 1
+              ;;
+          esac
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
+  preflight:
+    name: Preflight
+    needs: release-metadata
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify Cargo version matches release tag
+        shell: bash
+        run: |
+          cargo_version="$(sed -nE 's/^version = "([^"]+)"/\1/p' Cargo.toml | head -n 1)"
+          release_version="${{ needs.release-metadata.outputs.version }}"
+
+          if [ -z "$cargo_version" ]; then
+            echo "::error::Could not read package version from Cargo.toml"
+            exit 1
+          fi
+
+          if [ "$cargo_version" != "$release_version" ]; then
+            echo "::error::Cargo.toml version ($cargo_version) must match release tag version ($release_version). Commit the version bump before releasing."
+            exit 1
+          fi
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-3-dev libxdo-dev libayatana-appindicator3-dev \
+            libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxcb-randr0-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run release test suite
+        run: cargo test --locked --features rich-extractors
+
+  build:
+    name: Build - ${{ matrix.label }}
+    needs: [release-metadata, preflight]
     runs-on: ${{ matrix.os }}
+    environment: ${{ needs.release-metadata.outputs.environment }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      APPLE_SIGNING_CONFIGURED: ${{ secrets.APPLE_CERTIFICATE != '' && 'true' || 'false' }}
+      APPLE_NOTARIZATION_CONFIGURED: ${{ secrets.APPLE_ID != '' && secrets.APPLE_PASSWORD != '' && secrets.APPLE_TEAM_ID != '' && 'true' || 'false' }}
+      WINDOWS_SIGNING_CONFIGURED: ${{ secrets.AZURE_TENANT_ID != '' && secrets.AZURE_CLIENT_ID != '' && secrets.AZURE_SUBSCRIPTION_ID != '' && secrets.AZURE_SIGNING_ENDPOINT != '' && secrets.AZURE_SIGNING_ACCOUNT != '' && secrets.AZURE_CERTIFICATE_PROFILE != '' && 'true' || 'false' }}
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - { os: macos-15,       label: macOS (Apple Silicon), artifact: macos-arm64,   formats: dmg }
-          - { os: ubuntu-22.04,   label: Ubuntu (x86_64),       artifact: ubuntu-x64,    formats: "deb,appimage" }
-          - { os: ubuntu-22.04,   label: Arch Linux (x86_64),   artifact: arch-x64,      formats: pacman }
-          - { os: windows-latest, label: Windows (x86_64),      artifact: windows-x64,   formats: nsis }
+      matrix: ${{ fromJSON(needs.release-metadata.outputs.matrix) }}
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Install Linux system dependencies
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Validate production signing configuration
+        if: needs.release-metadata.outputs.environment == 'production'
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            if [ "$APPLE_SIGNING_CONFIGURED" != "true" ] || [ "$APPLE_NOTARIZATION_CONFIGURED" != "true" ]; then
+              echo "::error::Production macOS releases require APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD, APPLE_ID, APPLE_PASSWORD, and APPLE_TEAM_ID."
+              exit 1
+            fi
+          fi
+
+          if [ "${{ runner.os }}" = "Windows" ] && [ "$WINDOWS_SIGNING_CONFIGURED" != "true" ]; then
+            echo "::error::Production Windows releases require Azure Artifact Signing secrets."
+            exit 1
+          fi
+
+      - name: Install Linux dependencies
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
@@ -49,100 +237,401 @@ jobs:
             libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
             libfuse2
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo build
-        uses: Swatinem/rust-cache@v2
-
       - name: Install cargo-packager
-        uses: cargo-bins/cargo-binstall@main
-      - run: cargo binstall -y cargo-packager
+        run: cargo install cargo-packager --version "$CARGO_PACKAGER_VERSION" --locked
+
+      # -- macOS code signing -------------------------------------------------
+      - name: Import Apple certificate
+        if: runner.os == 'macOS' && env.APPLE_SIGNING_CONFIGURED == 'true'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          echo "$APPLE_CERTIFICATE" | base64 --decode > certificate.p12
+          KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 24)"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import certificate.p12 -k "$KEYCHAIN_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain-db
+          rm certificate.p12
+          {
+            echo "APPLE_KEYCHAIN_PATH=$KEYCHAIN_PATH"
+            echo "APPLE_KEYCHAIN_PASSWORD=$KEYCHAIN_PASSWORD"
+          } >> "$GITHUB_ENV"
+
+      - name: Resolve Apple signing identity
+        if: runner.os == 'macOS' && env.APPLE_SIGNING_CONFIGURED == 'true'
+        shell: bash
+        env:
+          APPLE_SIGNING_IDENTITY_SECRET: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          set -euo pipefail
+          security unlock-keychain -p "$APPLE_KEYCHAIN_PASSWORD" "$APPLE_KEYCHAIN_PATH"
+
+          identities=()
+          while IFS= read -r line; do
+            identities+=("$line")
+          done < <(
+            security find-identity -v -p codesigning "$APPLE_KEYCHAIN_PATH" \
+              | sed -En 's/^[[:space:]]*[0-9]+\) [A-Fa-f0-9]{40} "(.*)"$/\1/p'
+          )
+
+          if [ ${#identities[@]} -eq 0 ]; then
+            echo "::error::No codesigning identities found in $APPLE_KEYCHAIN_PATH"
+            security find-identity -v -p codesigning "$APPLE_KEYCHAIN_PATH" || true
+            exit 1
+          fi
+
+          chosen=""
+          if [ -n "${APPLE_SIGNING_IDENTITY_SECRET:-}" ]; then
+            for id in "${identities[@]}"; do
+              if [ "$id" = "$APPLE_SIGNING_IDENTITY_SECRET" ]; then
+                chosen="$id"
+                break
+              fi
+            done
+            if [ -z "$chosen" ]; then
+              echo "::warning::APPLE_SIGNING_IDENTITY secret did not match an imported identity; using best match"
+            fi
+          fi
+
+          if [ -z "$chosen" ]; then
+            for id in "${identities[@]}"; do
+              if [[ "$id" == Developer\ ID\ Application:* ]]; then
+                chosen="$id"
+                break
+              fi
+            done
+          fi
+
+          if [ -z "$chosen" ]; then
+            chosen="${identities[0]}"
+          fi
+
+          echo "Using Apple signing identity: $chosen"
+          echo "APPLE_SIGNING_IDENTITY=$chosen" >> "$GITHUB_ENV"
+
+      - name: Use ad-hoc Apple signing when certificate is missing
+        if: runner.os == 'macOS' && env.APPLE_SIGNING_CONFIGURED != 'true'
+        run: echo "APPLE_SIGNING_IDENTITY=-" >> "$GITHUB_ENV"
+
+      - name: Configure cargo-packager Apple signing
+        if: runner.os == 'macOS' && env.APPLE_SIGNING_CONFIGURED == 'true'
+        shell: bash
+        run: |
+          python3 <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          path = Path("Cargo.toml")
+          lines = path.read_text().splitlines()
+          section = "[package.metadata.packager.macos]"
+          start = next((i for i, line in enumerate(lines) if line.strip() == section), None)
+          if start is None:
+              raise SystemExit("missing [package.metadata.packager.macos] in Cargo.toml")
+
+          end = len(lines)
+          for i in range(start + 1, len(lines)):
+              stripped = lines[i].strip()
+              if stripped.startswith("[") and stripped.endswith("]"):
+                  end = i
+                  break
+
+          identity = os.environ["APPLE_SIGNING_IDENTITY"]
+          inserted = [
+              f"signing-identity = {json.dumps(identity)}",
+              "hardened-runtime = true",
+          ]
+
+          filtered = [
+              line for line in lines[start + 1:end]
+              if not line.strip().startswith(("signing-identity", "hardened-runtime"))
+          ]
+          lines = lines[:start + 1] + inserted + filtered + lines[end:]
+          path.write_text("\n".join(lines) + "\n")
+          PY
 
       - name: Build installers
         shell: bash
         env:
-          # Ad-hoc sign on macOS (real Developer ID needs Apple secrets).
-          APPLE_SIGNING_IDENTITY: ${{ runner.os == 'macOS' && '-' || '' }}
-          # Let appimagetool run without a FUSE kernel module on the runner.
           APPIMAGE_EXTRACT_AND_RUN: '1'
-        run: cargo packager --release --formats ${{ matrix.formats }} --out-dir dist --verbose
+          CARGO_BUILD_TARGET: ${{ matrix.target }}
+        run: |
+          cargo packager --release --target "${{ matrix.target }}" --formats "${{ matrix.formats }}" --out-dir dist --verbose
 
-      - name: Collect artifacts
+      - name: Verify macOS signature
+        if: runner.os == 'macOS' && env.APPLE_SIGNING_CONFIGURED == 'true'
         shell: bash
         run: |
-          mkdir -p out
-          find dist -maxdepth 2 -type f \
-            \( -name '*.dmg' -o -name '*.deb' -o -name '*.AppImage' -o -name '*.exe' -o -name '*.msi' -o -name '*.tar.gz' -o -name '*.pkg.tar.*' -o -name 'PKGBUILD' \) \
-            -exec cp {} out/ \;
-          ls -la out
+          set -euo pipefail
+          app_path="$(find dist -name '*.app' -type d -prune | head -1)"
+          mount_path=""
 
-      - name: Upload artifacts
+          if [ -z "$app_path" ]; then
+            dmg_path="$(find dist -name '*.dmg' | head -1)"
+            if [ -z "$dmg_path" ]; then
+              echo "::error::No .app or .dmg found for signature verification"
+              exit 1
+            fi
+            mount_path="$(mktemp -d)"
+            hdiutil attach "$dmg_path" -mountpoint "$mount_path" -nobrowse -quiet
+            trap 'hdiutil detach "$mount_path" -quiet || true; rmdir "$mount_path" || true' EXIT
+            app_path="$(find "$mount_path" -name '*.app' -type d -prune | head -1)"
+          fi
+
+          if [ -z "$app_path" ]; then
+            echo "::error::No .app found for signature verification"
+            exit 1
+          fi
+
+          codesign --verify --strict --deep --verbose=2 "$app_path"
+          spctl --assess --type execute --verbose=4 "$app_path"
+
+      - name: Notarize macOS DMG
+        if: runner.os == 'macOS' && env.APPLE_SIGNING_CONFIGURED == 'true' && env.APPLE_NOTARIZATION_CONFIGURED == 'true'
+        continue-on-error: ${{ needs.release-metadata.outputs.environment == 'dev' }}
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        shell: bash
+        run: |
+          dmg_path="$(find dist -name '*.dmg' | head -1)"
+          if [ -z "$dmg_path" ]; then
+            echo "::error::No DMG found to notarize"
+            exit 1
+          fi
+
+          xcrun notarytool submit "$dmg_path" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait --timeout 600
+          xcrun stapler staple "$dmg_path"
+
+      # -- Windows code signing ----------------------------------------------
+      - name: Prepare Windows signing paths
+        if: runner.os == 'Windows' && env.WINDOWS_SIGNING_CONFIGURED == 'true'
+        shell: pwsh
+        run: |
+          $distDir = (Resolve-Path "dist").Path
+          "WINDOWS_SIGNING_DIR=$distDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Azure login for Artifact Signing
+        if: runner.os == 'Windows' && env.WINDOWS_SIGNING_CONFIGURED == 'true'
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Sign Windows artifacts
+        if: runner.os == 'Windows' && env.WINDOWS_SIGNING_CONFIGURED == 'true'
+        uses: azure/artifact-signing-action@v1
+        with:
+          endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.AZURE_CERTIFICATE_PROFILE }}
+          files-folder: ${{ env.WINDOWS_SIGNING_DIR }}
+          files-folder-filter: exe,msi
+          files-folder-recurse: true
+          files-folder-depth: 4
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+          exclude-environment-credential: true
+          exclude-workload-identity-credential: true
+          exclude-managed-identity-credential: true
+          exclude-shared-token-cache-credential: true
+          exclude-visual-studio-credential: true
+          exclude-visual-studio-code-credential: true
+          exclude-azure-cli-credential: false
+          exclude-azure-powershell-credential: true
+          exclude-azure-developer-cli-credential: true
+          exclude-interactive-browser-credential: true
+
+      - name: Collect release artifacts
+        shell: bash
+        run: |
+          mkdir -p release-artifacts
+          find dist -type f \
+            \( -name '*.dmg' -o -name '*.deb' -o -name '*.AppImage' -o -name '*.exe' -o -name '*.msi' -o -name '*.rpm' -o -name '*.tar.gz' -o -name '*.pkg.tar.*' -o -name 'PKGBUILD' \) \
+            -exec cp {} release-artifacts/ \;
+          ls -lh release-artifacts
+
+      - name: Upload release artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: installers-${{ matrix.artifact }}
-          path: out/*
+          name: ci-applet-${{ matrix.artifact }}
+          path: release-artifacts/*
           if-no-files-found: error
 
   release:
-    name: publish
-    needs: package
+    name: Publish GitHub Release
+    needs: [release-metadata, build]
     runs-on: ubuntu-latest
+    environment: ${{ needs.release-metadata.outputs.environment }}
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      LINUX_GPG_CONFIGURED: ${{ secrets.LINUX_GPG_PRIVATE_KEY != '' && 'true' || 'false' }}
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Resolve release metadata
-        id: release
-        shell: bash
-        run: |
-          if [ "${{ github.ref_type }}" = "tag" ]; then
-            echo "version=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
-            echo "tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
-            echo "prerelease=false" >> "$GITHUB_OUTPUT"
-            echo "publish=true" >> "$GITHUB_OUTPUT"
-          elif [ "${{ github.event_name }}" = "push" ]; then
-            version="$(sed -nE 's/^version = "([^"]+)"/\1/p' Cargo.toml | head -n 1)"
-            short_sha="$(git rev-parse --short=12 HEAD)"
-            tag="build-${{ github.ref_name }}-${version}.${{ github.run_number }}-${short_sha}"
-            echo "version=v${version}+${{ github.ref_name }}.${{ github.run_number }}.${short_sha}" >> "$GITHUB_OUTPUT"
-            echo "tag=${tag}" >> "$GITHUB_OUTPUT"
-            echo "prerelease=true" >> "$GITHUB_OUTPUT"
-            echo "publish=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "version=v0.0.0-dev.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
-            echo "tag=" >> "$GITHUB_OUTPUT"
-            echo "prerelease=true" >> "$GITHUB_OUTPUT"
-            echo "publish=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Download all installers
+      - name: Download release artifacts
         uses: actions/download-artifact@v4
         with:
+          pattern: ci-applet-*
           path: artifacts
           merge-multiple: true
 
-      - name: Checksums
+      - name: Collect all files
         run: |
-          cd artifacts
-          shasum -a 256 * > "CI-Applet-${{ steps.release.outputs.version }}-SHA256SUMS.txt"
-          ls -la
+          mkdir -p release-files
+          while IFS= read -r -d '' file; do
+            dest="release-files/$(basename "$file")"
+            if [ -e "$dest" ]; then
+              echo "::error::Duplicate release artifact filename: $(basename "$file")"
+              exit 1
+            fi
+            cp "$file" "$dest"
+          done < <(
+            find artifacts -type f \
+              \( -name '*.dmg' -o -name '*.deb' -o -name '*.AppImage' -o -name '*.exe' -o -name '*.msi' -o -name '*.rpm' -o -name '*.tar.gz' -o -name '*.pkg.tar.*' -o -name 'PKGBUILD' \) \
+              -print0
+          )
+          ls -lh release-files
+
+      - name: Validate production Linux signing configuration
+        if: needs.release-metadata.outputs.environment == 'production' && (needs.release-metadata.outputs.platforms == 'all' || needs.release-metadata.outputs.platforms == 'linux-only')
+        run: |
+          if [ "$LINUX_GPG_CONFIGURED" != "true" ]; then
+            echo "::error::Production Linux releases require LINUX_GPG_PRIVATE_KEY for detached release signatures."
+            exit 1
+          fi
+
+      - name: Create release manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd release-files
+
+          assets_json='[]'
+          while IFS= read -r -d '' file; do
+            name="${file#./}"
+            size="$(wc -c < "$file" | tr -d ' ')"
+            sha256="$(shasum -a 256 "$file" | awk '{print $1}')"
+            assets_json="$(
+              jq -c \
+                --arg name "$name" \
+                --argjson size "$size" \
+                --arg sha256 "$sha256" \
+                '. + [{name: $name, size: $size, sha256: $sha256}]' \
+                <<< "$assets_json"
+            )"
+          done < <(find . -maxdepth 1 -type f -print0 | sort -z)
+
+          jq -n \
+            --arg version "${{ needs.release-metadata.outputs.version }}" \
+            --arg tag "${{ needs.release-metadata.outputs.tag }}" \
+            --arg channel "${{ needs.release-metadata.outputs.prerelease == 'true' && 'prerelease' || 'release' }}" \
+            --arg environment "${{ needs.release-metadata.outputs.environment }}" \
+            --arg released "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg sha "${{ github.sha }}" \
+            --arg repository "${{ github.repository }}" \
+            --arg workflow_run "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --argjson prerelease "${{ needs.release-metadata.outputs.prerelease }}" \
+            --argjson assets "$assets_json" \
+            '{
+              version: $version,
+              tag: $tag,
+              channel: $channel,
+              environment: $environment,
+              prerelease: $prerelease,
+              released: $released,
+              sha: $sha,
+              repository: $repository,
+              workflow_run: $workflow_run,
+              assets: $assets
+            }' > latest.json
+
+      - name: Generate checksums
+        run: |
+          cd release-files
+          checksum_file="CI-Applet-${{ needs.release-metadata.outputs.tag }}-SHA256SUMS.txt"
+          checksum_tmp="../$checksum_file.tmp"
+          find . -maxdepth 1 -type f ! -name "$checksum_file" -print0 \
+            | sort -z \
+            | xargs -0 shasum -a 256 > "$checksum_tmp"
+          mv "$checksum_tmp" "$checksum_file"
+          cat "$checksum_file"
+
+      - name: Sign release files with GPG
+        if: env.LINUX_GPG_CONFIGURED == 'true'
+        env:
+          LINUX_GPG_PRIVATE_KEY: ${{ secrets.LINUX_GPG_PRIVATE_KEY }}
+          LINUX_GPG_PASSPHRASE: ${{ secrets.LINUX_GPG_PASSPHRASE }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.gnupg"
+          chmod 700 "$HOME/.gnupg"
+
+          printf '%s' "$LINUX_GPG_PRIVATE_KEY" > private-key.input
+          if base64 --decode private-key.input > private-key.decoded 2>/dev/null; then
+            gpg --batch --import private-key.decoded
+          else
+            gpg --batch --import private-key.input
+          fi
+          rm -f private-key.input private-key.decoded
+
+          for file in release-files/*; do
+            [ -f "$file" ] || continue
+            gpg --batch --yes --pinentry-mode loopback \
+              --passphrase "${LINUX_GPG_PASSPHRASE:-}" \
+              --armor --detach-sign "$file"
+          done
+
+      - name: Attest release artifact provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: release-files/*
 
       - name: Create GitHub Release
-        if: steps.release.outputs.publish == 'true'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.release.outputs.tag }}
+          tag_name: ${{ needs.release-metadata.outputs.tag }}
           target_commitish: ${{ github.sha }}
-          name: CI-Applet ${{ steps.release.outputs.version }}
-          prerelease: ${{ steps.release.outputs.prerelease }}
+          name: CI-Applet ${{ needs.release-metadata.outputs.tag }}${{ needs.release-metadata.outputs.environment != 'production' && format(' ({0})', needs.release-metadata.outputs.environment) || '' }}
+          prerelease: ${{ needs.release-metadata.outputs.prerelease }}
           generate_release_notes: true
           fail_on_unmatched_files: true
-          files: artifacts/*
+          files: release-files/*
+          body: |
+            ## CI-Applet ${{ needs.release-metadata.outputs.tag }}
 
-      - name: Upload combined dry-run bundle
-        if: steps.release.outputs.publish != 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: CI-Applet-${{ steps.release.outputs.version }}-installers
-          path: artifacts/*
-          if-no-files-found: error
+            ### Downloads
+
+            | Platform | Installer | Notes |
+            |---|---|---|
+            | **macOS (Apple Silicon)** | `.dmg` | Signed with Developer ID and notarized when Apple secrets are configured |
+            | **macOS (Intel)** | `.dmg` | Signed with Developer ID and notarized when Apple secrets are configured |
+            | **Windows (x64)** | `-setup.exe` | Signed with Azure Artifact Signing when Azure signing secrets are configured |
+            | **Linux (x86_64)** | `.deb`, `.AppImage`, Arch package | Checksummed; detached `.asc` signatures are attached when `LINUX_GPG_PRIVATE_KEY` is configured |
+
+            ### Verification
+
+            Download `CI-Applet-${{ needs.release-metadata.outputs.tag }}-SHA256SUMS.txt` and verify with:
+
+            ```bash
+            shasum -a 256 -c CI-Applet-${{ needs.release-metadata.outputs.tag }}-SHA256SUMS.txt
+            ```
