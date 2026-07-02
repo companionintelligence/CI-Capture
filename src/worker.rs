@@ -197,12 +197,15 @@ async fn ingest_capture_to_server(
     let has_endpoint = !config.analysis.endpoint.trim().is_empty();
 
     // `inventoryCapture` doubles as "let the server analyse this": false when we
-    // analysed locally, true to invoke the server's Ollama fallback.
+    // analysed locally, true to invoke the server's Ollama fallback. When we
+    // analysed locally we also set `skipDescription` so CI-Server doesn't
+    // redundantly re-describe the image — we PATCH our own result below.
     let file_id = match server_ingest::ingest_capture(
         config,
         &capture.filename,
         png_bytes,
         !has_endpoint,
+        has_endpoint,
         None,
     )
     .await

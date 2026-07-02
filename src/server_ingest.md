@@ -10,7 +10,7 @@ Wraps the CI-Server upload and unified event-ingest endpoints used after browser
 - **Interacts with**: `worker.rs`.
 
 ### `ingest_capture`
-- **Does**: Uploads a screenshot to CI-Server file upload. Takes `inventory: bool` (sent as `inventoryCapture`) and `model: Option<&str>`. The applet sends `inventory=false`/no model when it analysed locally (its own vision endpoint) so the server skips its Ollama pass; `inventory=true`/no model asks the server to analyse with its default model. Returns the server file id.
+- **Does**: Uploads a screenshot to CI-Server file upload. Takes `inventory: bool` (sent as `inventoryCapture`), `skip_description: bool` (sent as `skipDescription`), and `model: Option<&str>`. When the applet analysed locally it sends `inventory=false`, `skip_description=true`, and no model so the server skips its own Ollama description (the applet writes it via `set_file_metadata`); otherwise `inventory=true`/`skip_description=false` asks the server to analyse and describe with its default model. `skipDescription` is required since CI-Server #1615, where `inventoryCapture=false` no longer suppresses the description. Returns the server file id.
 - **Interacts with**: `AuthCredential` in `server_common.rs` and CI-Server file ingestion.
 
 ### `set_file_metadata`
