@@ -106,12 +106,15 @@ async fn run_worker(
     running_flag: Arc<AtomicBool>,
 ) -> Result<()> {
     let (analysis_tx, mut analysis_rx) = channel::<PendingCapture>(ANALYSIS_QUEUE_CAPACITY);
+    // Live config feed for the analysis loop's storage sweep, so retention
+    // and backlog retry keep working between captures and across reconfigs.
+    let (config_watch_tx, config_watch_rx) = tokio::sync::watch::channel(initial_config.clone());
 
     tokio::spawn(async move {
-        run_analysis_loop(&mut analysis_rx).await;
+        run_analysis_loop(&mut analysis_rx, config_watch_rx).await;
     });
 
-    let mut state = WorkerState::new(initial_config, running_flag, analysis_tx);
+    let mut state = WorkerState::new(initial_config, running_flag, analysis_tx, config_watch_tx);
     state.restart_file_tracker().await;
     let mut interval = build_interval(state.config.capture.screenshot_interval_secs);
 
@@ -145,43 +148,114 @@ async fn run_worker(
     Ok(())
 }
 
-async fn run_analysis_loop(rx: &mut Receiver<PendingCapture>) {
-    let analyzer = VisionAnalyzer::default();
+/// How often the analysis loop sweeps `storage_dir` for retention pruning
+/// and backlog re-upload.
+const STORE_SWEEP_INTERVAL: Duration = Duration::from_secs(5 * 60);
 
-    while let Some(capture) = rx.recv().await {
-        let png_bytes = match capture.image.to_png_bytes() {
-            Ok(b) => b,
-            Err(e) => {
-                log::error!("failed to encode png for analysis: {e:?}");
+async fn run_analysis_loop(
+    rx: &mut Receiver<PendingCapture>,
+    config_watch: tokio::sync::watch::Receiver<AppConfig>,
+) {
+    let analyzer = VisionAnalyzer::default();
+    let mut sweep_tick = time::interval(STORE_SWEEP_INTERVAL);
+    sweep_tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
+
+    loop {
+        tokio::select! {
+            maybe = rx.recv() => {
+                let Some(capture) = maybe else { break };
+                handle_fresh_capture(&analyzer, &capture).await;
+            }
+            _ = sweep_tick.tick() => {
+                let config = config_watch.borrow().clone();
+                sweep_capture_store(&analyzer, &config).await;
+            }
+        }
+    }
+}
+
+async fn handle_fresh_capture(analyzer: &VisionAnalyzer, capture: &PendingCapture) {
+    let png_bytes = match capture.image.to_png_bytes() {
+        Ok(b) => b,
+        Err(e) => {
+            log::error!("failed to encode png for analysis: {e:?}");
+            return;
+        }
+    };
+
+    if server_ingest::is_configured(&capture.config) {
+        ingest_capture_to_server(analyzer, &capture.config, &capture.filename, &png_bytes).await;
+        return;
+    }
+
+    // No CI-Server: fall back to the legacy local path (still needs the
+    // local analysis result).
+    let analysis = match analyzer.analyze(&capture.config.analysis, &png_bytes).await {
+        Ok(result) => result,
+        Err(err) => {
+            log::warn!("vision analysis failed: {err:?}");
+            AnalysisResult::default()
+        }
+    };
+    #[cfg(feature = "legacy-minio")]
+    if let Err(err) = record_capture_legacy(capture, &png_bytes, &analysis).await {
+        log::error!("failed to write legacy capture rows: {err:?}");
+    }
+    #[cfg(not(feature = "legacy-minio"))]
+    {
+        let _ = &analysis;
+        log::warn!(
+            "no CI-Server token configured; screenshot kept on disk under retention (rebuild with --features legacy-minio for the MinIO fallback)"
+        );
+    }
+}
+
+/// One pass over the local screenshot store: prune per the retention policy,
+/// then re-upload the oldest still-unsent frames. A frame on disk is by
+/// definition unacked — successful ingest deletes it — so this is what makes
+/// the screenshot lane durable across outages, auth expiry, dropped analysis
+/// slots, and restarts.
+async fn sweep_capture_store(analyzer: &VisionAnalyzer, config: &AppConfig) {
+    let storage_dir = config.capture.storage_dir.clone();
+    let entries = tokio::task::spawn_blocking(move || crate::capture_store::scan(&storage_dir))
+        .await
+        .unwrap_or_default();
+    if entries.is_empty() {
+        return;
+    }
+
+    let plan = crate::capture_store::plan_sweep(entries, &config.capture, std::time::SystemTime::now());
+
+    for path in &plan.prune {
+        match std::fs::remove_file(path) {
+            Ok(()) => log::info!("retention: pruned {}", path.display()),
+            Err(err) => log::warn!("retention: failed to prune {}: {err}", path.display()),
+        }
+    }
+
+    if !server_ingest::is_configured(config) {
+        return; // nowhere to retry to; retention alone ran
+    }
+
+    for path in &plan.retry {
+        let Some(filename) = path.file_name().and_then(|n| n.to_str()).map(String::from) else {
+            continue;
+        };
+        let read_path = path.clone();
+        let png_bytes = match tokio::task::spawn_blocking(move || std::fs::read(read_path)).await {
+            Ok(Ok(b)) => b,
+            Ok(Err(err)) => {
+                log::warn!("backlog retry: cannot read {}: {err}", path.display());
+                continue;
+            }
+            Err(err) => {
+                log::warn!("backlog retry: read task failed: {err}");
                 continue;
             }
         };
-
-        if server_ingest::is_configured(&capture.config) {
-            ingest_capture_to_server(&analyzer, &capture, &png_bytes).await;
-            continue;
-        }
-
-        // No CI-Server: fall back to the legacy local path (still needs the
-        // local analysis result).
-        let analysis = match analyzer.analyze(&capture.config.analysis, &png_bytes).await {
-            Ok(result) => result,
-            Err(err) => {
-                log::warn!("vision analysis failed: {err:?}");
-                AnalysisResult::default()
-            }
-        };
-        #[cfg(feature = "legacy-minio")]
-        if let Err(err) = record_capture_legacy(&capture, &png_bytes, &analysis).await {
-            log::error!("failed to write legacy capture rows: {err:?}");
-        }
-        #[cfg(not(feature = "legacy-minio"))]
-        {
-            let _ = &analysis;
-            log::warn!(
-                "no CI-Server token configured; screenshot dropped (rebuild with --features legacy-minio for the MinIO fallback)"
-            );
-        }
+        log::info!("backlog retry: re-uploading {filename}");
+        // Same path as a fresh capture — deletes the file on server ack.
+        ingest_capture_to_server(analyzer, config, &filename, &png_bytes).await;
     }
 }
 
@@ -191,10 +265,10 @@ async fn run_analysis_loop(rx: &mut Receiver<PendingCapture>) {
 /// Otherwise it asks CI-Server to analyse the image itself (Ollama fallback).
 async fn ingest_capture_to_server(
     analyzer: &VisionAnalyzer,
-    capture: &PendingCapture,
+    config: &AppConfig,
+    filename: &str,
     png_bytes: &[u8],
 ) {
-    let config = &capture.config;
     let has_endpoint = !config.analysis.endpoint.trim().is_empty();
 
     // `inventoryCapture` doubles as "let the server analyse this": false when we
@@ -203,7 +277,7 @@ async fn ingest_capture_to_server(
     // redundantly re-describe the image — we PATCH our own result below.
     let file_id = match server_ingest::ingest_capture(
         config,
-        &capture.filename,
+        filename,
         png_bytes,
         !has_endpoint,
         has_endpoint,
@@ -213,14 +287,25 @@ async fn ingest_capture_to_server(
     {
         Ok(id) => id,
         Err(err) => {
+            // The PNG stays in storage_dir; the periodic store sweep will
+            // retry it, so a failed upload is deferred — not lost.
             log::error!(
-                "failed to ingest screenshot: {err:?} (file={}, size={:.1} KB)",
-                capture.filename,
+                "failed to ingest screenshot (will retry from disk): {err:?} (file={filename}, size={:.1} KB)",
                 png_bytes.len() as f64 / 1024.0
             );
             return;
         }
     };
+
+    // The server owns the frame now — the local copy's job is done. Removing
+    // it is what keeps storage_dir from becoming an unbounded plaintext
+    // archive of the user's screen.
+    let local_path = config.capture.storage_dir.join(filename);
+    if let Err(err) = std::fs::remove_file(&local_path)
+        && err.kind() != std::io::ErrorKind::NotFound
+    {
+        log::warn!("failed to remove acked screenshot {}: {err}", local_path.display());
+    }
 
     if !has_endpoint {
         return; // Server runs its own analysis.
@@ -268,6 +353,8 @@ struct WorkerState {
     last_capture: Option<CapturedImage>,
     running_flag: Arc<AtomicBool>,
     analysis_tx: Sender<PendingCapture>,
+    /// Feeds config changes to the analysis loop's storage sweep.
+    config_watch: tokio::sync::watch::Sender<AppConfig>,
     vizier_observer: Box<dyn Observer>,
     vizier_previous: Option<Observation>,
     vizier_session_id: Uuid,
@@ -280,6 +367,7 @@ impl WorkerState {
         config: AppConfig,
         running_flag: Arc<AtomicBool>,
         analysis_tx: Sender<PendingCapture>,
+        config_watch: tokio::sync::watch::Sender<AppConfig>,
     ) -> Self {
         let vizier_observer = create_observer(ObserverConfig {
             watch_path: config.vizier.watch_path.clone(),
@@ -293,6 +381,7 @@ impl WorkerState {
             last_capture: None,
             running_flag,
             analysis_tx,
+            config_watch,
             vizier_observer,
             vizier_previous: None,
             vizier_session_id: Uuid::new_v4(),
@@ -357,6 +446,7 @@ impl WorkerState {
                 let previous_all_connections = self.config.vizier.all_connections;
 
                 self.config = config;
+                let _ = self.config_watch.send(self.config.clone());
                 *interval = build_interval(self.config.capture.screenshot_interval_secs);
 
                 if previous_watch_path != self.config.vizier.watch_path
@@ -564,7 +654,9 @@ impl WorkerState {
         };
 
         if let Err(e) = self.analysis_tx.try_send(pending) {
-            log::warn!("analysis queue is full or closed; dropping capture: {e}");
+            // Not lost: the PNG is already saved in storage_dir, and the
+            // analysis loop's periodic sweep re-uploads unsent frames.
+            log::warn!("analysis queue is full or closed; deferring capture to store sweep: {e}");
         }
 
         Ok(true)

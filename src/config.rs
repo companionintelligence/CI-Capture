@@ -83,6 +83,25 @@ pub struct CaptureConfig {
     pub screenshot_interval_secs: u64,
     pub diff_threshold_percent: f32,
     pub storage_dir: PathBuf,
+    /// Prune locally stored screenshots older than this many days, whether or
+    /// not they were uploaded. 0 disables age pruning. Uploaded frames are
+    /// deleted immediately on server ack — this cap bounds the *unsent*
+    /// backlog (and the legacy no-server path) so full-resolution screen
+    /// content never accumulates unbounded on disk.
+    #[serde(default = "default_retention_max_age_days")]
+    pub retention_max_age_days: u64,
+    /// Cap the total size of locally stored screenshots, pruning oldest
+    /// first. 0 disables the size cap.
+    #[serde(default = "default_retention_max_total_mb")]
+    pub retention_max_total_mb: u64,
+}
+
+fn default_retention_max_age_days() -> u64 {
+    14
+}
+
+fn default_retention_max_total_mb() -> u64 {
+    2048
 }
 
 impl Default for CaptureConfig {
@@ -92,6 +111,8 @@ impl Default for CaptureConfig {
             screenshot_interval_secs: 300,
             diff_threshold_percent: 10.0,
             storage_dir: default_dir,
+            retention_max_age_days: default_retention_max_age_days(),
+            retention_max_total_mb: default_retention_max_total_mb(),
         }
     }
 }

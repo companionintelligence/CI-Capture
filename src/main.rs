@@ -1,5 +1,6 @@
 mod analysis;
 mod capture;
+mod capture_store;
 mod config;
 mod connection_test;
 mod conversion;
