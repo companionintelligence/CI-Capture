@@ -131,8 +131,9 @@ pub struct FileEventContent {
 
 /// Ship a single file-activity event to CI-Server.
 ///
-/// File events use CI-Server's unified capture ingest endpoint (`/api/v1/events`)
-/// with converted Markdown carried in the event payload.
+/// File events use CI-Server's unified capture ingest endpoint (canonical
+/// `POST /v1/events`, with `/api/v1/events` as a compatibility fallback) with
+/// converted Markdown carried in the event payload.
 pub async fn ingest_file_event(
     config: &AppConfig,
     device_id: Uuid,

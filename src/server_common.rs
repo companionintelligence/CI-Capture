@@ -57,8 +57,16 @@ pub fn upload_urls(portal_url: &str) -> Result<Vec<Url>> {
     api_endpoint_urls(portal_url, "/api/files/upload")
 }
 
+/// Candidate URLs for the unified capture-ingest endpoint.
+///
+/// CI-Server's canonical route is the bare `POST /v1/events` (no `/api` prefix),
+/// per `docs/architecture/event-ingest-spec.md` — the same path the browser
+/// extension posts to. We probe that first and keep the legacy `/api/v1/events`
+/// only as a compatibility fallback for older/proxied deployments, so a modern
+/// CI-Server no longer eats a wasted 404 round-trip on every event. (File upload
+/// stays at `/api/files/upload`; only the events route reconciles to bare.)
 pub fn events_urls(portal_url: &str) -> Result<Vec<Url>> {
-    api_endpoint_urls(portal_url, "/api/v1/events")
+    api_endpoint_urls_ordered(portal_url, "/v1/events", &["/v1/events", "/api/v1/events"])
 }
 
 pub fn devices_urls(portal_url: &str) -> Result<Vec<Url>> {
@@ -71,7 +79,25 @@ pub fn files_urls(portal_url: &str, file_id: &str) -> Result<Vec<Url>> {
     api_endpoint_urls(portal_url, &format!("/api/files/{file_id}"))
 }
 
+/// Build endpoint candidates for a `/api`-prefixed path, probing the prefixed
+/// form first and the bare form second (the historical default for upload,
+/// graphql, devices, and file-metadata routes).
 pub fn api_endpoint_urls(portal_url: &str, prefixed_path: &str) -> Result<Vec<Url>> {
+    let bare_path = prefixed_path.strip_prefix("/api").unwrap_or(prefixed_path);
+    api_endpoint_urls_ordered(portal_url, bare_path, &[prefixed_path, bare_path])
+}
+
+/// Build endpoint candidates from an explicit, ordered candidate list so callers
+/// can decide whether the bare or the `/api`-prefixed form is canonical.
+///
+/// When the portal URL carries its own base path (e.g. `https://host/custom/`),
+/// there is a single unambiguous mount point, so we join `bare_when_based` onto
+/// it and ignore the prefixed/bare probing entirely — matching prior behavior.
+fn api_endpoint_urls_ordered(
+    portal_url: &str,
+    bare_when_based: &str,
+    candidates: &[&str],
+) -> Result<Vec<Url>> {
     let parsed =
         Url::parse(portal_url).with_context(|| format!("parsing portal URL {portal_url}"))?;
     let host = parsed
@@ -89,16 +115,17 @@ pub fn api_endpoint_urls(portal_url: &str, prefixed_path: &str) -> Result<Vec<Ur
         base.push_str(trimmed_path);
         base.push('/');
         let base = Url::parse(&base).context("building CI-Server base URL")?;
-        let bare = prefixed_path.strip_prefix("/api/").unwrap_or(prefixed_path);
-        return Ok(vec![base.join(bare.trim_start_matches('/')).with_context(
-            || format!("building CI-Server endpoint URL for {bare}"),
-        )?]);
+        return Ok(vec![
+            base.join(bare_when_based.trim_start_matches('/'))
+                .with_context(|| {
+                    format!("building CI-Server endpoint URL for {bare_when_based}")
+                })?,
+        ]);
     }
 
     let origin = Url::parse(&base).context("building CI-Server origin URL")?;
-    let bare_path = prefixed_path.strip_prefix("/api").unwrap_or(prefixed_path);
     let mut urls = Vec::new();
-    for path in [prefixed_path, bare_path] {
+    for path in candidates {
         let url = origin
             .join(path)
             .with_context(|| format!("building CI-Server endpoint URL for {path}"))?;
@@ -192,12 +219,15 @@ mod tests {
             "https://server.example.com/files/upload"
         );
 
+        // Events reconcile to the canonical bare `/v1/events` first (CI-Server's
+        // real route, matching the browser extension), with `/api/v1/events`
+        // kept only as a compatibility fallback.
         let events = events_urls("http://192.168.1.20:62345").unwrap();
+        assert_eq!(events[0].as_str(), "http://192.168.1.20:62345/v1/events");
         assert_eq!(
-            events[0].as_str(),
+            events[1].as_str(),
             "http://192.168.1.20:62345/api/v1/events"
         );
-        assert_eq!(events[1].as_str(), "http://192.168.1.20:62345/v1/events");
 
         let graphql = graphql_urls("http://localhost:62345").unwrap();
         assert_eq!(graphql[0].as_str(), "http://localhost:62345/api/graphql");

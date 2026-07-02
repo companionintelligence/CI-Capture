@@ -23,15 +23,15 @@ Wraps the CI-Server upload and unified event-ingest endpoints used after browser
 
 ### `post_capture_event`
 - **Does**: Authenticates and posts one capture event, treating server-side rejections as errors.
-- **Interacts with**: `AuthCredential`, `server.portal_url`, and CI-Server `/api/v1/events`.
+- **Interacts with**: `AuthCredential`, `server.portal_url`, and CI-Server `/v1/events` (canonical; `/api/v1/events` fallback).
 
 ## Contracts
 
 | Dependent | Expects | Breaking changes |
 |-----------|---------|------------------|
 | `worker.rs` | Credential presence alone is enough to choose server ingest | Requiring local Postgres/MinIO credentials for server mode |
-| CI-Server `/api/v1/events` | Events use `source_system`, `source_id`, `kind`, timestamps, and JSON payload | Removing unified capture ingest or changing auth headers |
+| CI-Server `/v1/events` | Events use `source_system`, `source_id`, `kind`, timestamps, and JSON payload | Removing unified capture ingest or changing auth headers |
 
 ## Notes
 - `AuthCredential` sends JWT/OIDC tokens as bearer auth and 64-character CI-Server API keys as `x-api-key`.
-- Endpoint candidates from `server_common` allow either `/api/...` or bare API routes.
+- Endpoint candidates from `server_common` allow either `/api/...` or bare API routes. The events lane probes the canonical bare `/v1/events` first (matching CI-Server's route and the browser extension) and keeps `/api/v1/events` only as a compatibility fallback; file upload stays at `/api/files/upload`.
