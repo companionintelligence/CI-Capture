@@ -174,11 +174,44 @@ pub async fn ingest_file_event(
             occurred_at: event.occurred_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
             observed_at: Some(event.observed_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)),
             title: path,
-            description: Some(format!("{:?}", event.event_type)),
+            description: Some(file_event_description(event.event_type, content)),
             payload,
         },
     )
     .await
+}
+
+/// Cap on extracted content carried in the event `description`. The indexer
+/// embeds the first chunk of the field; the full markdown still rides in the
+/// payload for storage.
+const DESCRIPTION_CONTENT_BYTES: usize = 4 * 1024;
+
+/// Build the event `description`: the event type, then the extracted Markdown.
+///
+/// CI-Server's search indexer embeds/tsvectors only top-level fields
+/// (`title`, `description`, …) — anything in `payload`/`metadata` is stored
+/// but invisible to recall. Carrying the content here is what makes the file
+/// *body* retrievable by the companion, not just the fact that a path changed.
+fn file_event_description(
+    event_type: crate::watcher::types::EventType,
+    content: &FileEventContent,
+) -> String {
+    let mut description = format!("{event_type:?}");
+    if let Some(markdown) = content.markdown.as_deref() {
+        let trimmed = markdown.trim();
+        if !trimmed.is_empty() {
+            let mut end = trimmed.len().min(DESCRIPTION_CONTENT_BYTES);
+            while !trimmed.is_char_boundary(end) {
+                end -= 1;
+            }
+            description.push_str("\n\n");
+            description.push_str(&trimmed[..end]);
+            if end < trimmed.len() {
+                description.push_str("\n…[truncated]");
+            }
+        }
+    }
+    description
 }
 
 pub async fn ingest_vizier_event(
@@ -367,4 +400,48 @@ fn should_try_next_endpoint(status: StatusCode) -> bool {
         status,
         StatusCode::NOT_FOUND | StatusCode::METHOD_NOT_ALLOWED
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::watcher::types::EventType;
+
+    fn content(markdown: Option<&str>) -> FileEventContent {
+        FileEventContent {
+            markdown: markdown.map(|s| s.to_string()),
+            ..FileEventContent::default()
+        }
+    }
+
+    #[test]
+    fn description_is_event_type_when_no_content() {
+        let d = file_event_description(EventType::FileModified, &content(None));
+        assert_eq!(d, "FileModified");
+        let d = file_event_description(EventType::FileDeleted, &content(Some("   ")));
+        assert_eq!(d, "FileDeleted");
+    }
+
+    #[test]
+    fn description_carries_extracted_markdown() {
+        let d = file_event_description(
+            EventType::FileModified,
+            &content(Some("# Notes\n\nremember the quarterly plan")),
+        );
+        assert!(d.starts_with("FileModified\n\n# Notes"));
+        assert!(d.contains("remember the quarterly plan"));
+        assert!(!d.contains("[truncated]"));
+    }
+
+    #[test]
+    fn description_truncates_at_cap_on_char_boundary() {
+        // Multibyte char straddling the cap must not split a UTF-8 sequence.
+        let body = "é".repeat(DESCRIPTION_CONTENT_BYTES); // 2 bytes each
+        let d = file_event_description(EventType::FileCreated, &content(Some(&body)));
+        assert!(d.ends_with("…[truncated]"));
+        assert!(d.len() <= "FileCreated\n\n".len() + DESCRIPTION_CONTENT_BYTES + "\n…[truncated]".len());
+        // Must still be valid UTF-8 end to end (String guarantees it; also
+        // check we kept at least most of the budget rather than over-trimming).
+        assert!(d.len() > DESCRIPTION_CONTENT_BYTES / 2);
+    }
 }
