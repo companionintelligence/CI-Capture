@@ -392,8 +392,15 @@ impl SettingsApp {
         } else if previous_user_id.as_deref() != Some(self.form.user_id.trim()) {
             updated.identity.device_id = None;
         }
-        // Changing the server credential invalidates any stored OIDC session.
-        if previous_auth_token != updated.server.applet_auth_token {
+        // A *user-initiated* credential change (API-key mode) invalidates any
+        // stored OIDC session. In OIDC mode the token is the id_token managed
+        // by the login/refresh flow — build_config re-read it (and the
+        // session) from disk, so a background rotation that landed while this
+        // window was open must NOT be mistaken for a credential change and
+        // wipe the session (which would permanently disarm the refresh loop).
+        if self.form.auth_mode == AuthMode::ApiKey
+            && previous_auth_token != updated.server.applet_auth_token
+        {
             updated.oidc_session = None;
         }
 

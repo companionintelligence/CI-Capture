@@ -335,36 +335,40 @@ async fn ingest_capture_to_server(
         }
     };
 
-    // The server owns the frame now — the local copy's job is done. Removing
-    // it is what keeps storage_dir from becoming an unbounded plaintext
-    // archive of the user's screen.
+    // When we analysed locally, CI-Server was told to skip its own
+    // description, so we MUST land ours before discarding the local copy —
+    // otherwise a failed metadata PATCH would orphan a description-less,
+    // recall-invisible frame with no local copy to retry from. If the PATCH
+    // fails we keep the PNG: the store sweep re-uploads it, and CI-Server's
+    // content-hash dedup returns the SAME file id, so the retry repairs this
+    // very frame rather than duplicating it.
+    if let Some(analysis) = &local_analysis {
+        let title = analysis
+            .primary_application
+            .clone()
+            .or_else(|| analysis.activity_category.clone())
+            .unwrap_or_else(|| "Screen capture".to_string());
+        let description = analysis.activity_summary.clone();
+
+        if let Err(err) =
+            server_ingest::set_file_metadata(config, &file_id, Some(&title), description.as_deref())
+                .await
+        {
+            log::warn!(
+                "failed to set file metadata for {file_id}; keeping local copy for retry: {err:?}"
+            );
+            return; // leave the PNG on disk for the sweep to re-drive
+        }
+    }
+
+    // The description is durable on the server (or CI-Server is describing the
+    // frame itself) — the local copy's job is done. Removing it keeps
+    // storage_dir from becoming an unbounded plaintext archive of the screen.
     let local_path = config.capture.storage_dir.join(filename);
     if let Err(err) = std::fs::remove_file(&local_path)
         && err.kind() != std::io::ErrorKind::NotFound
     {
         log::warn!("failed to remove acked screenshot {}: {err}", local_path.display());
-    }
-
-    let Some(analysis) = local_analysis else {
-        return; // no local result — CI-Server is describing this frame itself
-    };
-
-    let title = analysis
-        .primary_application
-        .clone()
-        .or_else(|| analysis.activity_category.clone())
-        .unwrap_or_else(|| "Screen capture".to_string());
-    let description = analysis.activity_summary.clone();
-
-    if let Err(err) = server_ingest::set_file_metadata(
-        config,
-        &file_id,
-        Some(&title),
-        description.as_deref(),
-    )
-    .await
-    {
-        log::warn!("failed to set file metadata for {file_id}: {err:?}");
     }
 }
 
@@ -559,6 +563,19 @@ impl WorkerState {
             self.config.identity.device_id,
         ) {
             (Some(user), Some(device)) => (user, device),
+            // OIDC sign-in completed but the deferred device registration
+            // hasn't landed yet — skip rather than emit nil-attributed events
+            // every tick during that window; the refresh loop registers the
+            // device and the next tick sends properly.
+            _ if self.config.oidc_session.is_some()
+                && self.config.identity.device_id.is_none() =>
+            {
+                log::debug!("vizier: awaiting device registration; skipping tick");
+                return Ok(());
+            }
+            // API-key installs may legitimately have no local device id (the
+            // server attributes by credential) — fall back rather than starve
+            // the activity lane.
             _ if server_configured => (
                 self.config.identity.user_id.unwrap_or_else(Uuid::nil),
                 self.config.identity.device_id.unwrap_or_else(Uuid::nil),
