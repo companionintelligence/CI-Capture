@@ -72,7 +72,7 @@ impl Default for AnalysisConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct IdentityConfig {
     pub user_id: Option<Uuid>,
     pub device_id: Option<Uuid>,
@@ -83,6 +83,25 @@ pub struct CaptureConfig {
     pub screenshot_interval_secs: u64,
     pub diff_threshold_percent: f32,
     pub storage_dir: PathBuf,
+    /// Prune locally stored screenshots older than this many days, whether or
+    /// not they were uploaded. 0 disables age pruning. Uploaded frames are
+    /// deleted immediately on server ack — this cap bounds the *unsent*
+    /// backlog (and the legacy no-server path) so full-resolution screen
+    /// content never accumulates unbounded on disk.
+    #[serde(default = "default_retention_max_age_days")]
+    pub retention_max_age_days: u64,
+    /// Cap the total size of locally stored screenshots, pruning oldest
+    /// first. 0 disables the size cap.
+    #[serde(default = "default_retention_max_total_mb")]
+    pub retention_max_total_mb: u64,
+}
+
+fn default_retention_max_age_days() -> u64 {
+    14
+}
+
+fn default_retention_max_total_mb() -> u64 {
+    2048
 }
 
 impl Default for CaptureConfig {
@@ -92,6 +111,8 @@ impl Default for CaptureConfig {
             screenshot_interval_secs: 300,
             diff_threshold_percent: 10.0,
             storage_dir: default_dir,
+            retention_max_age_days: default_retention_max_age_days(),
+            retention_max_total_mb: default_retention_max_total_mb(),
         }
     }
 }
@@ -119,7 +140,7 @@ impl Default for VizierConfig {
 ///
 /// Capture is **off until `watched_paths` is non-empty** — the applet never
 /// watches anything the user didn't explicitly add.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct FileTrackerConfig {
     pub enabled: bool,
     /// Folders to watch recursively. Empty = lane is a no-op.
@@ -171,7 +192,7 @@ pub struct AppConfig {
 
 /// OpenID Connect client config for portal sign-in (Authorization Code +
 /// PKCE). Discovery-driven, so only the issuer + client id usually change.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct OidcConfig {
     /// Issuer base; the applet fetches `<issuer>/.well-known/openid-configuration`.
     pub issuer: String,
@@ -196,7 +217,7 @@ impl Default for OidcConfig {
 }
 
 /// Tokens + identity from the last portal sign-in.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct OidcSession {
     pub id_token: Option<String>,
     pub access_token: Option<String>,
@@ -207,7 +228,7 @@ pub struct OidcSession {
     pub name: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ServerConfig {
     pub portal_url: String,
     #[serde(default)]
@@ -253,14 +274,25 @@ impl ConfigManager {
         }
     }
 
+    /// Atomic save: write to a sibling temp file, then rename over
+    /// `config.json`. Three writers share this file (tray process, settings
+    /// child process, token-refresh thread) — the rename guarantees a reader
+    /// never sees torn JSON, whichever writer lands last.
     pub fn save(&self, config: &AppConfig) -> Result<()> {
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent)
                 .with_context(|| format!("creating config dir {}", parent.display()))?;
         }
         let serialized = serde_json::to_string_pretty(config)?;
-        fs::write(&self.path, serialized)
-            .with_context(|| format!("writing config to {}", self.path.display()))?;
+        let tmp = self
+            .path
+            .with_extension(format!("json.tmp.{}", std::process::id()));
+        fs::write(&tmp, serialized)
+            .with_context(|| format!("writing config temp file {}", tmp.display()))?;
+        fs::rename(&tmp, &self.path).with_context(|| {
+            let _ = fs::remove_file(&tmp);
+            format!("committing config to {}", self.path.display())
+        })?;
         Ok(())
     }
 }

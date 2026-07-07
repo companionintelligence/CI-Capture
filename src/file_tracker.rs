@@ -20,6 +20,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
+use chrono::Utc;
 use tokio::time::{Duration, interval};
 use uuid::Uuid;
 
@@ -34,17 +35,25 @@ use crate::watcher::{self, WatcherConfig, ignore};
 /// How often the lane attempts to drain the queue to CI-Server.
 const SYNC_INTERVAL: Duration = Duration::from_secs(5);
 
-/// After this many failed delivery attempts, an event is dropped to the
-/// dead-letter log instead of being retried forever. Without this, a single
-/// poison event (one the server permanently rejects) would sit at the head
-/// of the FIFO queue and block every newer event behind it.
-const MAX_ATTEMPTS: u32 = 50;
+/// After failing continuously for this long, an event is *parked* in the
+/// queue's persisted dead-letter table so it can't block the FIFO head
+/// forever. Parking is a liveness valve, not a drop: transient failures
+/// (outages, 5xx, expired auth) otherwise retry indefinitely, permanently
+/// rejected events (4xx) park immediately, and parked events stay on disk.
+const PARK_AFTER: Duration = crate::sync::batching::DEAD_LETTER_AFTER;
 
 /// Upper bound on wall-clock spent POSTing in one sync tick. Keeps a slow
 /// server from monopolizing the lane's single task (which also drains the
 /// watcher) for minutes at a time — leftover events stay queued and resume
 /// next tick.
 const TICK_BUDGET: Duration = Duration::from_secs(20);
+
+/// Cap on events parked per sync tick. Parking is meant for the rare poison
+/// event; a *systemic* 4xx (server-side schema change rejecting everything)
+/// must not flush the whole queue into dead_letters in seconds. Hitting the
+/// cap ends the tick and backs off like an outage, giving the operator time
+/// to notice before more events park.
+const MAX_PARKS_PER_TICK: usize = 5;
 
 /// True if the lane has everything it needs to run: enabled, an identity to
 /// attribute events to, a place to send them, and at least one folder.
@@ -87,9 +96,10 @@ pub async fn run(config: AppConfig, queue_path: PathBuf) -> Result<()> {
     let mut sync_tick = interval(SYNC_INTERVAL);
 
     log::info!(
-        "file tracker running: {} folder(s), queue depth {}",
+        "file tracker running: {} folder(s), queue depth {}, {} parked dead-letter(s)",
         config.file_tracker.watched_paths.len(),
-        queue.depth().unwrap_or(0)
+        queue.depth().unwrap_or(0),
+        queue.dead_letter_count().unwrap_or(0)
     );
 
     loop {
@@ -134,6 +144,7 @@ pub async fn run(config: AppConfig, queue_path: PathBuf) -> Result<()> {
 
                 let tick_start = Instant::now();
                 let mut failed = false;
+                let mut parked = 0usize;
                 for queued in pending {
                     // Don't let one slow batch monopolize the task; the rest
                     // stay queued (still ready) and resume next tick.
@@ -157,17 +168,52 @@ pub async fn run(config: AppConfig, queue_path: PathBuf) -> Result<()> {
                                 log::error!("failed to ack synced event: {err:?}");
                             }
                         }
-                        Err(err) => {
-                            let attempts = queued.attempts + 1;
-                            if attempts >= MAX_ATTEMPTS {
-                                // Dead-letter: drop the poison event so it
-                                // can't block the queue forever. Keep going —
-                                // this is a per-event problem, not an outage.
+                        Err(err) if err.permanent => {
+                            // The server rejected this payload — retrying the
+                            // same bytes can never succeed. Park it (persisted,
+                            // recoverable) and keep going: this is a per-event
+                            // problem, not an outage, so no backoff — unless
+                            // parks pile up this tick, which smells systemic.
+                            log::error!(
+                                "parking permanently rejected event {}: {err}",
+                                describe(&queued.event)
+                            );
+                            if let Err(park_err) =
+                                queue.dead_letter(&queued.event_id, &err.to_string())
+                            {
+                                log::error!("failed to park rejected event: {park_err:?}");
+                            }
+                            parked += 1;
+                            if parked >= MAX_PARKS_PER_TICK {
                                 log::error!(
-                                    "dead-letter: dropping {} after {attempts} attempts; last error: {err}",
-                                    describe(&queued.event)
+                                    "{parked} events parked in one tick — treating as systemic rejection, backing off"
                                 );
-                                let _ = queue.ack(&queued.event_id);
+                                failed = true;
+                                break;
+                            }
+                        }
+                        Err(err) => {
+                            // Transient (outage, 5xx, expired auth): retry
+                            // forever with backoff — an offline weekend must
+                            // not cost data. The one exception is liveness: an
+                            // event that has been failing continuously for
+                            // PARK_AFTER gets parked so it can't pin the FIFO
+                            // head indefinitely.
+                            let attempts = queued.attempts + 1;
+                            let blocking_since = queued.first_failed_at.map(|t| Utc::now() - t);
+                            if let Some(elapsed) = blocking_since
+                                && elapsed.to_std().unwrap_or_default() >= PARK_AFTER
+                            {
+                                log::error!(
+                                    "parking {} after {attempts} attempts over {}h (head-of-queue liveness): {err}",
+                                    describe(&queued.event),
+                                    elapsed.num_hours()
+                                );
+                                if let Err(park_err) =
+                                    queue.dead_letter(&queued.event_id, &err.to_string())
+                                {
+                                    log::error!("failed to park stuck event: {park_err:?}");
+                                }
                                 continue;
                             }
                             failed = true;
@@ -179,7 +225,10 @@ pub async fn run(config: AppConfig, queue_path: PathBuf) -> Result<()> {
                     }
                 }
 
-                if failed {
+                if failed || parked > 0 {
+                    // Parks are server rejections too — a tick that parked
+                    // must not read as success (which would grow the batch
+                    // and reset backoff against a rejecting server).
                     batch.record_failure();
                     backoff_until = Some(Instant::now() + batch.backoff());
                 } else {
@@ -318,5 +367,215 @@ mod tests {
     #[test]
     fn short_string_is_untouched() {
         assert_eq!(truncate_on_char_boundary("hi", 100), "hi");
+    }
+}
+
+/// End-to-end tests: the real lane (watcher → queue → extract → classify →
+/// POST → ack/park) against a scripted in-process mock CI-Server. This is
+/// the closest CI can get to the live-server round-trip without credentials.
+#[cfg(test)]
+mod e2e {
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::net::TcpListener;
+    use std::sync::{Arc, Mutex};
+
+    use super::*;
+
+    /// One recorded request: (path, x-api-key header value, body).
+    type Recorded = (String, Option<String>, String);
+
+    /// Minimal HTTP/1.1 responder. Each incoming request pops the next
+    /// scripted status (default 200). 200s answer with a valid
+    /// `/v1/events` ingest body; 4xx/5xx answer with that status.
+    fn spawn_mock_server(
+        script: Vec<u16>,
+    ) -> (String, Arc<Mutex<Vec<Recorded>>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let recorded: Arc<Mutex<Vec<Recorded>>> = Arc::default();
+        let script = Arc::new(Mutex::new(script));
+        let rec = recorded.clone();
+
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let mut reader = BufReader::new(stream);
+                let mut request_line = String::new();
+                if reader.read_line(&mut request_line).is_err() {
+                    continue;
+                }
+                let path = request_line.split_whitespace().nth(1).unwrap_or("").to_string();
+
+                let mut content_length = 0usize;
+                let mut api_key = None;
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).is_err() || line.trim().is_empty() {
+                        break;
+                    }
+                    let lower = line.to_ascii_lowercase();
+                    if let Some(v) = lower.strip_prefix("content-length:") {
+                        content_length = v.trim().parse().unwrap_or(0);
+                    }
+                    if let Some(v) = line
+                        .split_once(':')
+                        .filter(|(k, _)| k.eq_ignore_ascii_case("x-api-key"))
+                        .map(|(_, v)| v.trim().to_string())
+                    {
+                        api_key = Some(v);
+                    }
+                }
+                let mut body = vec![0u8; content_length];
+                let _ = reader.read_exact(&mut body);
+                let body = String::from_utf8_lossy(&body).to_string();
+                rec.lock().unwrap().push((path, api_key, body));
+
+                let status = {
+                    let mut s = script.lock().unwrap();
+                    if s.is_empty() { 200 } else { s.remove(0) }
+                };
+                let response = if status == 200 {
+                    let payload = r#"{"ingested":1,"duplicate":0,"rejected":[]}"#;
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
+                        payload.len(),
+                        payload
+                    )
+                } else {
+                    format!(
+                        "HTTP/1.1 {status} X\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
+                    )
+                };
+                let _ = reader.into_inner().write_all(response.as_bytes());
+            }
+        });
+
+        (origin, recorded)
+    }
+
+    /// A watched-folder tempdir the ignore rules can't drop. The system temp
+    /// dir is unusable here: on Windows it lives under `AppData/Local/Temp`,
+    /// which DEFAULT_IGNORES (correctly) filters — so events from a
+    /// `tempfile::tempdir()` watch never surface and the lane starves. The
+    /// repo root matches no default or sensitive glob.
+    fn watchable_tempdir() -> tempfile::TempDir {
+        tempfile::Builder::new()
+            .prefix("ci-applet-e2e-")
+            .tempdir_in(env!("CARGO_MANIFEST_DIR"))
+            .unwrap()
+    }
+
+    fn lane_config(origin: &str, watched: PathBuf) -> AppConfig {
+        let mut config = AppConfig::default();
+        config.server.portal_url = origin.to_string();
+        // 64 lowercase hex → classified as an x-api-key credential.
+        config.server.applet_auth_token = Some("ab".repeat(32));
+        config.file_tracker.watched_paths = vec![watched];
+        config.file_tracker.send_content = true;
+        config
+    }
+
+    async fn wait_until(timeout: Duration, mut done: impl FnMut() -> bool) -> bool {
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            if done() {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        false
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn file_edit_reaches_server_with_content_and_api_key_and_drains_queue() {
+        let (origin, recorded) = spawn_mock_server(vec![]);
+        let dir = watchable_tempdir();
+        let watched = dir.path().join("watched");
+        std::fs::create_dir_all(&watched).unwrap();
+        let queue_path = dir.path().join("queue.db");
+
+        let config = lane_config(&origin, watched.clone());
+        let lane = tokio::spawn(run(config, queue_path.clone()));
+
+        // Give the watcher a beat to arm, then edit a file.
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        std::fs::write(watched.join("notes.md"), "# Plan\n\nremember the tailscale rollout").unwrap();
+
+        let got_event = wait_until(Duration::from_secs(30), || {
+            recorded
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(_, _, body)| body.contains("file_event"))
+        })
+        .await;
+        lane.abort();
+        assert!(got_event, "file event never reached the mock server");
+
+        let requests = recorded.lock().unwrap();
+        let (path, api_key, body) = requests
+            .iter()
+            .find(|(_, _, b)| b.contains("file_event"))
+            .unwrap();
+        assert!(path.contains("/v1/events"), "unexpected ingest path {path}");
+        assert_eq!(
+            api_key.as_deref(),
+            Some("ab".repeat(32).as_str()),
+            "credential must ride x-api-key"
+        );
+        // The recall quick win: extracted content in the description field.
+        assert!(
+            body.contains("remember the tailscale rollout"),
+            "description must carry extracted markdown"
+        );
+
+        // Ack drained the durable queue.
+        let queue = Queue::open(&queue_path).unwrap();
+        assert_eq!(queue.depth().unwrap(), 0, "acked event must leave the queue");
+        assert_eq!(queue.dead_letter_count().unwrap(), 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn rejected_event_is_parked_while_outage_event_is_retried() {
+        // Script: first POST → 400 (permanent), second → 500 (transient),
+        // third → 200. One file edit per phase.
+        let (origin, recorded) = spawn_mock_server(vec![400, 500, 200]);
+        let dir = watchable_tempdir();
+        let watched = dir.path().join("watched");
+        std::fs::create_dir_all(&watched).unwrap();
+        let queue_path = dir.path().join("queue.db");
+
+        let config = lane_config(&origin, watched.clone());
+        let lane = tokio::spawn(run(config, queue_path.clone()));
+
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        std::fs::write(watched.join("poison.md"), "rejected payload").unwrap();
+
+        // 400 → parked in dead_letters, not retried, not lost.
+        let parked = wait_until(Duration::from_secs(30), || {
+            Queue::open(&queue_path)
+                .map(|q| q.dead_letter_count().unwrap_or(0) == 1)
+                .unwrap_or(false)
+        })
+        .await;
+        assert!(parked, "permanently rejected event was not parked");
+
+        // Next edit: first attempt hits the scripted 500 (transient), the
+        // retry hits 200 — the event must survive the outage and drain.
+        std::fs::write(watched.join("survivor.md"), "survives the outage").unwrap();
+        let drained = wait_until(Duration::from_secs(45), || {
+            recorded
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(_, _, b)| b.contains("survives the outage"))
+                && Queue::open(&queue_path).map(|q| q.depth().unwrap_or(99) == 0).unwrap_or(false)
+        })
+        .await;
+        lane.abort();
+        assert!(drained, "transient failure must retry to success, not drop");
+
+        // The poison event is still recoverable on disk.
+        let queue = Queue::open(&queue_path).unwrap();
+        assert_eq!(queue.dead_letter_count().unwrap(), 1);
     }
 }

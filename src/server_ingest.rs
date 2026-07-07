@@ -45,6 +45,67 @@ struct UploadResponse {
     id: String,
 }
 
+/// An event-ingest failure, classified for the retry-vs-dead-letter decision.
+///
+/// `permanent = true` means the server rejected *this event's payload*
+/// (validation 4xx or an explicit per-event rejection) — retrying the same
+/// bytes can never succeed, so the caller should park it. Everything that can
+/// heal without changing the event is transient: transport errors, timeouts,
+/// 5xx, missing routes (server too old), and auth failures (401/403 — the
+/// token refresh loop fixes those; the event is not at fault).
+#[derive(Debug)]
+pub struct IngestError {
+    pub permanent: bool,
+    message: String,
+}
+
+impl IngestError {
+    fn permanent(message: impl Into<String>) -> Self {
+        Self {
+            permanent: true,
+            message: message.into(),
+        }
+    }
+
+    fn transient(message: impl Into<String>) -> Self {
+        Self {
+            permanent: false,
+            message: message.into(),
+        }
+    }
+
+    /// Classify an HTTP error status. Permanent is an **allowlist** of
+    /// statuses that unambiguously indict the payload itself — every other
+    /// status (auth, routing, proxy/env 4xx like 407/421/425, rate limits,
+    /// 5xx) is transient, because retrying can't lose data (the 24 h parking
+    /// valve still bounds head-of-queue liveness) but a wrong "permanent"
+    /// verdict parks an event that would have gone through.
+    fn from_status(status: StatusCode, body: &str, url: &reqwest::Url) -> Self {
+        let message = format!("event ingest to {url} failed with HTTP {status}: {body}");
+        let permanent = matches!(
+            status,
+            StatusCode::BAD_REQUEST                     // validation rejection
+                | StatusCode::PAYLOAD_TOO_LARGE         // this payload will never fit
+                | StatusCode::UNSUPPORTED_MEDIA_TYPE
+                | StatusCode::UNPROCESSABLE_ENTITY      // schema rejection
+        );
+        Self { permanent, message }
+    }
+}
+
+impl std::fmt::Display for IngestError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} ({})",
+            self.message,
+            if self.permanent { "permanent" } else { "transient" }
+        )
+    }
+}
+
+impl std::error::Error for IngestError {}
+
 // ── Public API ─────────────────────────────────────────────────────────────────
 
 pub fn is_configured(config: &AppConfig) -> bool {
@@ -145,7 +206,7 @@ pub async fn ingest_file_event(
     session_id: Uuid,
     event: &crate::watcher::types::NormalizedEvent,
     content: &FileEventContent,
-) -> Result<()> {
+) -> Result<(), IngestError> {
     let path = event
         .new_path
         .as_ref()
@@ -174,11 +235,44 @@ pub async fn ingest_file_event(
             occurred_at: event.occurred_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
             observed_at: Some(event.observed_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)),
             title: path,
-            description: Some(format!("{:?}", event.event_type)),
+            description: Some(file_event_description(event.event_type, content)),
             payload,
         },
     )
     .await
+}
+
+/// Cap on extracted content carried in the event `description`. The indexer
+/// embeds the first chunk of the field; the full markdown still rides in the
+/// payload for storage.
+const DESCRIPTION_CONTENT_BYTES: usize = 4 * 1024;
+
+/// Build the event `description`: the event type, then the extracted Markdown.
+///
+/// CI-Server's search indexer embeds/tsvectors only top-level fields
+/// (`title`, `description`, …) — anything in `payload`/`metadata` is stored
+/// but invisible to recall. Carrying the content here is what makes the file
+/// *body* retrievable by the companion, not just the fact that a path changed.
+fn file_event_description(
+    event_type: crate::watcher::types::EventType,
+    content: &FileEventContent,
+) -> String {
+    let mut description = format!("{event_type:?}");
+    if let Some(markdown) = content.markdown.as_deref() {
+        let trimmed = markdown.trim();
+        if !trimmed.is_empty() {
+            let mut end = trimmed.len().min(DESCRIPTION_CONTENT_BYTES);
+            while !trimmed.is_char_boundary(end) {
+                end -= 1;
+            }
+            description.push_str("\n\n");
+            description.push_str(&trimmed[..end]);
+            if end < trimmed.len() {
+                description.push_str("\n…[truncated]");
+            }
+        }
+    }
+    description
 }
 
 pub async fn ingest_vizier_event(
@@ -218,52 +312,67 @@ pub async fn ingest_vizier_event(
         },
     )
     .await
+    // The vizier lane is fire-and-forget (no durable queue), so the
+    // permanent/transient distinction has no consumer — flatten to anyhow.
+    .map_err(anyhow::Error::from)
 }
 
 // ── Internal ──────────────────────────────────────────────────────────────────
 
-async fn post_capture_event(config: &AppConfig, event: CaptureEvent) -> Result<()> {
-    let credential = AuthCredential::from_config(config)?;
+async fn post_capture_event(config: &AppConfig, event: CaptureEvent) -> Result<(), IngestError> {
+    // Setup failures (no credential, bad portal URL) are config problems, not
+    // event problems — always transient.
+    let credential =
+        AuthCredential::from_config(config).map_err(|e| IngestError::transient(e.to_string()))?;
     let client = Client::builder()
         .use_rustls_tls()
         .timeout(std::time::Duration::from_secs(30))
         .build()
-        .context("building event ingest client")?;
+        .map_err(|e| IngestError::transient(format!("building event ingest client: {e}")))?;
     let request = IngestEventsRequest {
         events: vec![event],
     };
 
     let mut last_error = None;
-    for url in events_urls(&config.server.portal_url)? {
-        let response = credential
-            .apply(client.post(url.clone()))
-            .json(&request)
-            .send()
-            .await
-            .with_context(|| format!("sending event ingest request to {url}"))?;
+    for url in
+        events_urls(&config.server.portal_url).map_err(|e| IngestError::transient(e.to_string()))?
+    {
+        let response = match credential.apply(client.post(url.clone())).json(&request).send().await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                // Transport error — try the next candidate; whole call is
+                // transient if none answers.
+                last_error = Some(IngestError::transient(format!(
+                    "sending event ingest request to {url}: {e}"
+                )));
+                continue;
+            }
+        };
 
         let status = response.status();
         if should_try_next_endpoint(status) {
             let body = response.text().await.unwrap_or_default();
-            last_error = Some(anyhow!("event ingest failed with HTTP {status}: {body}"));
+            last_error = Some(IngestError::from_status(status, &body, &url));
             continue;
         }
 
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
-            return Err(anyhow!("event ingest failed with HTTP {status}: {body}"));
+            return Err(IngestError::from_status(status, &body, &url));
         }
 
         let body: IngestEventsResponse = response
             .json()
             .await
-            .context("decoding event ingest response")?;
+            .map_err(|e| IngestError::transient(format!("decoding event ingest response: {e}")))?;
         if let Some(rejected) = body.rejected.first() {
-            return Err(anyhow!(
+            // The server accepted the request but rejected this event's
+            // payload — the one unambiguously permanent per-event outcome.
+            return Err(IngestError::permanent(format!(
                 "event ingest rejected event {}: {}",
-                rejected.index,
-                rejected.reason
-            ));
+                rejected.index, rejected.reason
+            )));
         }
 
         log::debug!(
@@ -275,7 +384,8 @@ async fn post_capture_event(config: &AppConfig, event: CaptureEvent) -> Result<(
         return Ok(());
     }
 
-    Err(last_error.unwrap_or_else(|| anyhow!("no event ingest endpoint candidates")))
+    Err(last_error
+        .unwrap_or_else(|| IngestError::transient("no event ingest endpoint candidates")))
 }
 
 fn capture_upload_form(
@@ -367,4 +477,74 @@ fn should_try_next_endpoint(status: StatusCode) -> bool {
         status,
         StatusCode::NOT_FOUND | StatusCode::METHOD_NOT_ALLOWED
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::watcher::types::EventType;
+
+    fn content(markdown: Option<&str>) -> FileEventContent {
+        FileEventContent {
+            markdown: markdown.map(|s| s.to_string()),
+            ..FileEventContent::default()
+        }
+    }
+
+    #[test]
+    fn description_is_event_type_when_no_content() {
+        let d = file_event_description(EventType::FileModified, &content(None));
+        assert_eq!(d, "FileModified");
+        let d = file_event_description(EventType::FileDeleted, &content(Some("   ")));
+        assert_eq!(d, "FileDeleted");
+    }
+
+    #[test]
+    fn description_carries_extracted_markdown() {
+        let d = file_event_description(
+            EventType::FileModified,
+            &content(Some("# Notes\n\nremember the quarterly plan")),
+        );
+        assert!(d.starts_with("FileModified\n\n# Notes"));
+        assert!(d.contains("remember the quarterly plan"));
+        assert!(!d.contains("[truncated]"));
+    }
+
+    #[test]
+    fn classify_payload_rejections_as_permanent() {
+        let url = reqwest::Url::parse("http://core/api/v1/events").unwrap();
+        for status in [400u16, 413, 422] {
+            let e = IngestError::from_status(StatusCode::from_u16(status).unwrap(), "bad", &url);
+            assert!(e.permanent, "HTTP {status} should be permanent");
+        }
+    }
+
+    #[test]
+    fn classify_outages_auth_and_env_4xx_as_transient() {
+        let url = reqwest::Url::parse("http://core/api/v1/events").unwrap();
+        // Auth failures heal via token refresh; 404/405 mean the server is
+        // too old; 408/429/5xx are the server's problem; 407/410/421/423/425
+        // are environment/proxy states, not payload verdicts. None indict
+        // the event payload — permanent is an allowlist, not a default.
+        for status in [
+            401u16, 403, 404, 405, 407, 408, 410, 421, 423, 425, 429, 500, 502, 503,
+        ] {
+            let e = IngestError::from_status(StatusCode::from_u16(status).unwrap(), "x", &url);
+            assert!(!e.permanent, "HTTP {status} should be transient");
+        }
+        assert!(!IngestError::transient("net down").permanent);
+        assert!(IngestError::permanent("rejected").permanent);
+    }
+
+    #[test]
+    fn description_truncates_at_cap_on_char_boundary() {
+        // Multibyte char straddling the cap must not split a UTF-8 sequence.
+        let body = "é".repeat(DESCRIPTION_CONTENT_BYTES); // 2 bytes each
+        let d = file_event_description(EventType::FileCreated, &content(Some(&body)));
+        assert!(d.ends_with("…[truncated]"));
+        assert!(d.len() <= "FileCreated\n\n".len() + DESCRIPTION_CONTENT_BYTES + "\n…[truncated]".len());
+        // Must still be valid UTF-8 end to end (String guarantees it; also
+        // check we kept at least most of the budget rather than over-trimming).
+        assert!(d.len() > DESCRIPTION_CONTENT_BYTES / 2);
+    }
 }

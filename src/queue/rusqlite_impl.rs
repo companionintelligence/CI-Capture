@@ -33,6 +33,9 @@ pub struct QueuedEvent {
     pub event_id: String,
     pub event: NormalizedEvent,
     pub attempts: u32,
+    /// When this event first failed to sync (None = never failed). Drives
+    /// the head-of-queue parking deadline in the file tracker.
+    pub first_failed_at: Option<DateTime<Utc>>,
 }
 
 pub struct Queue {
@@ -46,6 +49,7 @@ impl Queue {
             .with_context(|| format!("opening queue db at {}", path.as_ref().display()))?;
         conn.execute_batch(SCHEMA_SQL)
             .context("bootstrapping queue schema")?;
+        migrate(&conn)?;
         Ok(Self { conn })
     }
 
@@ -54,6 +58,7 @@ impl Queue {
         let conn = Connection::open_in_memory().context("opening in-memory queue db")?;
         conn.execute_batch(SCHEMA_SQL)
             .context("bootstrapping queue schema")?;
+        migrate(&conn)?;
         Ok(Self { conn })
     }
 
@@ -89,7 +94,7 @@ impl Queue {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT event_id, payload_json, attempts
+                "SELECT event_id, payload_json, attempts, first_failed_at
                  FROM events
                  WHERE next_attempt_at IS NULL OR next_attempt_at <= ?1
                  ORDER BY enqueued_at
@@ -102,19 +107,24 @@ impl Queue {
                 let event_id: String = row.get(0)?;
                 let payload_json: String = row.get(1)?;
                 let attempts: i64 = row.get(2)?;
-                Ok((event_id, payload_json, attempts))
+                let first_failed_at: Option<String> = row.get(3)?;
+                Ok((event_id, payload_json, attempts, first_failed_at))
             })
             .context("executing take_batch")?;
 
         let mut out = Vec::new();
         for row in rows {
-            let (event_id, payload_json, attempts) = row.context("reading event row")?;
+            let (event_id, payload_json, attempts, first_failed_at) =
+                row.context("reading event row")?;
             let event: NormalizedEvent =
                 serde_json::from_str(&payload_json).context("deserializing event payload")?;
             out.push(QueuedEvent {
                 event_id,
                 event,
                 attempts: attempts.max(0) as u32,
+                first_failed_at: first_failed_at
+                    .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
+                    .map(|d| d.with_timezone(&Utc)),
             });
         }
         Ok(out)
@@ -130,21 +140,58 @@ impl Queue {
 
     /// Mark an event as failed; schedule its next attempt after `delay`
     /// and record the error string. Caller chooses `delay` via the
-    /// exponential-backoff policy in `sync::batching`.
+    /// exponential-backoff policy in `sync::batching`. The first failure
+    /// stamps `first_failed_at`, which later drives the parking deadline.
     pub fn requeue(&self, event_id: &str, delay: Duration, error: &str) -> Result<()> {
-        let next: DateTime<Utc> = Utc::now()
-            + chrono::Duration::from_std(delay).unwrap_or(chrono::Duration::seconds(60));
+        let now = Utc::now();
+        let next: DateTime<Utc> =
+            now + chrono::Duration::from_std(delay).unwrap_or(chrono::Duration::seconds(60));
         self.conn
             .execute(
                 "UPDATE events
                  SET attempts = attempts + 1,
                      next_attempt_at = ?1,
-                     last_error = ?2
-                 WHERE event_id = ?3",
-                params![next.to_rfc3339(), error, event_id],
+                     last_error = ?2,
+                     first_failed_at = COALESCE(first_failed_at, ?3)
+                 WHERE event_id = ?4",
+                params![next.to_rfc3339(), error, now.to_rfc3339(), event_id],
             )
             .context("requeue")?;
         Ok(())
+    }
+
+    /// Park an event in the `dead_letters` table and remove it from the
+    /// live queue, in one transaction. Nothing is deleted — the event stays
+    /// recoverable (and inspectable) on disk with the reason it was parked.
+    pub fn dead_letter(&self, event_id: &str, reason: &str) -> Result<()> {
+        let now = Utc::now().to_rfc3339();
+        let tx = self
+            .conn
+            .unchecked_transaction()
+            .context("starting dead-letter transaction")?;
+        tx.execute(
+            "INSERT OR REPLACE INTO dead_letters
+                (event_id, event_type, payload_json, occurred_at, enqueued_at,
+                 attempts, dead_lettered_at, reason)
+             SELECT event_id, event_type, payload_json, occurred_at, enqueued_at,
+                    attempts, ?1, ?2
+             FROM events WHERE event_id = ?3",
+            params![now, reason, event_id],
+        )
+        .context("copying event to dead_letters")?;
+        tx.execute("DELETE FROM events WHERE event_id = ?1", params![event_id])
+            .context("removing dead-lettered event from queue")?;
+        tx.commit().context("committing dead-letter transaction")?;
+        Ok(())
+    }
+
+    /// How many events are parked in the dead-letter table.
+    pub fn dead_letter_count(&self) -> Result<u64> {
+        let n: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM dead_letters", [], |row| row.get(0))
+            .context("dead_letter_count")?;
+        Ok(n.max(0) as u64)
     }
 
     /// How many events remain in the queue (across all states).
@@ -171,6 +218,7 @@ impl Queue {
     }
 
     /// Fetch the `last_error` recorded for `event_id`, if any.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn last_error(&self, event_id: &str) -> Result<Option<String>> {
         let row: Option<String> = self
             .conn
@@ -184,6 +232,27 @@ impl Queue {
             .flatten();
         Ok(row)
     }
+}
+
+/// In-place migrations for queues created by older builds. Everything here
+/// must be idempotent — `open()` runs it on every start.
+fn migrate(conn: &Connection) -> Result<()> {
+    // v1 → v2: `first_failed_at` on events (drives the parking deadline).
+    // schema.sql's CREATE TABLE IF NOT EXISTS won't touch existing tables,
+    // so older databases need the column added by hand.
+    let has_first_failed_at: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('events') WHERE name = 'first_failed_at'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|n| n > 0)
+        .context("probing events schema")?;
+    if !has_first_failed_at {
+        conn.execute("ALTER TABLE events ADD COLUMN first_failed_at TEXT", [])
+            .context("adding events.first_failed_at")?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -328,5 +397,104 @@ mod tests {
             assert_eq!(batch.len(), 1);
             assert_eq!(batch[0].event_id, "survives");
         }
+    }
+}
+
+#[cfg(test)]
+mod dead_letter_tests {
+    use super::*;
+    use crate::watcher::types::{EventType, NormalizedEvent};
+
+    fn evt(id: &str) -> NormalizedEvent {
+        NormalizedEvent {
+            event_id: id.to_string(),
+            event_type: EventType::FileModified,
+            occurred_at: Utc::now(),
+            observed_at: Utc::now(),
+            file: None,
+            old_path: None,
+            new_path: None,
+            correlation_id: None,
+        }
+    }
+
+    #[test]
+    fn dead_letter_parks_event_without_deleting_it() {
+        let q = Queue::open_in_memory().unwrap();
+        q.enqueue(&evt("poison")).unwrap();
+        q.requeue("poison", Duration::from_secs(0), "HTTP 400").unwrap();
+
+        q.dead_letter("poison", "event ingest rejected event 0: bad payload")
+            .unwrap();
+
+        // Gone from the live queue…
+        assert_eq!(q.depth().unwrap(), 0);
+        assert!(q.take_batch(10).unwrap().is_empty());
+        // …but parked, not deleted.
+        assert_eq!(q.dead_letter_count().unwrap(), 1);
+        let (reason, attempts): (String, i64) = q
+            .conn
+            .query_row(
+                "SELECT reason, attempts FROM dead_letters WHERE event_id = 'poison'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert!(reason.contains("bad payload"));
+        assert_eq!(attempts, 1);
+    }
+
+    #[test]
+    fn dead_letter_unknown_id_is_a_noop() {
+        let q = Queue::open_in_memory().unwrap();
+        q.dead_letter("never-existed", "why not").unwrap();
+        assert_eq!(q.dead_letter_count().unwrap(), 0);
+    }
+
+    #[test]
+    fn first_failed_at_set_once_and_survives_roundtrip() {
+        let q = Queue::open_in_memory().unwrap();
+        q.enqueue(&evt("a")).unwrap();
+
+        // Never failed → None.
+        let batch = q.take_batch(10).unwrap();
+        assert!(batch[0].first_failed_at.is_none());
+
+        q.requeue("a", Duration::from_secs(0), "boom").unwrap();
+        let first = q.take_batch(10).unwrap()[0].first_failed_at.unwrap();
+
+        // Second failure must NOT move the first-failure stamp.
+        q.requeue("a", Duration::from_secs(0), "boom2").unwrap();
+        let second = q.take_batch(10).unwrap()[0].first_failed_at.unwrap();
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn migrate_adds_first_failed_at_to_pre_existing_db() {
+        // Simulate a queue created by an older build: events table WITHOUT
+        // the first_failed_at column.
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let path = tmp.path().to_path_buf();
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE events (
+                   event_id TEXT PRIMARY KEY, event_type TEXT NOT NULL,
+                   payload_json TEXT NOT NULL, occurred_at TEXT NOT NULL,
+                   enqueued_at TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+                   next_attempt_at TEXT, last_error TEXT
+                 );",
+            )
+            .unwrap();
+        }
+        // Reopen through Queue::open — must migrate, then work end to end.
+        let q = Queue::open(&path).unwrap();
+        q.enqueue(&evt("migrated")).unwrap();
+        q.requeue("migrated", Duration::from_secs(0), "x").unwrap();
+        let batch = q.take_batch(10).unwrap();
+        assert_eq!(batch.len(), 1);
+        assert!(batch[0].first_failed_at.is_some());
+        q.dead_letter("migrated", "parked").unwrap();
+        assert_eq!(q.dead_letter_count().unwrap(), 1);
     }
 }
