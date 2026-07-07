@@ -90,14 +90,20 @@ pub struct SettingsFormState {
 
 impl From<&AppConfig> for SettingsFormState {
     fn from(config: &AppConfig) -> Self {
-        let auth_mode = if config
+        // A present OIDC session means the applet_auth_token holds an
+        // id_token (not a pasted key), so infer OIDC first — otherwise the
+        // token check below would mislabel a signed-in user as "API key" and
+        // render their raw JWT in the key field.
+        let auth_mode = if config.oidc_session.is_some() {
+            AuthMode::Oidc
+        } else if config
             .server
             .applet_auth_token
             .as_deref()
             .is_some_and(|token| !token.trim().is_empty())
         {
             AuthMode::ApiKey
-        } else if !config.oidc.issuer.trim().is_empty() || config.oidc_session.is_some() {
+        } else if !config.oidc.issuer.trim().is_empty() {
             AuthMode::Oidc
         } else {
             AuthMode::ApiKey
@@ -268,10 +274,26 @@ impl SettingsApp {
         let mut c = self.base_config.lock().clone();
         c.server.portal_url = normalize_ci_server_url(self.form.portal_url.trim())
             .unwrap_or_else(|_| self.form.portal_url.trim().to_string());
+        // The tray login + token-refresh flow owns the OIDC session, the
+        // id_token bearer, and the registered device id — and runs in a
+        // separate process that may have written config.json while this
+        // settings window was open. Re-read those fields from disk so Save
+        // merges rather than clobbers a fresh sign-in (the form never edits
+        // them directly).
+        let live = ConfigManager::new()
+            .ok()
+            .and_then(|m| m.load_or_default().ok());
+        if let Some(live) = &live {
+            c.oidc_session = live.oidc_session.clone();
+            c.identity.device_id = live.identity.device_id;
+        }
         let auth_token = self.form.applet_auth_token.trim();
         c.server.applet_auth_token = match self.form.auth_mode {
-            AuthMode::ApiKey if !auth_token.is_empty() => Some(auth_token.to_string()),
-            _ => None,
+            // API-key mode: the field IS the credential.
+            AuthMode::ApiKey => (!auth_token.is_empty()).then(|| auth_token.to_string()),
+            // OIDC mode: preserve the id_token bearer managed by login/refresh
+            // instead of wiping it on an unrelated settings save.
+            AuthMode::Oidc => live.and_then(|l| l.server.applet_auth_token),
         };
         c.oidc.issuer = self.form.oidc_issuer.trim().to_string();
         c.oidc.client_id = self.form.oidc_client_id.trim().to_string();
@@ -819,7 +841,36 @@ fn normalize_ci_server_url(raw: &str) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_ci_server_url;
+    use super::{AuthMode, SettingsFormState, normalize_ci_server_url};
+    use crate::config::{AppConfig, OidcSession};
+
+    #[test]
+    fn oidc_session_infers_oidc_mode_not_api_key() {
+        // Post-login state: the id_token lives in applet_auth_token AND an
+        // oidc_session is present. Must read as OIDC, not API key (which would
+        // render the raw JWT in the key field).
+        let mut config = AppConfig::default();
+        config.server.applet_auth_token = Some("eyJhbGciOi.header.sig".to_string());
+        config.oidc_session = Some(OidcSession {
+            id_token: Some("eyJhbGciOi.header.sig".to_string()),
+            ..OidcSession::default()
+        });
+        assert_eq!(SettingsFormState::from(&config).auth_mode, AuthMode::Oidc);
+    }
+
+    #[test]
+    fn pasted_key_without_session_infers_api_key_mode() {
+        let mut config = AppConfig::default();
+        config.server.applet_auth_token = Some("deadbeef".repeat(8)); // 64-hex-ish key
+        assert_eq!(SettingsFormState::from(&config).auth_mode, AuthMode::ApiKey);
+    }
+
+    #[test]
+    fn issuer_only_infers_oidc_mode() {
+        let mut config = AppConfig::default();
+        config.oidc.issuer = "https://hub.example.com/api/auth".to_string();
+        assert_eq!(SettingsFormState::from(&config).auth_mode, AuthMode::Oidc);
+    }
 
     #[test]
     fn feed_page_url_normalizes_to_origin() {
@@ -1079,28 +1130,31 @@ fn render_analysis_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bool 
     page_header(
         ui,
         "Vision",
-        "The vision model that interprets screenshots before they reach memory.",
+        "Optional local vision model. Leave blank to let CI-Server describe captures; \
+         set an OpenAI-compatible endpoint (e.g. LM Studio or Ollama) to analyse them on this machine.",
     );
 
+    // The client POSTs `{endpoint}/chat/completions` with Bearer auth (OpenAI
+    // protocol), so the endpoint is a base URL — NOT an Anthropic /messages URL.
     changed |= field(
         ui,
         "Endpoint",
         &mut form.analysis_endpoint,
-        "https://api.anthropic.com/v1/messages",
+        "http://localhost:1234/v1",
         theme::FieldOpts::monospace(),
     );
     changed |= field(
         ui,
         "API Key",
         &mut form.analysis_api_key,
-        "sk-ant-…",
+        "lm-studio (local endpoints often ignore this)",
         theme::FieldOpts::password(),
     );
     changed |= field(
         ui,
         "Model",
         &mut form.analysis_model,
-        "claude-sonnet-4",
+        "lmstudio-community/vision-large",
         theme::FieldOpts::monospace(),
     );
     changed
