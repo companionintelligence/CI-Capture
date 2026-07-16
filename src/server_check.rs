@@ -185,6 +185,17 @@ async fn report(config: &AppConfig) -> Result<()> {
         Err(err) => println!("POST GraphQL          : ✗ {err}"),
     }
 
+    if crate::permissions::permissions_relevant() {
+        let p = crate::permissions::status();
+        println!("\nCapture permissions (macOS)");
+        println!("---------------------------");
+        println!("screen recording : {}", p.screen_recording.badge());
+        println!("accessibility    : {}", p.accessibility.badge());
+        if p.needs_attention() {
+            println!("→ Run the Setup Assistant (tray) to grant these; capture is blank without them.");
+        }
+    }
+
     println!("\nNote: browser login uses the OIDC issuer above. A pasted CI-Server");
     println!("API key is sent as x-api-key; JWT/OIDC tokens are sent as bearer auth.");
     Ok(())
