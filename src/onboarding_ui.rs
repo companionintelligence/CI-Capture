@@ -80,6 +80,7 @@ struct OnboardingApp {
 
     // Connect step
     server_url: String,
+    oidc_issuer: String,
     api_key: String,
     login_rx: Option<Receiver<JobResult>>,
     test_rx: Option<Receiver<JobResult>>,
@@ -89,6 +90,11 @@ struct OnboardingApp {
     perms: permissions::Permissions,
 }
 
+/// Prefilled portal sign-in URL when the config's issuer is empty (the config
+/// default is intentionally blank/per-deployment; the wizard offers a sensible
+/// starting point the user can edit).
+const DEFAULT_ISSUER: &str = "https://hub.companionintelligence.com/api/auth";
+
 impl OnboardingApp {
     fn new(
         manager: Arc<ConfigManager>,
@@ -96,8 +102,14 @@ impl OnboardingApp {
         completed: Arc<Mutex<bool>>,
         logo: Option<egui::TextureHandle>,
     ) -> Self {
+        let oidc_issuer = if config.oidc.issuer.trim().is_empty() {
+            DEFAULT_ISSUER.to_string()
+        } else {
+            config.oidc.issuer.clone()
+        };
         Self {
             server_url: config.server.portal_url.clone(),
+            oidc_issuer,
             api_key: String::new(),
             login_rx: None,
             test_rx: None,
@@ -115,13 +127,32 @@ impl OnboardingApp {
         crate::server_ingest::is_configured(&self.config)
     }
 
-    /// Persist the current CI-Server URL to config (best-effort).
-    fn save_server_url(&mut self) {
-        let trimmed = self.server_url.trim().to_string();
-        if trimmed != self.config.server.portal_url {
-            self.config.server.portal_url = trimmed;
-            let _ = self.manager.save(&self.config);
+    /// Persist a wizard-owned change by merging it onto the **live on-disk**
+    /// config, not over the startup snapshot. The main process's token-refresh
+    /// loop may have rotated `oidc_session` / `applet_auth_token` / device id
+    /// while this window was open (it's reachable any time from the tray), and
+    /// a whole-snapshot write would revert that — silently disarming refresh.
+    /// Mirrors settings_ui/build_config and login_with_portal's reload-merge.
+    fn persist_merged(&mut self, mutate: impl FnOnce(&mut AppConfig)) {
+        let mut live = self
+            .manager
+            .load_or_default()
+            .unwrap_or_else(|_| self.config.clone());
+        mutate(&mut live);
+        match self.manager.save(&live) {
+            Ok(()) => self.config = live,
+            Err(e) => self.status_line = Some(Err(format!("Could not save: {e}"))),
         }
+    }
+
+    /// Persist the current CI-Server URL + OIDC issuer (merge-safe).
+    fn save_connection_fields(&mut self) {
+        let url = self.server_url.trim().to_string();
+        let issuer = self.oidc_issuer.trim().to_string();
+        self.persist_merged(|c| {
+            c.server.portal_url = url;
+            c.oidc.issuer = issuer;
+        });
     }
 
     fn reload_config(&mut self) {
@@ -133,7 +164,14 @@ impl OnboardingApp {
     // ── async jobs ──────────────────────────────────────────────────────────
 
     fn start_login(&mut self) {
-        self.save_server_url();
+        if self.oidc_issuer.trim().is_empty() {
+            self.status_line = Some(Err(
+                "Enter your portal sign-in URL (OIDC issuer) first, or paste an API key below."
+                    .into(),
+            ));
+            return;
+        }
+        self.save_connection_fields();
         let (tx, rx) = channel();
         self.login_rx = Some(rx);
         self.status_line = Some(Ok("Opening your browser to sign in…".into()));
@@ -151,19 +189,22 @@ impl OnboardingApp {
             self.status_line = Some(Err("Paste an API key first.".into()));
             return;
         }
-        self.save_server_url();
-        self.config.server.applet_auth_token = Some(key);
-        match self.manager.save(&self.config) {
-            Ok(()) => {
-                self.status_line = Some(Ok("API key saved. Test the connection to confirm.".into()));
-                self.start_connection_test();
-            }
-            Err(e) => self.status_line = Some(Err(format!("Could not save: {e}"))),
+        let url = self.server_url.trim().to_string();
+        // Choosing an API key means API-key auth: store the key and clear any
+        // stale OIDC session so the refresh loop doesn't fight it.
+        self.persist_merged(|c| {
+            c.server.portal_url = url;
+            c.server.applet_auth_token = Some(key);
+            c.oidc_session = None;
+        });
+        if self.has_credential() {
+            self.status_line = Some(Ok("API key saved. Testing the connection…".into()));
+            self.start_connection_test();
         }
     }
 
     fn start_connection_test(&mut self) {
-        self.save_server_url();
+        self.save_connection_fields();
         let (tx, rx) = channel();
         self.test_rx = Some(rx);
         let config = self.config.clone();
@@ -295,7 +336,12 @@ impl OnboardingApp {
 
         let running = self.job_running();
         ui.add_enabled_ui(!running, |ui| {
-            ui.label(egui::RichText::new("Sign in").strong());
+            ui.label(egui::RichText::new("Portal sign-in URL").strong());
+            ui.add(
+                egui::TextEdit::singleline(&mut self.oidc_issuer)
+                    .hint_text("https://your-portal/api/auth")
+                    .desired_width(f32::INFINITY),
+            );
             ui.horizontal(|ui| {
                 if ui.button("🔓  Sign in with browser").clicked() {
                     self.start_login();
@@ -352,17 +398,22 @@ impl OnboardingApp {
                 } else {
                     Step::Finish
                 };
-                ui.add_enabled_ui(self.has_credential(), |ui| {
+                // Always offer exactly one forward control so no one gets
+                // stranded (and the wizard can always reach Finish, which sets
+                // onboarding_completed and stops the auto-reopen).
+                if self.has_credential() {
                     if ui.button("Next  →").clicked() {
-                        self.save_server_url();
+                        self.save_connection_fields();
                         self.perms = permissions::status();
                         self.step = next;
                     }
-                });
-                if !self.has_credential() {
-                    ui.label(egui::RichText::new("Sign in or save a key to continue").weak());
-                } else if ui.button("Skip for now").clicked() {
-                    self.step = next;
+                } else {
+                    if ui.button("Skip for now  →").clicked() {
+                        self.step = next;
+                    }
+                    ui.label(
+                        egui::RichText::new("You can sign in later from the tray.").weak(),
+                    );
                 }
             });
         });
