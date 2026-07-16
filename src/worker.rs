@@ -142,17 +142,20 @@ async fn run_worker(
                 if !state.is_active() {
                     continue;
                 }
-                match state.capture_once().await {
-                    Ok(captured) => {
-                        if captured && state.config.vizier.enabled {
-                            if let Err(err) = state.capture_vizier().await {
-                                log::error!("vizier worker error: {err:?}");
-                            }
-                        }
-                    }
-                    Err(err) => {
-                        log::error!("screenshot worker error: {err:?}");
-                    }
+                if let Err(err) = state.capture_once().await {
+                    log::error!("screenshot worker error: {err:?}");
+                }
+                // Activity (vizier) capture runs every active tick, independent
+                // of whether the screenshot changed — a static screen (reading,
+                // a call) still has focus/window/fs activity worth timelining,
+                // and vizier's own diff keeps the sent payload small. Still
+                // suppressed while the screen is locked (capture_once sets
+                // capture_blocked), so we don't timeline the lock screen.
+                if state.config.vizier.enabled
+                    && !state.capture_blocked
+                    && let Err(err) = state.capture_vizier().await
+                {
+                    log::error!("vizier worker error: {err:?}");
                 }
             }
         }
@@ -287,16 +290,35 @@ async fn ingest_capture_to_server(
 ) {
     let has_endpoint = !config.analysis.endpoint.trim().is_empty();
 
-    // `inventoryCapture` doubles as "let the server analyse this": false when we
-    // analysed locally, true to invoke the server's Ollama fallback. When we
-    // analysed locally we also set `skipDescription` so CI-Server doesn't
-    // redundantly re-describe the image — we PATCH our own result below.
+    // Analyse locally FIRST (when an endpoint is configured). Only then do we
+    // know whether we hold a description to write — so we only tell the server
+    // to skip its own Ollama description when we can actually replace it.
+    // Otherwise a failed/unreachable local endpoint would leave a permanent
+    // zero-metadata frame (the server was told to skip, and we have nothing).
+    let local_analysis = if has_endpoint {
+        match analyzer.analyze(&config.analysis, png_bytes).await {
+            Ok(result) => Some(result),
+            Err(err) => {
+                log::warn!(
+                    "local vision analysis failed; deferring to server-side description: {err:?}"
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let analysed_locally = local_analysis.is_some();
+
+    // `inventoryCapture=true` asks CI-Server to run its own Ollama analysis;
+    // `skipDescription=true` suppresses it. Suppress ONLY when we have a local
+    // result to PATCH in below.
     let file_id = match server_ingest::ingest_capture(
         config,
         filename,
         png_bytes,
-        !has_endpoint,
-        has_endpoint,
+        !analysed_locally,
+        analysed_locally,
         None,
     )
     .await
@@ -313,45 +335,40 @@ async fn ingest_capture_to_server(
         }
     };
 
-    // The server owns the frame now — the local copy's job is done. Removing
-    // it is what keeps storage_dir from becoming an unbounded plaintext
-    // archive of the user's screen.
+    // When we analysed locally, CI-Server was told to skip its own
+    // description, so we MUST land ours before discarding the local copy —
+    // otherwise a failed metadata PATCH would orphan a description-less,
+    // recall-invisible frame with no local copy to retry from. If the PATCH
+    // fails we keep the PNG: the store sweep re-uploads it, and CI-Server's
+    // content-hash dedup returns the SAME file id, so the retry repairs this
+    // very frame rather than duplicating it.
+    if let Some(analysis) = &local_analysis {
+        let title = analysis
+            .primary_application
+            .clone()
+            .or_else(|| analysis.activity_category.clone())
+            .unwrap_or_else(|| "Screen capture".to_string());
+        let description = analysis.activity_summary.clone();
+
+        if let Err(err) =
+            server_ingest::set_file_metadata(config, &file_id, Some(&title), description.as_deref())
+                .await
+        {
+            log::warn!(
+                "failed to set file metadata for {file_id}; keeping local copy for retry: {err:?}"
+            );
+            return; // leave the PNG on disk for the sweep to re-drive
+        }
+    }
+
+    // The description is durable on the server (or CI-Server is describing the
+    // frame itself) — the local copy's job is done. Removing it keeps
+    // storage_dir from becoming an unbounded plaintext archive of the screen.
     let local_path = config.capture.storage_dir.join(filename);
     if let Err(err) = std::fs::remove_file(&local_path)
         && err.kind() != std::io::ErrorKind::NotFound
     {
         log::warn!("failed to remove acked screenshot {}: {err}", local_path.display());
-    }
-
-    if !has_endpoint {
-        return; // Server runs its own analysis.
-    }
-
-    let analysis = match analyzer.analyze(&config.analysis, png_bytes).await {
-        Ok(result) => result,
-        Err(err) => {
-            // The screenshot is already stored; just skip metadata this round.
-            log::warn!("vision analysis failed: {err:?}");
-            return;
-        }
-    };
-
-    let title = analysis
-        .primary_application
-        .clone()
-        .or_else(|| analysis.activity_category.clone())
-        .unwrap_or_else(|| "Screen capture".to_string());
-    let description = analysis.activity_summary.clone();
-
-    if let Err(err) = server_ingest::set_file_metadata(
-        config,
-        &file_id,
-        Some(&title),
-        description.as_deref(),
-    )
-    .await
-    {
-        log::warn!("failed to set file metadata for {file_id}: {err:?}");
     }
 }
 
@@ -374,6 +391,10 @@ struct WorkerState {
     vizier_observer: Box<dyn Observer>,
     vizier_previous: Option<Observation>,
     vizier_session_id: Uuid,
+    /// Non-disableable sensitive-path rules, applied to the vizier lane's
+    /// fs-events so credential/key paths never leave via activity capture
+    /// (the file lane already refuses them; this closes the same hole here).
+    sensitive_paths: crate::watcher::ignore::IgnoreRules,
     /// Background task running the file-tracking lane, when active.
     file_tracker: Option<tokio::task::JoinHandle<()>>,
 }
@@ -400,6 +421,9 @@ impl WorkerState {
             config_watch,
             vizier_observer,
             vizier_previous: None,
+            // `empty()` seeds only the non-disableable SENSITIVE_PATTERNS.
+            sensitive_paths: crate::watcher::ignore::IgnoreRules::empty()
+                .expect("building sensitive-path rules"),
             vizier_session_id: Uuid::new_v4(),
             file_tracker: None,
         }
@@ -496,18 +520,17 @@ impl WorkerState {
                 self.publish_sweep_context();
                 self.restart_file_tracker().await;
             }
-            WorkerCommand::CaptureNow => match self.capture_once().await {
-                Ok(captured) => {
-                    if captured && self.config.vizier.enabled {
-                        if let Err(err) = self.capture_vizier().await {
-                            log::error!("manual vizier capture failed: {err:?}");
-                        }
-                    }
-                }
-                Err(err) => {
+            WorkerCommand::CaptureNow => {
+                if let Err(err) = self.capture_once().await {
                     log::error!("manual capture failed: {err:?}");
                 }
-            },
+                if self.config.vizier.enabled
+                    && !self.capture_blocked
+                    && let Err(err) = self.capture_vizier().await
+                {
+                    log::error!("manual vizier capture failed: {err:?}");
+                }
+            }
             WorkerCommand::Shutdown => {
                 self.stop_file_tracker().await;
                 return Ok(true);
@@ -540,6 +563,19 @@ impl WorkerState {
             self.config.identity.device_id,
         ) {
             (Some(user), Some(device)) => (user, device),
+            // OIDC sign-in completed but the deferred device registration
+            // hasn't landed yet — skip rather than emit nil-attributed events
+            // every tick during that window; the refresh loop registers the
+            // device and the next tick sends properly.
+            _ if self.config.oidc_session.is_some()
+                && self.config.identity.device_id.is_none() =>
+            {
+                log::debug!("vizier: awaiting device registration; skipping tick");
+                return Ok(());
+            }
+            // API-key installs may legitimately have no local device id (the
+            // server attributes by credential) — fall back rather than starve
+            // the activity lane.
             _ if server_configured => (
                 self.config.identity.user_id.unwrap_or_else(Uuid::nil),
                 self.config.identity.device_id.unwrap_or_else(Uuid::nil),
@@ -552,10 +588,22 @@ impl WorkerState {
             }
         };
 
-        let current = self
+        let mut current = self
             .vizier_observer
             .snapshot()
             .context("capturing vizier snapshot")?;
+
+        // Drop fs-events for sensitive paths before they touch the diff, the
+        // payload, or the stored baseline — the activity lane must honour the
+        // same credential/key exclusions as the file lane.
+        let before = current.fs_events.len();
+        current
+            .fs_events
+            .retain(|event| !self.sensitive_paths.is_sensitive(&event.path));
+        let dropped = before - current.fs_events.len();
+        if dropped > 0 {
+            log::debug!("vizier: dropped {dropped} sensitive fs-event path(s) before send");
+        }
 
         let focus_app = current.focus.as_ref().map(|window| window.app.clone());
         let focus_title = current.focus.as_ref().map(|window| window.title.clone());
@@ -782,4 +830,39 @@ fn is_macos_screensaver_running() -> bool {
         .status()
         .map(|status| status.success())
         .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod sensitive_scrub_tests {
+    use vizier::observation::FSEvent;
+
+    use crate::watcher::ignore::IgnoreRules;
+
+    fn fs(path: &str) -> FSEvent {
+        FSEvent {
+            path: path.to_string(),
+            kind: "modify".to_string(),
+            ts: 0.0,
+            file_activity: None,
+        }
+    }
+
+    /// The exact predicate capture_vizier applies to the vizier lane's
+    /// fs-events: credential/key paths the file lane refuses must also be
+    /// dropped here.
+    #[test]
+    fn sensitive_fs_event_paths_are_dropped() {
+        let rules = IgnoreRules::empty().unwrap();
+        let mut events = vec![
+            fs("/Users/x/.ssh/id_rsa"),
+            fs("/Users/x/project/.env"),
+            fs("/Users/x/certs/server.pem"),
+            fs("/Users/x/.aws/credentials"),
+            fs("/Users/x/Documents/notes.md"), // benign — must survive
+            fs("/Users/x/src/main.rs"),         // benign — must survive
+        ];
+        events.retain(|e| !rules.is_sensitive(&e.path));
+        let kept: Vec<&str> = events.iter().map(|e| e.path.as_str()).collect();
+        assert_eq!(kept, vec!["/Users/x/Documents/notes.md", "/Users/x/src/main.rs"]);
+    }
 }

@@ -8,7 +8,7 @@
   <a href="https://github.com/companionintelligence/CI-Applet/actions/workflows/ci.yml"><img src="https://github.com/companionintelligence/CI-Applet/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <img src="https://img.shields.io/badge/platform-macOS%20%C2%B7%20Linux%20%C2%B7%20Windows-1A1A1A" alt="platform macOS, Linux, Windows">
   <img src="https://img.shields.io/badge/Rust-edition%202024-5C8DFF?logo=rust&logoColor=white" alt="Rust edition 2024">
-  <img src="https://img.shields.io/badge/tests-117%20passing-2DD4BF" alt="117 tests passing">
+  <img src="https://img.shields.io/badge/tests-185%20passing-2DD4BF" alt="185 tests passing">
   <img src="https://img.shields.io/badge/license-CI--Commercial--1.0-7C6BFF" alt="license CI-Commercial-1.0">
 </p>
 
@@ -176,31 +176,40 @@ sudo apt-get install -y libgtk-3-dev libxdo-dev libayatana-appindicator3-dev \
 cargo build                            # debug
 cargo build --release                  # optimized
 cargo run                              # launch the tray applet
-cargo test                             # 117 tests
-cargo build --features rich-extractors # + HTML/EML/EPUB extractors (144 tests)
+cargo test                             # unit + e2e suite
+cargo test --features rich-extractors  # + HTML/EML/EPUB extractors (185 tests)
 ```
 
-Every push and PR is built and tested on macOS by [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
+Every push and PR is built and tested on **macOS, Linux, and Windows** by [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 
-### Cutting a release
+### Build & release with GitHub Actions
 
-Actions → **Desktop Release** builds **native installers** with [`cargo-packager`](https://github.com/crabnebula-dev/cargo-packager) on each OS's runner — `.dmg` (macOS Apple Silicon + Intel), `.exe` NSIS installer (Windows), `.deb` + `.AppImage` (Ubuntu), and Arch pacman package, all `--features rich-extractors`. Run it with the release tag to publish:
+CI-Applet builds installers the same way CI-Hub does — per-OS runners,
+`cargo-packager`, signing/notarization, and `dev`/`production` channels. The
+**Desktop Release** workflow ([`release.yml`](.github/workflows/release.yml))
+produces `.dmg` (macOS arm64 + Intel), `-setup.exe` (Windows), and
+`.deb` / `.AppImage` / Arch packages (Linux), attached to a GitHub Release with
+`latest.json`, `SHA256SUMS`, and provenance attestations.
+
+**Quick paths:**
 
 ```bash
-# 1. bump `version` in Cargo.toml to match the release tag, then commit
-# 2. for production: tag the committed release ref and push it
-git tag v0.1.0
-git push origin v0.1.0
+# Dev build (no secrets; installers for all OSes off any branch):
+#   1. set Cargo.toml  version = "0.1.0-dev.1"  and commit
+#   2. Actions → Desktop Release → Run workflow →
+#      tag: v0.1.0-dev.1 · prerelease: true · environment: dev · platforms: all
 
-# 3. optional dev/prerelease run, using a prerelease tag:
-# Actions → Desktop Release → Run workflow → tag: v0.1.0-dev.1, environment: dev
+# Production release (signed + notarized; requires signing secrets):
+#   set Cargo.toml  version = "0.1.0"  and commit, then:
+git tag v0.1.0 && git push origin v0.1.0
 ```
 
-The workflow refuses to release if `Cargo.toml` does not match the tag version, then runs `cargo test --locked --features rich-extractors` before packaging. Production releases must run from the matching `v*` tag and require configured signing secrets for every selected platform; manual branch runs are for prerelease dev builds and must use a prerelease tag such as `v0.1.0-dev.1`.
+> The preflight requires `Cargo.toml`'s `version` to match the tag **exactly**,
+> including any `-dev.N` suffix. Dev tags must be prereleases (contain a `-`).
 
-The GitHub Release includes every installer, `latest.json`, `SHA256SUMS`, GitHub artifact attestations, and any detached `.asc` signatures. It signs macOS with Developer ID and notarizes when Apple secrets are configured, signs Windows installers through Azure Artifact Signing when Azure secrets are configured, and signs release files with GPG when `LINUX_GPG_PRIVATE_KEY` is configured. Installer config lives in `[package.metadata.packager]` in [`Cargo.toml`](Cargo.toml); icons are in `packaging/icons/`.
-
-**Release secrets:** GitHub Environment setup, CI-Hub copy list, Azure OIDC subjects, and a password-manager note template are in [`docs/DESKTOP-RELEASE-SECRETS.md`](docs/DESKTOP-RELEASE-SECRETS.md) and [`config/release/password-manager-note.md`](config/release/password-manager-note.md).
+**Full runbook** — step-by-step dev/prod flows, signing tiers, local builds,
+and troubleshooting — is in [`docs/RELEASING.md`](docs/RELEASING.md). Signing
+**secrets** (shared with CI-Hub) are in [`docs/DESKTOP-RELEASE-SECRETS.md`](docs/DESKTOP-RELEASE-SECRETS.md).
 
 ## Sign in & configure
 

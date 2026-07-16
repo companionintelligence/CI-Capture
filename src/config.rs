@@ -65,7 +65,13 @@ pub struct AnalysisConfig {
 impl Default for AnalysisConfig {
     fn default() -> Self {
         Self {
-            endpoint: "http://localhost:1234/v1".to_string(),
+            // Empty by default: a non-empty endpoint is the applet's signal
+            // that it should analyse screenshots locally (and tell CI-Server
+            // to skip its own Ollama description). Defaulting to a localhost
+            // URL where nothing listens made fresh installs suppress the
+            // server description AND fail locally → zero-metadata frames. When
+            // empty, CI-Server describes captures itself.
+            endpoint: String::new(),
             api_key: "lm-studio".to_string(),
             model: "lmstudio-community/vision-large".to_string(),
         }
@@ -327,4 +333,19 @@ pub fn default_storage_dir() -> Result<PathBuf> {
     fs::create_dir_all(&screenshot_dir)
         .with_context(|| format!("creating screenshot dir {}", screenshot_dir.display()))?;
     Ok(screenshot_dir)
+}
+
+#[cfg(test)]
+mod analysis_default_tests {
+    use super::AnalysisConfig;
+
+    #[test]
+    fn default_endpoint_is_empty_so_server_analyses() {
+        // A non-empty default made fresh installs suppress the server
+        // description then fail locally → zero-metadata frames.
+        assert!(
+            AnalysisConfig::default().endpoint.is_empty(),
+            "default analysis endpoint must be empty (server-side analysis)"
+        );
+    }
 }

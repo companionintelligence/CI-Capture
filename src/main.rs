@@ -71,6 +71,25 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    // Headless portal sign-in: runs the OIDC Authorization Code + PKCE flow
+    // (opens the system browser, captures the loopback redirect), stores the
+    // tokens, and prints the resolved identity. Useful for scripted setup and
+    // for server/CI installs that have no tray. The interactive password entry
+    // happens in the browser — this command never handles the password.
+    if std::env::args().any(|arg| arg == "--login") {
+        match login_with_portal() {
+            Ok(message) => {
+                println!("{message}");
+                print_login_summary();
+                return Ok(());
+            }
+            Err(err) => {
+                eprintln!("Portal sign-in failed: {err:#}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     let manager = ConfigManager::new().context("building config manager")?;
     let config = manager
         .load_or_default()
@@ -634,6 +653,81 @@ fn login_with_portal() -> Result<String> {
     ))
 }
 
+/// After `--login`, print the stored identity and the id_token's audience +
+/// issuer. The audience is the value CI-Server must accept via
+/// `PORTAL_OIDC_AUDIENCE`, so surfacing it makes an end-to-end auth check
+/// concrete without guessing.
+fn print_login_summary() {
+    let Ok(manager) = ConfigManager::new() else {
+        return;
+    };
+    let Ok(config) = manager.load_or_default() else {
+        return;
+    };
+    if let Some(session) = &config.oidc_session {
+        println!("  subject   : {}", session.subject.as_deref().unwrap_or("-"));
+        println!("  email     : {}", session.email.as_deref().unwrap_or("-"));
+        println!(
+            "  expires   : {}",
+            session
+                .expires_at
+                .map(|e| e.to_rfc3339())
+                .unwrap_or_else(|| "-".to_string())
+        );
+        if let Some(token) = &session.id_token {
+            match decode_jwt_aud_iss(token) {
+                Some((aud, iss)) => {
+                    println!("  token aud : {aud}   (CI-Server must list this in PORTAL_OIDC_AUDIENCE)");
+                    println!("  token iss : {iss}");
+                }
+                None => println!("  id_token  : present (claims not decodable)"),
+            }
+        }
+    }
+    println!(
+        "  user_id   : {}",
+        config
+            .identity
+            .user_id
+            .map(|u| u.to_string())
+            .unwrap_or_else(|| "-".to_string())
+    );
+    println!(
+        "  device_id : {}",
+        config
+            .identity
+            .device_id
+            .map(|u| u.to_string())
+            .unwrap_or_else(|| "- (not registered)".to_string())
+    );
+}
+
+/// Best-effort decode of a JWT's `aud` and `iss` claims (no signature check —
+/// this is display-only diagnostics for `--login`).
+fn decode_jwt_aud_iss(jwt: &str) -> Option<(String, String)> {
+    use base64::Engine;
+    let payload = jwt.split('.').nth(1)?;
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload)
+        .ok()?;
+    let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    let aud = match value.get("aud") {
+        Some(serde_json::Value::String(s)) => s.clone(),
+        Some(serde_json::Value::Array(a)) => a
+            .iter()
+            .filter_map(|x| x.as_str())
+            .collect::<Vec<_>>()
+            .join(","),
+        _ => "-".to_string(),
+    };
+    let iss = value
+        .get("iss")
+        .and_then(|x| x.as_str())
+        .unwrap_or("-")
+        .to_string();
+    Some((aud, iss))
+}
+
 /// Register this machine with CI-Server (`POST /devices`, bearer-authed).
 async fn register_device(config: &AppConfig, bearer: &str) -> Result<Uuid> {
     let hostname = whoami::fallible::hostname().unwrap_or_else(|_| "unknown".to_string());
@@ -935,4 +1029,47 @@ fn apply_refreshed_tokens(
         }
     }
     config.oidc_session = Some(session);
+}
+
+#[cfg(test)]
+mod login_cli_tests {
+    use super::*;
+    use base64::Engine;
+
+    fn jwt(payload: serde_json::Value) -> String {
+        let seg = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(serde_json::to_vec(&payload).unwrap());
+        format!("eyJhbGciOiJFZERTQSJ9.{seg}.sig")
+    }
+
+    #[test]
+    fn decodes_string_aud_and_iss() {
+        let token = jwt(serde_json::json!({
+            "aud": "ci-applet",
+            "iss": "https://hub.companionintelligence.com"
+        }));
+        let (aud, iss) = decode_jwt_aud_iss(&token).unwrap();
+        assert_eq!(aud, "ci-applet");
+        assert_eq!(iss, "https://hub.companionintelligence.com");
+    }
+
+    #[test]
+    fn joins_array_aud() {
+        let token = jwt(serde_json::json!({ "aud": ["ci-applet", "ci-server"] }));
+        let (aud, _) = decode_jwt_aud_iss(&token).unwrap();
+        assert_eq!(aud, "ci-applet,ci-server");
+    }
+
+    #[test]
+    fn missing_claims_default_to_dash() {
+        let (aud, iss) = decode_jwt_aud_iss(&jwt(serde_json::json!({}))).unwrap();
+        assert_eq!(aud, "-");
+        assert_eq!(iss, "-");
+    }
+
+    #[test]
+    fn rejects_non_jwt() {
+        assert!(decode_jwt_aud_iss("not-a-jwt").is_none());
+        assert!(decode_jwt_aud_iss("").is_none());
+    }
 }
