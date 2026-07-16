@@ -10,6 +10,8 @@ mod file_tracker;
 #[cfg(feature = "legacy-minio")]
 mod minio;
 mod oidc;
+mod onboarding_ui;
+mod permissions;
 mod queue;
 mod server_check;
 mod server_common;
@@ -43,12 +45,14 @@ use uuid::Uuid;
 use whoami;
 
 use crate::worker::WorkerHandle;
+use onboarding_ui::run_onboarding_ui;
 use settings_ui::run_settings_ui;
 use upload_ui::run_upload_ui;
 
 #[derive(Debug, Clone)]
 enum AppEvent {
     ReloadConfig,
+    OnboardingClosed,
     PairingFinished { success: bool, message: String },
 }
 
@@ -63,6 +67,11 @@ fn main() -> Result<()> {
 
     if std::env::args().any(|arg| arg == "--upload-ui") {
         run_upload_ui()?;
+        return Ok(());
+    }
+
+    if std::env::args().any(|arg| arg == "--onboarding-ui") {
+        run_onboarding_ui()?;
         return Ok(());
     }
 
@@ -123,8 +132,16 @@ fn main() -> Result<()> {
         tray_icon: Some(tray_icon),
         proxy,
         settings_open: false,
+        onboarding_open: false,
         pairing_in_progress: false,
     };
+
+    // First run: no credential yet and onboarding never completed → open the
+    // setup assistant so the user isn't left with an invisible, unconfigured
+    // menu-bar item.
+    if is_first_run(&initial_config) {
+        controller.open_onboarding_window();
+    }
 
     let menu_receiver = MenuEvent::receiver().clone();
     let tray_receiver = TrayIconEvent::receiver().clone();
@@ -161,6 +178,7 @@ struct AppController {
     tray_icon: Option<TrayIcon>,
     proxy: EventLoopProxy<AppEvent>,
     settings_open: bool,
+    onboarding_open: bool,
     pairing_in_progress: bool,
 }
 
@@ -182,6 +200,8 @@ impl AppController {
             self.open_settings_window();
         } else if menu_id == *self.menu_state.login_item.id() {
             self.launch_portal_login();
+        } else if menu_id == *self.menu_state.setup_item.id() {
+            self.open_onboarding_window();
         } else if menu_id == *self.menu_state.show_config_item.id() {
             self.show_config_path();
         } else if menu_id == *self.menu_state.quit_item.id() {
@@ -203,6 +223,12 @@ impl AppController {
                 if let Err(err) = self.reload_config_from_disk() {
                     log::error!("failed to reload config: {err:?}");
                     show_error("Unable to reload configuration; see logs for details.");
+                }
+            }
+            AppEvent::OnboardingClosed => {
+                self.onboarding_open = false;
+                if let Err(err) = self.reload_config_from_disk() {
+                    log::error!("failed to reload config after onboarding: {err:?}");
                 }
             }
             AppEvent::PairingFinished { success, message } => {
@@ -256,6 +282,36 @@ impl AppController {
         if let Err(err) = Command::new(exe).arg("--upload-ui").spawn() {
             log::error!("failed to launch upload window: {err:?}");
             show_error("Unable to launch upload window. Check logs for details.");
+        }
+    }
+
+    /// Open the first-run onboarding wizard (also reachable from the tray's
+    /// "Setup Assistant"). Reloads config when it closes so a fresh sign-in or
+    /// completed onboarding takes effect immediately.
+    fn open_onboarding_window(&mut self) {
+        if self.onboarding_open {
+            return;
+        }
+        let Ok(exe) = std::env::current_exe() else {
+            show_error("Unable to locate executable for the setup assistant.");
+            return;
+        };
+        self.onboarding_open = true;
+        let proxy = self.proxy.clone();
+        match Command::new(exe).arg("--onboarding-ui").spawn() {
+            Ok(mut child) => {
+                thread::spawn(move || {
+                    if let Err(err) = child.wait() {
+                        log::error!("onboarding process failed: {err:?}");
+                    }
+                    let _ = proxy.send_event(AppEvent::OnboardingClosed);
+                });
+            }
+            Err(err) => {
+                self.onboarding_open = false;
+                log::error!("failed to launch onboarding window: {err:?}");
+                show_error("Unable to launch the setup assistant. Check logs for details.");
+            }
         }
     }
 
@@ -351,6 +407,7 @@ struct MenuState {
     identity_item: MenuItem,
     server_item: MenuItem,
     login_item: MenuItem,
+    setup_item: MenuItem,
     settings_item: MenuItem,
     postgres_item: MenuItem,
     minio_item: MenuItem,
@@ -372,6 +429,7 @@ impl MenuState {
         let identity_item = MenuItem::new("Set Identity IDs", true, None);
         let server_item = MenuItem::new("Portal URL", true, None);
         let login_item = MenuItem::new("Login to Portal", true, None);
+        let setup_item = MenuItem::new("Setup Assistant…", true, None);
         let settings_item = MenuItem::new("Open Settings…", true, None);
         let postgres_item = MenuItem::new("Configure Postgres", true, None);
         let minio_item = MenuItem::new("Configure MinIO", true, None);
@@ -403,6 +461,7 @@ impl MenuState {
             &minio_item,
             &analysis_item,
             &PredefinedMenuItem::separator(),
+            &setup_item,
             &settings_item,
             &show_config_item,
             &quit_item,
@@ -419,6 +478,7 @@ impl MenuState {
             identity_item,
             server_item,
             login_item,
+            setup_item,
             settings_item,
             postgres_item,
             minio_item,
@@ -431,7 +491,17 @@ impl MenuState {
     }
 
     fn refresh_labels(&self, config: &AppConfig, running: bool) {
-        let status = if running { "Monitoring" } else { "Paused" };
+        // Truthful status: an unconfigured or permission-blocked applet must
+        // not read as "Monitoring".
+        let status = if !server_ingest::is_configured(config) {
+            "⚠︎ Setup needed"
+        } else if permissions::permissions_relevant() && permissions::status().needs_attention() {
+            "⚠︎ Permissions needed"
+        } else if running {
+            "Monitoring"
+        } else {
+            "Paused"
+        };
         self.status_item.set_text(&format!("Status: {status}"));
         self.toggle_item.set_text(if running {
             "Pause Captures"
@@ -564,6 +634,12 @@ fn short_uuid(id: Option<Uuid>) -> String {
 
 /// Sign in to the portal via OIDC (Authorization Code + PKCE), persist the
 /// resulting tokens + identity, and best-effort register this device.
+/// First launch = no server credential configured and onboarding never
+/// finished. Drives whether the setup assistant auto-opens.
+fn is_first_run(config: &AppConfig) -> bool {
+    !config.onboarding_completed && !server_ingest::is_configured(config)
+}
+
 fn login_with_portal() -> Result<String> {
     let manager = ConfigManager::new().context("loading config manager for sign-in")?;
     let oidc_config = manager
