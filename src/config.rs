@@ -194,6 +194,10 @@ pub struct AppConfig {
     /// Tokens + claims captured from the last successful portal sign-in.
     #[serde(default)]
     pub oidc_session: Option<OidcSession>,
+    /// Set once the first-run onboarding wizard has been completed (or skipped).
+    /// Drives whether the wizard auto-opens on launch.
+    #[serde(default)]
+    pub onboarding_completed: bool,
 }
 
 /// OpenID Connect client config for portal sign-in (Authorization Code +
