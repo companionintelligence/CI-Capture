@@ -548,13 +548,13 @@ fn build_icon() -> Icon {
     const ICON_SIZE: u32 = 36;
     #[cfg(not(target_os = "macos"))]
     const ICON_SIZE: u32 = 22;
-    const ICON_BYTES: &[u8] = include_bytes!("../2024 CI Logo Mark.svg");
+    const ICON_BYTES: &[u8] = include_bytes!("../packaging/icons/icon.png");
 
-    match svg_icon::load_svg_icon(ICON_BYTES, ICON_SIZE) {
+    match svg_icon::load_png_icon(ICON_BYTES, ICON_SIZE) {
         Ok(icon) => icon,
         Err(err) => {
             log::warn!(
-                "Failed to load embedded tray icon SVG: {err}. Falling back to default vector icon"
+                "Failed to load embedded tray icon PNG: {err}. Falling back to default vector icon"
             );
             fallback_icon()
         }
