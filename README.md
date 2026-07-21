@@ -213,10 +213,18 @@ and troubleshooting — is in [`docs/RELEASING.md`](docs/RELEASING.md). Signing
 
 ## Sign in & configure
 
-Click **Login via …** from the tray to run the configured **OpenID Connect
-Authorization Code + PKCE** flow. The applet opens `oidc.issuer`, captures the
-loopback redirect, and stores the issued **`id_token`** as the bearer credential
-for CI-Server uploads.
+On first launch the **setup assistant** opens automatically (and stays available
+from the tray as *Setup Assistant*). It asks for one thing — your CI-Server URL
+— derives the portal sign-in URL from it (`<server>/api/auth`), checks both
+before you sign in, walks the macOS permission grants, and ends with a **test
+capture** that pushes one real screenshot through the normal ingest path so you
+leave setup knowing it works rather than hoping. A split portal/server
+deployment can set the issuer by hand under *Advanced*.
+
+Click **Login via …** from the tray to re-run the configured **OpenID Connect
+Authorization Code + PKCE** flow at any time. The applet opens `oidc.issuer`,
+captures the loopback redirect, and stores the issued **`id_token`** as the
+bearer credential for CI-Server uploads.
 
 You can bypass browser login by pasting a CI-Server bearer token or API key into
 **Settings → Identity → Bearer Token / API Key**. JWT/OIDC tokens are sent as

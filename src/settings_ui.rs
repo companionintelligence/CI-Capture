@@ -833,18 +833,9 @@ fn render_identity_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bool 
     changed
 }
 
-fn normalize_ci_server_url(raw: &str) -> Result<String, String> {
-    let mut url = Url::parse(raw).map_err(|_| "CI-Server URL must be a valid URL.".to_string())?;
-    url.set_query(None);
-    url.set_fragment(None);
-
-    let path = url.path().trim_matches('/');
-    if path.is_empty() || path == "feed" || path.starts_with("feed/") {
-        url.set_path("");
-    }
-
-    Ok(url.to_string())
-}
+// URL normalization lives in `server_common` so this window and the onboarding
+// wizard accept identical input; re-exported here for the tests below.
+use crate::server_common::normalize_ci_server_url;
 
 #[cfg(test)]
 mod tests {
