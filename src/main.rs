@@ -108,6 +108,14 @@ fn main() -> Result<()> {
 
     let worker = WorkerHandle::spawn(initial_config.clone());
     spawn_token_refresh(worker.clone(), Arc::clone(&shared_config));
+
+    // Build the event loop first: on Linux `tao` initializes GTK here, and the
+    // tray menu/icon below are GTK objects that panic ("GTK has not been
+    // initialized") if constructed beforehand. macOS doesn't route the tray
+    // through GTK, so this ordering is Linux-critical but harmless there.
+    let event_loop = EventLoopBuilder::<AppEvent>::with_user_event().build();
+    let proxy = event_loop.create_proxy();
+
     let menu_state = MenuState::new(&initial_config).context("building tray menu")?;
     menu_state.refresh_labels(&initial_config, worker.is_running());
 
@@ -120,9 +128,6 @@ fn main() -> Result<()> {
         .with_icon_as_template(true)
         .build()
         .context("creating tray icon")?;
-
-    let event_loop = EventLoopBuilder::<AppEvent>::with_user_event().build();
-    let proxy = event_loop.create_proxy();
 
     let mut controller = AppController {
         shared_config,
