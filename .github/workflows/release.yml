@@ -380,8 +380,22 @@ jobs:
               exit 1
             fi
             mount_path="$(mktemp -d)"
-            hdiutil attach "$dmg_path" -mountpoint "$mount_path" -nobrowse -quiet
-            trap 'hdiutil detach "$mount_path" -quiet || true; rmdir "$mount_path" || true' EXIT
+            # hdiutil attach is flaky on hosted macOS runners; retry with
+            # visible errors instead of failing silently.
+            attached=false
+            for attempt in 1 2 3 4 5; do
+              if hdiutil attach "$dmg_path" -mountpoint "$mount_path" -nobrowse -noautoopen; then
+                attached=true
+                break
+              fi
+              echo "hdiutil attach failed (attempt $attempt); retrying in 5s..."
+              sleep 5
+            done
+            if [ "$attached" != "true" ]; then
+              echo "::error::Could not mount $dmg_path for signature verification"
+              exit 1
+            fi
+            trap 'hdiutil detach "$mount_path" -force -quiet || true; rmdir "$mount_path" || true' EXIT
             app_path="$(find "$mount_path" -name '*.app' -type d -prune | head -1)"
           fi
 
