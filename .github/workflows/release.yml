@@ -238,6 +238,7 @@ jobs:
             libfuse2
 
       - name: Install cargo-packager
+        shell: bash
         run: cargo install cargo-packager --version "$CARGO_PACKAGER_VERSION" --locked
 
       # -- macOS code signing -------------------------------------------------
