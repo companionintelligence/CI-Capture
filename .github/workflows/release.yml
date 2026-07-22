@@ -380,11 +380,12 @@ jobs:
               exit 1
             fi
             mount_path="$(mktemp -d)"
-            # hdiutil attach is flaky on hosted macOS runners; retry with
-            # visible errors instead of failing silently.
+            # The DMG embeds a license agreement, so hdiutil prompts for
+            # acceptance; feed a "Y" to accept non-interactively. Retry with
+            # visible errors because hosted-runner mounts can be flaky.
             attached=false
-            for attempt in 1 2 3 4 5; do
-              if hdiutil attach "$dmg_path" -mountpoint "$mount_path" -nobrowse -noautoopen; then
+            for attempt in 1 2 3; do
+              if printf 'Y\n' | hdiutil attach "$dmg_path" -mountpoint "$mount_path" -nobrowse -noautoopen; then
                 attached=true
                 break
               fi
