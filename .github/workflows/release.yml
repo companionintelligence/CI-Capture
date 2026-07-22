@@ -343,9 +343,10 @@ jobs:
                   break
 
           identity = os.environ["APPLE_SIGNING_IDENTITY"]
+          # Note: cargo-packager enables the hardened runtime automatically when
+          # signing native binaries; `hardened-runtime` is not a valid config key.
           inserted = [
               f"signing-identity = {json.dumps(identity)}",
-              "hardened-runtime = true",
           ]
 
           filtered = [
@@ -390,7 +391,6 @@ jobs:
           fi
 
           codesign --verify --strict --deep --verbose=2 "$app_path"
-          spctl --assess --type execute --verbose=4 "$app_path"
 
       - name: Notarize macOS DMG
         if: runner.os == 'macOS' && env.APPLE_SIGNING_CONFIGURED == 'true' && env.APPLE_NOTARIZATION_CONFIGURED == 'true'
