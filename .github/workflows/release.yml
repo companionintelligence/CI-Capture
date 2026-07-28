@@ -651,3 +651,32 @@ jobs:
             ```bash
             shasum -a 256 -c CI-Applet-${{ needs.release-metadata.outputs.tag }}-SHA256SUMS.txt
             ```
+
+  upload-r2:
+    name: Publish to R2
+    needs: [release-metadata, release]
+    runs-on: ubuntu-latest
+    environment: ${{ needs.release-metadata.outputs.environment }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ci-applet-*
+          path: artifacts
+          merge-multiple: false
+
+      - name: Install wrangler
+        run: npm install -g wrangler
+
+      - name: Upload artifacts to R2
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_R2_DL_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          RELEASE_TAG: ${{ needs.release-metadata.outputs.tag }}
+          R2_BUCKET: ${{ needs.release-metadata.outputs.environment == 'production' && 'dl-prod' || 'dl-dev' }}
+          R2_PREFIX: applet
+          DOWNLOAD_BASE_URL: ${{ needs.release-metadata.outputs.environment == 'production' && 'https://dl.ci.computer' || 'https://dl-dev.ci.computer' }}
+        run: ./.github/scripts/upload-desktop-r2.sh
