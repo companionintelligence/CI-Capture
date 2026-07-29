@@ -41,7 +41,6 @@ on:
 permissions:
   contents: write
   id-token: write
-  attestations: write
 
 env:
   CARGO_TERM_COLOR: always
@@ -494,7 +493,6 @@ jobs:
     permissions:
       contents: write
       id-token: write
-      attestations: write
     env:
       LINUX_GPG_CONFIGURED: ${{ secrets.LINUX_GPG_PRIVATE_KEY != '' && 'true' || 'false' }}
     steps:
@@ -616,11 +614,6 @@ jobs:
               --passphrase "${LINUX_GPG_PASSPHRASE:-}" \
               --armor --detach-sign "$file"
           done
-
-      - name: Attest release artifact provenance
-        uses: actions/attest-build-provenance@v2
-        with:
-          subject-path: release-files/*
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
