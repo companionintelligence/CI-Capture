@@ -12,6 +12,7 @@ mod minio;
 mod oidc;
 mod onboarding_ui;
 mod permissions;
+mod portal_apps;
 mod queue;
 mod server_check;
 mod server_common;
@@ -31,7 +32,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use chrono::Utc;
 use config::{AppConfig, ConfigManager};
 use env_logger::Env;
@@ -79,6 +80,19 @@ fn main() -> Result<()> {
     if std::env::args().any(|arg| arg == "--check-server") {
         server_check::run(parse_portal_override())?;
         return Ok(());
+    }
+
+    // Scriptable entry points. These exist to be driven by macOS Shortcuts'
+    // "Run Shell Script" action — which is what people mean when they ask for
+    // Siri, since Siri runs Shortcuts by name. Cheap, and they work on every
+    // platform rather than only where App Intents exist.
+    // See docs/siri-test-plan.md.
+    if let Some(query) = parse_flag_value("--search") {
+        return open_memory_search(&query);
+    }
+
+    if std::env::args().any(|arg| arg == "--open-memory") {
+        return open_memory_search("");
     }
 
     // Headless portal sign-in: runs the OIDC Authorization Code + PKCE flow
@@ -663,6 +677,52 @@ fn open_url(url: &str) -> std::io::Result<std::process::ExitStatus> {
     cmd.status()
 }
 
+/// Open Companion Memory in the browser, optionally deep-linked to a search.
+///
+/// Runs in the *invoking* process rather than messaging the tray, so it works
+/// whether or not the menu-bar app is running — a Shortcut should not fail
+/// because the user quit the tray.
+fn open_memory_search(query: &str) -> Result<()> {
+    let manager = ConfigManager::new().context("loading config")?;
+    let config = manager.load_or_default().context("loading config")?;
+
+    let query = query.trim();
+    let params: Vec<(&str, &str)> = if query.is_empty() {
+        Vec::new()
+    } else {
+        vec![("search", query), ("view", "list")]
+    };
+
+    if config.server.portal_url.trim().is_empty() {
+        bail!("No Companion Memory address configured. Set one in Settings, or run --login.");
+    }
+    let url = server_common::memory_url(&config.server.portal_url, &params).map_err(|_| {
+        anyhow!(
+            "\"{}\" isn't a usable Companion Memory address. Fix it in Settings.",
+            config.server.portal_url.trim()
+        )
+    })?;
+
+    open_url(url.as_str()).with_context(|| format!("opening {url}"))?;
+    println!("{url}");
+    Ok(())
+}
+
+/// Read `--flag <value>` or `--flag=<value>` from the command line.
+fn parse_flag_value(flag: &str) -> Option<String> {
+    let args: Vec<String> = std::env::args().collect();
+    let eq = format!("{flag}=");
+    for (i, arg) in args.iter().enumerate() {
+        if let Some(rest) = arg.strip_prefix(&eq) {
+            return Some(rest.to_string());
+        }
+        if arg == flag {
+            return args.get(i + 1).cloned();
+        }
+    }
+    None
+}
+
 /// Parse an optional `--portal <url>` / `--portal=<url>` override used by
 /// `--check-server` to probe an arbitrary endpoint without mutating config.
 fn parse_portal_override() -> Option<String> {
@@ -759,6 +819,11 @@ fn login_with_portal() -> Result<String> {
         config.identity.user_id = Some(uid);
     }
 
+    // Ask the Portal where this user's Companion Memory runs, so a fresh install
+    // never has to be told. Strictly best-effort: sign-in has already succeeded
+    // and must not be reported as failed because discovery didn't work.
+    let discovery_note = resolve_core_url(&runtime, &mut config, &outcome.tokens.access_token);
+
     // Best-effort: register this device so ingest has a server-side device id.
     if config.identity.device_id.is_none()
         && let Some(token) = id_token.as_deref()
@@ -782,9 +847,74 @@ fn login_with_portal() -> Result<String> {
         .or(outcome.claims.email)
         .or(outcome.claims.sub)
         .unwrap_or_else(|| "your account".to_string());
-    Ok(format!(
-        "Signed in as {who}. Companion Memory will now attribute captures to that account."
-    ))
+    Ok(format!("Signed in as {who}. {discovery_note}"))
+}
+
+/// Resolve the Core address from CI-Portal after sign-in, writing it into
+/// `config` when there is exactly one unambiguous answer.
+///
+/// Returns a sentence for the user. Never returns an error: this runs after a
+/// successful sign-in, and a discovery failure means "you'll have to type the
+/// address", not "signing in failed".
+///
+/// The credential is the **opaque access_token**, not the id_token — see
+/// [`crate::portal_apps`].
+fn resolve_core_url(runtime: &Runtime, config: &mut AppConfig, access_token: &str) -> String {
+    use portal_apps::Discovery;
+
+    // Never move a Core the user chose themselves.
+    if config.server.url_source == config::ServerUrlSource::Manual
+        && !config.server.portal_url.trim().is_empty()
+    {
+        return "Companion Memory will now attribute captures to that account.".into();
+    }
+
+    let portal = config.oidc.issuer.trim().trim_end_matches("/api/auth").to_string();
+    let found = runtime.block_on(async {
+        portal_apps::fetch_portal_apps(&portal, access_token, portal_apps::MEMORY_APP_SLUG).await
+    });
+
+    match found {
+        Discovery::Ok(apps) => {
+            let candidates = portal_apps::memory_candidates(&apps);
+            match candidates.len() {
+                0 => "No Companion Memory server is registered to your account yet — add its                       address in Settings once it's running."
+                    .into(),
+                1 => {
+                    let core = &candidates[0];
+                    config.server.portal_url = core.url.clone();
+                    config.server.url_source = config::ServerUrlSource::Discovered;
+                    log::info!("discovered Companion Memory at {}", core.url);
+                    match &core.device_name {
+                        Some(name) => format!("Connected to your Companion Memory on {name}."),
+                        None => format!("Connected to {}.", core.url),
+                    }
+                }
+                // Several Cores: picking one would silently stream this
+                // machine's captures to the wrong box. Make the user choose.
+                n => format!(
+                    "You have Companion Memory on {n} machines — pick which one this computer                      should send to in Settings."
+                ),
+            }
+        }
+        // A Portal that predates /api/users/me/apps. Say nothing about it; the
+        // user simply types the address as before.
+        Discovery::Unsupported => {
+            log::info!("portal has no app-discovery endpoint; Core address stays manual");
+            "Companion Memory will now attribute captures to that account.".into()
+        }
+        Discovery::Unauthorized => {
+            // Almost always means this client is not registered in the Portal's
+            // PUBLIC_CLIENTS, which is an operator problem, not a user one.
+            log::warn!("portal refused the access token for app discovery");
+            "Signed in, but your portal wouldn't share your server address — add it in Settings."
+                .into()
+        }
+        Discovery::Error(err) => {
+            log::warn!("Core discovery failed: {err}");
+            "Signed in. Add your Companion Memory address in Settings.".into()
+        }
+    }
 }
 
 /// After `--login`, print the stored identity and the id_token's audience +

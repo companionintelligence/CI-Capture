@@ -237,15 +237,36 @@ fn trim_body(body: &str) -> String {
 
 /// Bind the loopback listener for the redirect. Done *before* opening the
 /// browser so the redirect can never race the bind.
-async fn bind_loopback(redirect_uri: &str) -> Result<TcpListener> {
-    let url = Url::parse(redirect_uri).context("parsing oidc.redirect_uri")?;
-    let port = url
+/// Bind the loopback callback listener, returning it alongside the redirect URI
+/// that actually applies.
+///
+/// Port 0 means "let the OS pick", which is the default: a fixed port fails
+/// outright if anything else already holds it, and a capture app that cannot
+/// sign in because some unrelated process owns 49473 is a bad failure. The
+/// Portal validates the redirect per request and accepts any 127.0.0.0/8 port,
+/// so the URI legitimately differs on every sign-in — which is exactly why the
+/// resolved value has to be threaded through the authorize call *and* the token
+/// exchange rather than read from config twice.
+async fn bind_loopback(redirect_uri: &str) -> Result<(TcpListener, String)> {
+    let mut url = Url::parse(redirect_uri).context("parsing oidc.redirect_uri")?;
+    let requested = url
         .port()
-        .context("oidc.redirect_uri must include a port, e.g. http://127.0.0.1:49473/callback")?;
-    let addr = format!("127.0.0.1:{port}");
-    TcpListener::bind(&addr)
+        .context("oidc.redirect_uri must include a port, e.g. http://127.0.0.1:0/callback")?;
+    let addr = format!("127.0.0.1:{requested}");
+    let listener = TcpListener::bind(&addr)
         .await
-        .with_context(|| format!("binding loopback {addr} for the OIDC callback"))
+        .with_context(|| format!("binding loopback {addr} for the OIDC callback"))?;
+
+    if requested == 0 {
+        let port = listener
+            .local_addr()
+            .context("reading the bound loopback port")?
+            .port();
+        url.set_port(Some(port))
+            .map_err(|_| anyhow::anyhow!("could not apply the bound port to the redirect URI"))?;
+    }
+
+    Ok((listener, url.to_string()))
 }
 
 /// Accept one request on the loopback listener and pull `code` / `state` from
@@ -318,10 +339,16 @@ pub async fn login(cfg: &OidcConfig, open_browser: impl Fn(&str)) -> Result<Logi
     let (verifier, challenge) = pkce_pair();
     let state = random_b64url(16);
     let nonce = random_b64url(16);
-    let url = authorize_url(&disco, cfg, &state, &nonce, &challenge)?;
 
-    // Bind the listener before opening the browser, then accept with a timeout.
-    let listener = bind_loopback(&cfg.redirect_uri).await?;
+    // Bind first: with an ephemeral port the real redirect URI isn't known until
+    // the listener exists, and the authorize call must carry the same value the
+    // token exchange will send or the Portal rejects the exchange.
+    let (listener, redirect_uri) = bind_loopback(&cfg.redirect_uri).await?;
+    let bound = OidcConfig {
+        redirect_uri: redirect_uri.clone(),
+        ..cfg.clone()
+    };
+    let url = authorize_url(&disco, &bound, &state, &nonce, &challenge)?;
     open_browser(&url);
 
     let (code, returned_state) = tokio::time::timeout(LOGIN_TIMEOUT, accept_code(listener))
@@ -332,7 +359,7 @@ pub async fn login(cfg: &OidcConfig, open_browser: impl Fn(&str)) -> Result<Logi
         bail!("OIDC state mismatch (possible CSRF) — aborting sign-in");
     }
 
-    let tokens = exchange_code(&client, &disco, cfg, &code, &verifier).await?;
+    let tokens = exchange_code(&client, &disco, &bound, &code, &verifier).await?;
     let claims = match tokens.id_token.as_deref() {
         Some(jwt) => decode_id_claims(jwt).unwrap_or_default(),
         None => IdClaims::default(),
@@ -351,6 +378,30 @@ mod tests {
             scopes: "openid profile email offline_access".into(),
             redirect_uri: "http://127.0.0.1:49473/callback".into(),
         }
+    }
+
+    #[tokio::test]
+    async fn ephemeral_port_is_resolved_into_the_redirect_uri() {
+        let (listener, uri) = bind_loopback("http://127.0.0.1:0/callback").await.unwrap();
+        let bound = listener.local_addr().unwrap().port();
+
+        assert_ne!(bound, 0, "the OS must have assigned a real port");
+        // The URI handed back is what goes to the Portal in BOTH the authorize
+        // call and the token exchange; a mismatch there is rejected.
+        assert_eq!(uri, format!("http://127.0.0.1:{bound}/callback"));
+    }
+
+    #[tokio::test]
+    async fn an_explicit_port_is_preserved() {
+        // Self-hosters may pin a port to match a stricter allowlist.
+        let (listener, uri) = bind_loopback("http://127.0.0.1:0/callback").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+
+        let explicit = format!("http://127.0.0.1:{port}/callback");
+        let (_l, resolved) = bind_loopback(&explicit).await.unwrap();
+        assert_eq!(resolved, explicit);
+        assert_eq!(uri, explicit);
     }
 
     #[test]

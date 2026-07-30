@@ -5,6 +5,28 @@
   <!-- Menu-bar accessory app: no Dock icon, no main window. -->
   <key>LSUIElement</key>
   <true/>
+  <!-- Deep-link scheme: companionmemory://search?q=…  and  companionmemory://memory
+       Registered so macOS Shortcuts, Spotlight and other apps can address
+       Companion Memory by URL instead of shelling out to a binary path that
+       differs between an installed .app and a local build.
+
+       NOT usable as an OIDC redirect target: CI-Portal's ALLOWED_SCHEMES permits
+       `cihub:` only, so sign-in stays on a loopback listener.
+       See docs/siri-test-plan.md. -->
+  <key>CFBundleURLTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleURLName</key>
+      <string>com.compint.CompanionMemory</string>
+      <key>CFBundleTypeRole</key>
+      <string>Viewer</string>
+      <key>CFBundleURLSchemes</key>
+      <array>
+        <string>companionmemory</string>
+      </array>
+    </dict>
+  </array>
+
   <key>NSAppleEventsUsageDescription</key>
   <string>Companion Memory opens your sign-in URL and reads window/activity context to grow your Companion Memory.</string>
 </dict>

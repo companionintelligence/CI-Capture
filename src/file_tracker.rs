@@ -565,17 +565,24 @@ mod e2e {
         // a legitimate event that ships metadata-only (no extractor, so no
         // extracted text), and written first it queues — and POSTs — first.
         // That makes deterministic the ordering CI hit intermittently, where
-        // the first `file_event` to arrive is not the one under test. Other
-        // sources of the same ordering exist in the wild: a create *and* a
-        // modify for one save, or an event whose file couldn't be
-        // fingerprinted.
+        // the first `file_event` to arrive is not the one under test.
+        //
+        // Note the empty-*file* theory doesn't hold: `build_content` reads the
+        // file at send time, so even a create observed before the bytes landed
+        // ships the full body seconds later. What ships without content is an
+        // event with nothing to extract — an unsupported format (modelled
+        // here), a delete, or a file that couldn't be fingerprinted at all
+        // (`file: None`), which is what hashing a *directory* yields when
+        // FSEvents surfaces one for the watched folder.
         tokio::time::sleep(Duration::from_millis(500)).await;
         std::fs::write(watched.join("opaque.bin"), b"\x00no extractor for this").unwrap();
         tokio::time::sleep(Duration::from_millis(1_500)).await;
         std::fs::write(watched.join("notes.md"), "# Plan\n\nremember the tailscale rollout").unwrap();
 
         // So wait for the request carrying notes.md's extracted body, rather
-        // than whichever `file_event` lands first.
+        // than whichever `file_event` lands first. Failing here still means a
+        // real regression: the wait is bounded and the dump shows exactly what
+        // the lane did send.
         const EXTRACTED: &str = "remember the tailscale rollout";
         const WAIT: Duration = Duration::from_secs(30);
         let found = wait_for_request(&recorded, WAIT, |(_, _, body)| {

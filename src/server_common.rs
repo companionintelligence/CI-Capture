@@ -35,6 +35,29 @@ fn error_chain(err: &reqwest::Error) -> String {
     text
 }
 
+/// Canonicalize a user-entered Core address into an origin we can build on.
+///
+/// Strips query and fragment, and drops a `/feed` path — the Companion Memory
+/// web app's own route, which users reasonably paste when copying from a
+/// browser but which is not the API root.
+///
+/// Shared by the settings form and by Portal discovery so a hand-typed address
+/// and a discovered one normalize identically; otherwise the same Core arriving
+/// by both routes would look like two different servers.
+pub fn normalize_core_url(raw: &str) -> Result<String, String> {
+    let mut url =
+        Url::parse(raw.trim()).map_err(|_| "That doesn't look like a valid address.".to_string())?;
+    url.set_query(None);
+    url.set_fragment(None);
+
+    let path = url.path().trim_matches('/');
+    if path.is_empty() || path == "feed" || path.starts_with("feed/") {
+        url.set_path("");
+    }
+
+    Ok(url.to_string())
+}
+
 pub fn server_origin(portal_url: &str) -> Result<Url> {
     let parsed =
         Url::parse(portal_url).with_context(|| format!("parsing portal URL {portal_url}"))?;

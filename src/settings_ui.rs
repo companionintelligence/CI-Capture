@@ -11,6 +11,7 @@ use uuid::Uuid;
 
 use crate::config::{AppConfig, ConfigManager, MinioConfig, PostgresConfig};
 use crate::connection_test;
+use crate::server_common::normalize_core_url;
 use crate::theme;
 use crate::tokens;
 
@@ -295,8 +296,15 @@ impl SettingsApp {
     /// probes exactly what the form shows.
     fn build_config(&self) -> AppConfig {
         let mut c = self.base_config.lock().clone();
-        c.server.portal_url = normalize_ci_server_url(self.form.portal_url.trim())
+        let typed = normalize_core_url(self.form.portal_url.trim())
             .unwrap_or_else(|_| self.form.portal_url.trim().to_string());
+        // Saving from this form is an explicit choice, so mark the address
+        // manual: Portal discovery may replace one it set itself, but must
+        // never move a Core the user picked.
+        if typed != c.server.portal_url {
+            c.server.url_source = crate::config::ServerUrlSource::Manual;
+        }
+        c.server.portal_url = typed;
         // The tray login + token-refresh flow owns the OIDC session, the
         // id_token bearer, and the registered device id — and runs in a
         // separate process that may have written config.json while this
@@ -454,7 +462,7 @@ impl SettingsApp {
             return Err("Your Core's address is required.".into());
         }
         if !self.form.portal_url.trim().is_empty() {
-            normalize_ci_server_url(self.form.portal_url.trim())?;
+            normalize_core_url(self.form.portal_url.trim())?;
         }
         if self.form.auth_mode == AuthMode::ApiKey
             && !self.form.portal_url.trim().is_empty()
@@ -993,22 +1001,11 @@ fn render_advanced_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bool 
     changed
 }
 
-fn normalize_ci_server_url(raw: &str) -> Result<String, String> {
-    let mut url = Url::parse(raw).map_err(|_| "That doesn't look like a valid address.".to_string())?;
-    url.set_query(None);
-    url.set_fragment(None);
-
-    let path = url.path().trim_matches('/');
-    if path.is_empty() || path == "feed" || path.starts_with("feed/") {
-        url.set_path("");
-    }
-
-    Ok(url.to_string())
-}
 
 #[cfg(test)]
 mod tests {
-    use super::{AuthMode, SettingsFormState, normalize_ci_server_url};
+    use super::{AuthMode, SettingsFormState};
+    use crate::server_common::normalize_core_url;
     use crate::config::{AppConfig, OidcSession};
 
     #[test]
@@ -1042,11 +1039,11 @@ mod tests {
     #[test]
     fn feed_page_url_normalizes_to_origin() {
         assert_eq!(
-            normalize_ci_server_url("https://ci-server.localhost/feed").unwrap(),
+            normalize_core_url("https://ci-server.localhost/feed").unwrap(),
             "https://ci-server.localhost/"
         );
         assert_eq!(
-            normalize_ci_server_url("https://ci.example.com/feed?cursor=abc").unwrap(),
+            normalize_core_url("https://ci.example.com/feed?cursor=abc").unwrap(),
             "https://ci.example.com/"
         );
     }
@@ -1054,7 +1051,7 @@ mod tests {
     #[test]
     fn api_base_path_is_preserved() {
         assert_eq!(
-            normalize_ci_server_url("https://ci.example.com/api").unwrap(),
+            normalize_core_url("https://ci.example.com/api").unwrap(),
             "https://ci.example.com/api"
         );
     }

@@ -158,13 +158,7 @@ struct OnboardingApp {
     perms: permissions::Permissions,
 }
 
-/// Production Portal sign-in URL.
-///
-/// Used as the *effective* default rather than a prefilled text box, so a fresh
-/// install can sign in with zero typing. `hub.companionintelligence.com` is the
-/// dev worker per CI-Portal's `wrangler.jsonc`; `hub.ci.computer` is production
-/// and is what CI-Browser-Extension ships with.
-const DEFAULT_ISSUER: &str = "https://hub.ci.computer/api/auth";
+use crate::config::DEFAULT_PORTAL_ISSUER as DEFAULT_ISSUER;
 
 impl OnboardingApp {
     fn new(
@@ -218,11 +212,17 @@ impl OnboardingApp {
         }
     }
 
-    /// Persist the current CI-Server URL + OIDC issuer (merge-safe).
+    /// Persist the current Core address + OIDC issuer (merge-safe).
     fn save_connection_fields(&mut self) {
         let url = self.server_url.trim().to_string();
         let issuer = self.oidc_issuer.trim().to_string();
         self.persist_merged(|c| {
+            // Same rule as the settings form: an address typed here is the
+            // user's choice and discovery must not overwrite it. An untouched
+            // field leaves the provenance alone so discovery can still fill it.
+            if !url.is_empty() && url != c.server.portal_url {
+                c.server.url_source = crate::config::ServerUrlSource::Manual;
+            }
             c.server.portal_url = url;
             c.oidc.issuer = issuer;
         });
