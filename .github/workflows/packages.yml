@@ -1,7 +1,7 @@
 name: Packages
 
 # Builds the Linux container image and publishes it to GitHub Packages
-# (ghcr.io/companionintelligence/ci-applet) on pushes to main, on version
+# (ghcr.io/companionintelligence/ci-capture) on pushes to main, on version
 # tags, and on manual dispatch. Pull requests build the image but don't push.
 
 on:

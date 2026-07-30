@@ -142,7 +142,7 @@ pub async fn ingest_capture(
     // Never inherit an ambient proxy. reqwest honours HTTP_PROXY / HTTPS_PROXY /
     // ALL_PROXY from the environment by default, which would silently route screen
     // captures and window titles through a third party — and terminate TLS there
-    // for a plain-http Core. A capture client whose whole claim is "your data
+    // for a plain-http server. A capture client whose whole claim is "your data
     // reaches only your own machines" cannot let an inherited shell export
     // override that. Every client in this crate sets `.no_proxy()` for the same
     // reason; if proxy support is ever wanted it belongs in config as an explicit,

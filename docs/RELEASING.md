@@ -1,8 +1,8 @@
-# Building & releasing CI-Applet with GitHub Actions
+# Building & releasing Companion Capture with GitHub Actions
 
 > **Private & Confidential — Property of Lifescope Inc. Do not distribute.**
 
-This is the runbook for producing CI-Applet builds — the same GitHub-Actions
+This is the runbook for producing Companion Capture builds — the same GitHub-Actions
 model CI-Hub uses (per-OS runners, code signing + notarization, environment
 channels, a `latest.json` manifest, and provenance attestation). If you just
 want to **produce installers to test**, jump to [Build a dev release](#1-build-a-dev-release-no-secrets-needed).
@@ -12,7 +12,7 @@ want to **produce installers to test**, jump to [Build a dev release](#1-build-a
 | Workflow | File | Trigger | Produces |
 |---|---|---|---|
 | **CI** | [`ci.yml`](../.github/workflows/ci.yml) | every push to `main` + every PR | build & test on macOS/Linux/Windows — **no artifacts** |
-| **Packages** | [`packages.yml`](../.github/workflows/packages.yml) | push to `main`, `v*` tags, manual | Linux container image → `ghcr.io/companionintelligence/ci-applet` |
+| **Packages** | [`packages.yml`](../.github/workflows/packages.yml) | push to `main`, `v*` tags, manual | Linux container image → `ghcr.io/companionintelligence/ci-capture` |
 | **Desktop Release** | [`release.yml`](../.github/workflows/release.yml) | `v*` tag push, **or** manual dispatch | native installers (`.dmg` / `.exe` / `.deb` / `.AppImage` / Arch) → a GitHub Release |
 
 "Building these versions" = the **Desktop Release** workflow. It runs
@@ -29,7 +29,7 @@ vault entries) — see [`DESKTOP-RELEASE-SECRETS.md`](DESKTOP-RELEASE-SECRETS.md
 
 **Not yet (deliberate):** CI-Hub also pushes `latest.json` + installers to an
 R2 CDN (`dl.ci.computer`) that its in-app `updater.rs` polls for auto-update.
-CI-Applet **generates** `latest.json` and attaches it to the Release, but does
+Companion Capture **generates** `latest.json` and attaches it to the Release, but does
 not yet publish a CDN feed or self-update — that's a planned follow-up
 (Phase 1). For now, updating means downloading the new installer.
 
@@ -124,14 +124,14 @@ Every Desktop Release publishes:
   `--features rich-extractors`.
 - **`latest.json`** — machine-readable manifest (version, channel, per-asset
   size + sha256, source commit, workflow run URL).
-- **`CI-Applet-<tag>-SHA256SUMS.txt`** — checksums for every asset.
+- **`CompanionCapture-<tag>-SHA256SUMS.txt`** — checksums for every asset.
 - **`.asc`** detached GPG signatures (when `LINUX_GPG_PRIVATE_KEY` is set).
 - **Build-provenance attestations** (`actions/attest-build-provenance`).
 
 ### Verify a download
 
 ```bash
-shasum -a 256 -c CI-Applet-v0.1.0-SHA256SUMS.txt
+shasum -a 256 -c CompanionCapture-v0.1.0-SHA256SUMS.txt
 ```
 
 ---

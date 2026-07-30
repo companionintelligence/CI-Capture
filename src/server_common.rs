@@ -46,7 +46,7 @@ fn error_chain(err: &reqwest::Error) -> String {
 /// `Url::parse` reads that as scheme `core-1` with path `8642` — a URL with no
 /// host, which parses fine here and then fails in every caller with
 /// "portal URL is missing a hostname". Guessing the scheme is safe because the
-/// connection test immediately proves it: a Core is normally reached over the
+/// connection test immediately proves it: a server is normally reached over the
 /// LAN or a tailnet, so a local-looking host gets `http`, and anything else
 /// gets `https` rather than silently sending a credential in the clear.
 ///
@@ -57,10 +57,10 @@ fn error_chain(err: &reqwest::Error) -> String {
 /// Shared by the settings form, the setup assistant, and Portal discovery so a
 /// hand-typed address and a discovered one normalize identically; otherwise the
 /// same server arriving by both routes would look like two different servers.
-pub fn normalize_core_url(raw: &str) -> Result<String, String> {
+pub fn normalize_server_url(raw: &str) -> Result<String, String> {
     let raw = raw.trim();
     if raw.is_empty() {
-        return Err("Enter your Core's address.".to_string());
+        return Err("Enter your Companion Memory server address.".to_string());
     }
 
     let invalid = || "That doesn't look like a valid address.".to_string();
@@ -305,7 +305,7 @@ fn is_ci_server_api_key(token: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        AuthCredential, Url, events_urls, graphql_urls, memory_url, normalize_core_url,
+        AuthCredential, Url, events_urls, graphql_urls, memory_url, normalize_server_url,
         server_origin, upload_urls,
     };
 
@@ -413,7 +413,7 @@ mod tests {
     #[test]
     fn scheme_less_address_gets_one_instead_of_becoming_hostless() {
         for raw in ["core-1:8642", "core-1", "my-core.tailnet.ts.net:8642"] {
-            let out = normalize_core_url(raw)
+            let out = normalize_server_url(raw)
                 .unwrap_or_else(|e| panic!("{raw:?} should normalize, got {e:?}"));
             let url = Url::parse(&out).unwrap();
             assert!(
@@ -439,7 +439,7 @@ mod tests {
             ("ci.example.com", "https://ci.example.com/"),
             ("ci.example.com:8642", "https://ci.example.com:8642/"),
         ] {
-            assert_eq!(normalize_core_url(raw).unwrap(), expected, "input {raw:?}");
+            assert_eq!(normalize_server_url(raw).unwrap(), expected, "input {raw:?}");
         }
     }
 
@@ -447,11 +447,11 @@ mod tests {
     fn an_explicit_scheme_is_always_respected() {
         // Never "upgrade" what the user actually typed.
         assert_eq!(
-            normalize_core_url("http://ci.example.com").unwrap(),
+            normalize_server_url("http://ci.example.com").unwrap(),
             "http://ci.example.com/"
         );
         assert_eq!(
-            normalize_core_url("https://core-1:8642").unwrap(),
+            normalize_server_url("https://core-1:8642").unwrap(),
             "https://core-1:8642/"
         );
     }
@@ -459,7 +459,7 @@ mod tests {
     #[test]
     fn feed_route_and_query_are_still_stripped_without_a_scheme() {
         assert_eq!(
-            normalize_core_url("core-1:8642/feed?cursor=abc").unwrap(),
+            normalize_server_url("core-1:8642/feed?cursor=abc").unwrap(),
             "http://core-1:8642/"
         );
     }
@@ -468,9 +468,9 @@ mod tests {
     fn junk_is_rejected_rather_than_saved() {
         for raw in ["", "   ", "http://", "://core-1", "not a url at all"] {
             assert!(
-                normalize_core_url(raw).is_err(),
+                normalize_server_url(raw).is_err(),
                 "{raw:?} should be rejected, got {:?}",
-                normalize_core_url(raw)
+                normalize_server_url(raw)
             );
         }
     }

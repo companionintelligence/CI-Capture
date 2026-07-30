@@ -1,7 +1,7 @@
 # db.rs
 
 ## Purpose
-Owns Postgres writes for CI-Applet. It records both screenshot-derived history and screenshot-aligned embedded `vizier` events through a shared connection pool.
+Owns Postgres writes for Companion Capture. It records both screenshot-derived history and screenshot-aligned embedded `vizier` events through a shared connection pool.
 
 ## Components
 

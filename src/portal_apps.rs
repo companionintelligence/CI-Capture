@@ -1,7 +1,7 @@
-//! Post-sign-in Core discovery against CI-Portal.
+//! Post-sign-in Companion Memory discovery against CI-Portal.
 //!
 //! After the OIDC flow completes, the app asks the Portal *where the user's
-//! Companion Memory runs* so the Core address configures itself instead of
+//! Companion Memory runs* so the server address configures itself instead of
 //! being typed. This is the difference between a fresh install that works and
 //! one that asks for a hostname the user has to go look up.
 //!
@@ -22,7 +22,7 @@ use std::time::Duration;
 use reqwest::{Client, StatusCode, Url};
 use serde::Deserialize;
 
-use crate::server_common::normalize_core_url;
+use crate::server_common::normalize_server_url;
 
 /// The marketplace slug for Companion Memory (CI-Server).
 pub const MEMORY_APP_SLUG: &str = "ci-memory";
@@ -61,7 +61,7 @@ struct RawApp {
 /// back to manual entry while telling the user their sign-in failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Discovery {
-    /// The Portal answered. May legitimately be empty (no Core provisioned).
+    /// The Portal answered. May legitimately be empty (no server provisioned).
     Ok(Vec<PortalApp>),
     /// 404/405 — a Portal predating `/api/users/me/apps`. Fall back quietly.
     Unsupported,
@@ -132,7 +132,7 @@ pub async fn fetch_portal_apps(portal_url: &str, access_token: &str, slug: &str)
 /// Reduce a raw app list to reachable Companion Memory candidates: right slug,
 /// normalized URL, deduplicated.
 ///
-/// One candidate means the Core can be configured without asking. Several means
+/// One candidate means the server can be configured without asking. Several means
 /// Memory is installed on more than one machine and the user has to choose —
 /// picking for them would silently stream a laptop's captures to the wrong box.
 pub fn memory_candidates(apps: &[PortalApp]) -> Vec<PortalApp> {
@@ -142,7 +142,7 @@ pub fn memory_candidates(apps: &[PortalApp]) -> Vec<PortalApp> {
         if app.slug != MEMORY_APP_SLUG {
             continue;
         }
-        let Ok(url) = normalize_core_url(&app.url) else {
+        let Ok(url) = normalize_server_url(&app.url) else {
             continue;
         };
         if seen.contains(&url) {
@@ -204,7 +204,7 @@ mod tests {
 
     #[test]
     fn deduplicates_by_normalized_url() {
-        // The same Core advertised twice with cosmetic differences must not
+        // The same server advertised twice with cosmetic differences must not
         // present as a choice between two machines.
         let apps = [
             app("ci-memory", "http://core-1:8642", Some("Core")),

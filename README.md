@@ -6,15 +6,15 @@
 
 <p align="center">
   <a href="https://github.com/companionintelligence/CI-Capture/actions/workflows/ci.yml"><img src="https://github.com/companionintelligence/CI-Capture/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <img src="https://img.shields.io/badge/platform-macOS%20%C2%B7%20Linux%20%C2%B7%20Windows-1A1A1A" alt="platform macOS, Linux, Windows">
-  <img src="https://img.shields.io/badge/Rust-edition%202024-5C8DFF?logo=rust&logoColor=white" alt="Rust edition 2024">
-  <img src="https://img.shields.io/badge/tests-185%20passing-2DD4BF" alt="185 tests passing">
-  <img src="https://img.shields.io/badge/license-CI--Commercial--1.0-7C6BFF" alt="license CI-Commercial-1.0">
+  <img src="https://img.shields.io/badge/platform-macOS%20%C2%B7%20Linux%20%C2%B7%20Windows-041620" alt="platform macOS, Linux, Windows">
+  <img src="https://img.shields.io/badge/Rust-edition%202024-0F717A?logo=rust&logoColor=white" alt="Rust edition 2024">
+  <img src="https://img.shields.io/badge/tests-217%20passing-35A05C" alt="217 tests passing">
+  <img src="https://img.shields.io/badge/license-CI--Commercial--1.0-2C676D" alt="license CI-Commercial-1.0">
 </p>
 
 > **Companion Intelligence — Capture layer.** Licensed under CI-Commercial-1.0. © 2019–2026 LifeScope Inc.
 
-A lightweight **cross‑platform** menu‑bar / system‑tray Capture (macOS, Windows, Linux) that grows your **Companion Memory** by perceiving your desktop and streaming it to your CI‑Server.
+**Companion Capture** is a lightweight **cross‑platform** menu‑bar / system‑tray app (macOS, Windows, Linux) that grows your **Companion Memory** by perceiving your desktop and streaming it to your CI‑Server.
 
 ## What it captures
 

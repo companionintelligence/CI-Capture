@@ -1,6 +1,6 @@
 # Phase 3 — Markdown conversion pipeline
 
-**Tracks:** [#3](https://github.com/companionintelligence/CI-Applet/issues/3) (Phases 2–3 in that issue's plan).
+**Tracks:** [#3](https://github.com/companionintelligence/CI-Capture/issues/3) (Phases 2–3 in that issue's plan).
 **Branch:** `phase-3-conversion`
 **Coordinates:**
 - **CI-Server:** new endpoints `POST /history/documents/upsert`, `POST /history/blobs/upload`, `POST /history/documents/{id}/chunks`; storage for raw blobs and Markdown artifacts.

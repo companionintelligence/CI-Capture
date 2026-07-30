@@ -1,4 +1,4 @@
-# CI-Applet — File-tracking plan (rebuilt)
+# Companion Capture — File-tracking plan (rebuilt)
 
 > Consolidates the Phase 0–4 branch series into one shipped feature and
 > records the **real** server contract (not the originally-assumed one).
@@ -59,7 +59,8 @@ So the file-tracking lane writes capture events there instead of inventing
 endpoints the server can't serve:
 
 - `kind = "file_event"`
-- `source_system = "ci-applet"`
+- `source_system = "ci-applet"` — **frozen wire identifier**, deliberately not
+  renamed with the product so existing CI-Server rows keep matching
 - `source_id = NormalizedEvent.event_id`
 - `payload = { event: NormalizedEvent, content: { markdown, section_count, extractor, content_truncated } }`
 

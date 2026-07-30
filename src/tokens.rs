@@ -10,9 +10,9 @@
 //! bumps its token version, re-transcribe this file and update the version in
 //! the doc comment above — do not drift the values locally.
 //!
-//! Only the tokens the applet actually renders are transcribed. The applet is
-//! dark-only (see [`crate::theme`]), so the `light` set is present for
-//! reference and future use but is not currently wired into any `Visuals`.
+//! Only the tokens the applet actually renders are transcribed. Both `dark`
+//! and `light` are wired into real `Visuals` in [`crate::theme::Palette`],
+//! which follows the OS appearance.
 //!
 //! Semantic naming (`PANEL`, `TEXT`, `TEAL`, …) lives in [`crate::theme`];
 //! this module stays a faithful mirror of the upstream token names.
@@ -26,7 +26,7 @@ const fn hex(rgb: u32) -> Color32 {
     Color32::from_rgb((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8)
 }
 
-/// Dark mode — the applet's only mode.
+/// Dark mode.
 pub mod dark {
     use super::{Color32, hex};
 
@@ -75,7 +75,7 @@ pub mod dark {
     pub const INFO_FOREGROUND: Color32 = hex(0x082f49);
 }
 
-/// Light mode — transcribed for completeness; not currently wired up.
+/// Light mode.
 pub mod light {
     use super::{Color32, hex};
 
@@ -97,6 +97,12 @@ pub mod light {
     pub const SUCCESS: Color32 = hex(0x16a34a);
     pub const WARNING: Color32 = hex(0xd97706);
     pub const INFO: Color32 = hex(0x0284c7);
+
+    pub const CHART_1: Color32 = hex(0xf54900);
+    pub const CHART_2: Color32 = hex(0x009689);
+    pub const CHART_3: Color32 = hex(0x104e64);
+    pub const CHART_4: Color32 = hex(0xffb900);
+    pub const CHART_5: Color32 = hex(0xfe9a00);
 }
 
 /// Brand teal ramp — mode-independent.

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Upload CI-Applet desktop installers + manifest.json + latest.json to the
+# Upload Companion Capture desktop installers + manifest.json + latest.json to the
 # shared dl.ci.computer R2 bucket, namespaced under R2_PREFIX so this product
 # doesn't collide with Companion Hub's uploads at the bucket root.
 #
@@ -26,29 +26,29 @@ upload() {
   wrangler r2 object put --remote "${R2_BUCKET}/${R2_PREFIX}/$1" --file "$2"
 }
 
-echo "Uploading CI-Applet ${VERSION} to R2 bucket ${R2_BUCKET}/${R2_PREFIX} (CDN ${DOWNLOAD_BASE_URL}/${R2_PREFIX})"
+echo "Uploading Companion Capture ${VERSION} to R2 bucket ${R2_BUCKET}/${R2_PREFIX} (CDN ${DOWNLOAD_BASE_URL}/${R2_PREFIX})"
 
 # macOS
-for f in artifacts/ci-applet-macos-arm64/*.dmg; do
+for f in artifacts/companion-capture-macos-arm64/*.dmg; do
   [ -f "$f" ] && upload "${VERSION}/macos/arm/$(basename "$f")" "$f"
 done
-for f in artifacts/ci-applet-macos-intel/*.dmg; do
+for f in artifacts/companion-capture-macos-intel/*.dmg; do
   [ -f "$f" ] && upload "${VERSION}/macos/intel/$(basename "$f")" "$f"
 done
 
 # Windows x64 (NSIS setup.exe — cargo-packager doesn't produce an .msi here)
-for f in artifacts/ci-applet-windows-x64/*.exe; do
+for f in artifacts/companion-capture-windows-x64/*.exe; do
   [ -f "$f" ] && upload "${VERSION}/windows/x64/$(basename "$f")" "$f"
 done
 
 # Linux x64
-for f in artifacts/ci-applet-linux-x64/*.deb; do
+for f in artifacts/companion-capture-linux-x64/*.deb; do
   [ -f "$f" ] && upload "${VERSION}/linux/deb/x64/$(basename "$f")" "$f"
 done
-for f in artifacts/ci-applet-linux-x64/*.AppImage; do
+for f in artifacts/companion-capture-linux-x64/*.AppImage; do
   [ -f "$f" ] && upload "${VERSION}/linux/appimage/x64/$(basename "$f")" "$f"
 done
-for f in artifacts/ci-applet-linux-x64/*.pkg.tar.*; do
+for f in artifacts/companion-capture-linux-x64/*.pkg.tar.*; do
   [ -f "$f" ] && upload "${VERSION}/linux/pacman/x64/$(basename "$f")" "$f"
 done
 
@@ -60,6 +60,8 @@ const crypto = require('crypto');
 
 const { VERSION, SEMVER, DATE, DOWNLOAD_BASE_URL, R2_PREFIX } = process.env;
 const manifest = {
+  // Frozen wire value — consumers key off this, so it did NOT change with the
+  // Companion Capture rename. Same reasoning as R2_PREFIX=applet above.
   product: 'ci-applet',
   version: SEMVER,
   date: DATE,
@@ -67,10 +69,10 @@ const manifest = {
 };
 
 const mappings = [
-  ['macos-aarch64', 'ci-applet-macos-arm64', { dmg: '.dmg' }, 'macos/arm'],
-  ['macos-x86_64', 'ci-applet-macos-intel', { dmg: '.dmg' }, 'macos/intel'],
-  ['windows-x86_64', 'ci-applet-windows-x64', { exe: '.exe' }, 'windows/x64'],
-  ['linux-x86_64', 'ci-applet-linux-x64', { deb: '.deb', appimage: '.AppImage' }, null],
+  ['macos-aarch64', 'companion-capture-macos-arm64', { dmg: '.dmg' }, 'macos/arm'],
+  ['macos-x86_64', 'companion-capture-macos-intel', { dmg: '.dmg' }, 'macos/intel'],
+  ['windows-x86_64', 'companion-capture-windows-x64', { exe: '.exe' }, 'windows/x64'],
+  ['linux-x86_64', 'companion-capture-linux-x64', { deb: '.deb', appimage: '.AppImage' }, null],
 ];
 
 for (const [platform, artifactDir, formats, fixedR2Path] of mappings) {

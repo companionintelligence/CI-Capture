@@ -111,7 +111,7 @@ fn no_server_hint(ui: &mut egui::Ui) {
             .link(
                 egui::RichText::new("Companion Hub")
                     .font(theme::body(tokens::text::SMALL))
-                    .color(theme::TEAL),
+                    .color(theme::TEAL()),
             )
             .on_hover_text(DOWNLOAD_URL)
             .clicked()
@@ -171,6 +171,10 @@ struct OnboardingApp {
     centered: bool,
     /// Last time OS permissions were re-read, in egui's monotonic seconds.
     perms_polled_at: f64,
+    /// (step, egui-monotonic start time) for the current step's entrance
+    /// animation. `None` until the first frame, which is what makes the very
+    /// first paint fade in too, not just step-to-step transitions.
+    step_anim: Option<(Step, f64)>,
 
     // Connect step
     server_url: String,
@@ -213,7 +217,27 @@ impl OnboardingApp {
             step: Step::Welcome,
             centered: false,
             perms_polled_at: 0.0,
+            step_anim: None,
         }
+    }
+
+    /// 0 (just entered) → 1 (settled) for the current step, eased. Restarts
+    /// whenever `self.step` changes; call once per frame, before drawing.
+    fn step_progress(&mut self, ctx: &egui::Context) -> f32 {
+        const ANIM_SECS: f64 = 0.3;
+        let now = ctx.input(|i| i.time);
+        let restart = !matches!(self.step_anim, Some((s, _)) if s == self.step);
+        if restart {
+            self.step_anim = Some((self.step, now));
+        }
+        let started = self.step_anim.expect("just set above if it was None").1;
+        let t = ((now - started) / ANIM_SECS).clamp(0.0, 1.0) as f32;
+        if t < 1.0 {
+            ctx.request_repaint();
+        }
+        // Ease-out cubic: quick start, gentle settle — reads as "arriving",
+        // not "sliding," which suits a step that replaces the one before it.
+        1.0 - (1.0 - t).powi(3)
     }
 
     fn has_credential(&self) -> bool {
@@ -249,7 +273,7 @@ impl OnboardingApp {
         if raw.is_empty() {
             return Some(String::new());
         }
-        match crate::server_common::normalize_core_url(raw) {
+        match crate::server_common::normalize_server_url(raw) {
             Ok(url) => {
                 // Show what was actually stored: the scheme it gained, or the
                 // `/feed` it lost, should not be a silent edit.
@@ -406,7 +430,7 @@ impl OnboardingApp {
             ui.spacing_mut().item_spacing.x = 12.0;
             // Tinted, not raw: `ci-mark-white.svg` is 18 white-filled paths, so
             // drawing it untinted leaves it invisible on any light surface.
-            theme::logo(ui, &self.logo, 34.0, theme::TEAL);
+            theme::logo(ui, &self.logo, 34.0, theme::TEAL());
             theme::heading(ui, title);
         });
         ui.add_space(14.0);
@@ -418,9 +442,9 @@ impl OnboardingApp {
             ui.spacing_mut().item_spacing.x = 8.0;
             for (i, label) in Step::ALL.iter().map(|s| s.short_label()).enumerate() {
                 let (fill, fg) = match i.cmp(&here) {
-                    std::cmp::Ordering::Less => (theme::tint(theme::TEAL, 40), theme::TEAL),
-                    std::cmp::Ordering::Equal => (theme::TEAL, theme::ON_TEAL),
-                    std::cmp::Ordering::Greater => (theme::CARD, theme::FAINT),
+                    std::cmp::Ordering::Less => (theme::tint(theme::TEAL(), 40), theme::TEAL()),
+                    std::cmp::Ordering::Equal => (theme::TEAL(), theme::ON_TEAL()),
+                    std::cmp::Ordering::Greater => (theme::CARD(), theme::FAINT()),
                 };
                 let text = if i < here {
                     format!("✓  {label}")
@@ -444,8 +468,8 @@ impl OnboardingApp {
     fn status_widget(&self, ui: &mut egui::Ui) {
         if let Some(status) = &self.status_line {
             let (glyph, color, msg) = match status {
-                Ok(m) => ("✓", theme::GREEN, m),
-                Err(m) => ("✗", theme::RED, m),
+                Ok(m) => ("✓", theme::GREEN(), m),
+                Err(m) => ("✗", theme::RED(), m),
             };
             ui.horizontal_wrapped(|ui| {
                 ui.label(
@@ -476,17 +500,17 @@ impl OnboardingApp {
             ui.set_width(ui.available_width());
             for (color, title, body) in [
                 (
-                    theme::LANE_SHOT,
+                    theme::LANE_SHOT(),
                     "Screens",
                     "A picture of your screen now and then. Near-identical frames are skipped.",
                 ),
                 (
-                    theme::LANE_ACTIVITY,
+                    theme::LANE_ACTIVITY(),
                     "Activity",
                     "Which app and window you're in, so your memory has context.",
                 ),
                 (
-                    theme::LANE_FILE,
+                    theme::LANE_FILE(),
                     "Files",
                     "Documents you edit in folders you choose. Off until you pick one.",
                 ),
@@ -499,7 +523,7 @@ impl OnboardingApp {
                         ui.label(
                             egui::RichText::new(title)
                                 .font(theme::semibold(tokens::text::LABEL))
-                                .color(theme::TEXT),
+                                .color(theme::TEXT()),
                         );
                         theme::caption(ui, body);
                     });
@@ -534,21 +558,21 @@ impl OnboardingApp {
             theme::card(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.horizontal(|ui| {
-                    theme::status_dot(ui, theme::GREEN, true);
+                    theme::status_dot(ui, theme::GREEN(), true);
                     ui.add_space(8.0);
                     ui.vertical(|ui| {
                         ui.spacing_mut().item_spacing.y = 3.0;
                         ui.label(
                             egui::RichText::new(self.who().unwrap_or_else(|| "Signed in".into()))
                                 .font(theme::semibold(tokens::text::BODY))
-                                .color(theme::TEXT),
+                                .color(theme::TEXT()),
                         );
                         let target = if self.server_url.trim().is_empty() {
                             "Looking for your Companion Memory server…".to_string()
                         } else {
                             self.server_url.trim().to_string()
                         };
-                        theme::mono_label(ui, &target, theme::MUTED);
+                        theme::mono_label(ui, &target, theme::MUTED());
                     });
                 });
             });
@@ -587,7 +611,7 @@ impl OnboardingApp {
         egui::CollapsingHeader::new(
             egui::RichText::new("Set things up manually")
                 .font(theme::body(tokens::text::SMALL))
-                .color(theme::MUTED),
+                .color(theme::MUTED()),
         )
         .id_salt("onboarding_advanced")
         .show(ui, |ui| {
@@ -663,7 +687,7 @@ impl OnboardingApp {
             ui.horizontal(|ui| {
                 theme::status_dot(
                     ui,
-                    if granted { theme::GREEN } else { theme::AMBER },
+                    if granted { theme::GREEN() } else { theme::AMBER() },
                     !granted,
                 );
                 ui.add_space(10.0);
@@ -672,7 +696,7 @@ impl OnboardingApp {
                     ui.label(
                         egui::RichText::new("Screen Recording")
                             .font(theme::semibold(tokens::text::BODY))
-                            .color(theme::TEXT),
+                            .color(theme::TEXT()),
                     );
                     theme::caption(
                         ui,
@@ -692,7 +716,7 @@ impl OnboardingApp {
                             let _ = crate::open_url(permissions::screen_recording_settings_url());
                         }
                     } else {
-                        theme::status_badge(ui, "Granted", theme::GREEN);
+                        theme::status_badge(ui, "Granted", theme::GREEN());
                     }
                 });
             });
@@ -703,7 +727,7 @@ impl OnboardingApp {
             ui.label(
                 egui::RichText::new("✓  Nothing else to do.")
                     .font(theme::body(tokens::text::LABEL))
-                    .color(theme::GREEN),
+                    .color(theme::GREEN()),
             );
         } else {
             theme::caption(
@@ -784,7 +808,7 @@ impl OnboardingApp {
             ui.label(
                 egui::RichText::new(if ok { "✓" } else { "•" })
                     .font(theme::semibold(tokens::text::BODY))
-                    .color(if ok { theme::GREEN } else { theme::AMBER }),
+                    .color(if ok { theme::GREEN() } else { theme::AMBER() }),
             );
             ui.add_space(8.0);
             ui.vertical(|ui| {
@@ -792,7 +816,7 @@ impl OnboardingApp {
                 ui.label(
                     egui::RichText::new(title)
                         .font(theme::body(tokens::text::LABEL))
-                        .color(theme::TEXT),
+                        .color(theme::TEXT()),
                 );
                 theme::caption(ui, detail);
             });
@@ -891,6 +915,7 @@ impl OnboardingApp {
 
 impl eframe::App for OnboardingApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        theme::sync(ctx);
         self.poll_jobs(ctx);
         theme::center_once(ctx, &mut self.centered);
         // Explicit fill: a bare `CentralPanel` inherits `Visuals::panel_fill`,
@@ -903,7 +928,7 @@ impl eframe::App for OnboardingApp {
         egui::TopBottomPanel::bottom("onboarding_nav")
             .frame(
                 egui::Frame::new()
-                    .fill(theme::PANEL_HI)
+                    .fill(theme::PANEL_HI())
                     .inner_margin(egui::Margin::symmetric(30, 16)),
             )
             .show(ctx, |ui| self.nav_bar(ui));
@@ -911,22 +936,31 @@ impl eframe::App for OnboardingApp {
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::new()
-                    .fill(theme::PANEL)
+                    .fill(theme::PANEL())
                     .inner_margin(egui::Margin::symmetric(30, 26)),
             )
             .show(ctx, |ui| {
                 let step = self.step;
                 self.header(ui, step.title());
+                let eased = self.step_progress(ctx);
                 // Every step scrolls. Without this the Connect step clipped
                 // irrecoverably at the minimum window size, with no way to reach
                 // the controls below the fold.
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
-                    .show(ui, |ui| match step {
-                        Step::Welcome => self.welcome(ui),
-                        Step::Connect => self.connect(ui),
-                        Step::Permissions => self.permissions(ui),
-                        Step::Finish => self.finish_step(ui),
+                    .show(ui, |ui| {
+                        // Fade + rise on entry, header/nav excluded so the step
+                        // chips update instantly rather than fading with the body.
+                        ui.add_space((1.0 - eased) * 12.0);
+                        ui.scope(|ui| {
+                            ui.set_opacity(eased);
+                            match step {
+                                Step::Welcome => self.welcome(ui),
+                                Step::Connect => self.connect(ui),
+                                Step::Permissions => self.permissions(ui),
+                                Step::Finish => self.finish_step(ui),
+                            }
+                        });
                     });
             });
     }

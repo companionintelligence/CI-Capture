@@ -1,10 +1,10 @@
-# CI-Applet — desktop release secrets
+# Companion Capture — desktop release secrets
 
-Secrets for [`.github/workflows/release.yml`](../.github/workflows/release.yml) (**Desktop Release**). They are **GitHub Environment secrets**, not local `.env` files — CI-Applet has no stack env file like CI-Hub.
+Secrets for [`.github/workflows/release.yml`](../.github/workflows/release.yml) (**Desktop Release**). They are **GitHub Environment secrets**, not local `.env` files — CI-Capture has no stack env file like CI-Hub.
 
 ## 1. Create GitHub Environments
 
-In **companionintelligence/CI-Applet** → **Settings** → **Environments**, create:
+In **companionintelligence/CI-Capture** → **Settings** → **Environments**, create:
 
 | Environment | Used for |
 |-------------|----------|
@@ -34,7 +34,7 @@ These are shared with CI-Hub **GitHub Environment** secrets (`production` / `dev
 | `AZURE_SIGNING_ACCOUNT` | Artifact Signing account name |
 | `AZURE_CERTIFICATE_PROFILE` | Certificate profile name |
 
-### CI-Applet only (not in CI-Hub desktop release)
+### CI-Capture only (not in CI-Hub desktop release)
 
 | Secret | Purpose | Status |
 |--------|---------|--------|
@@ -43,11 +43,11 @@ These are shared with CI-Hub **GitHub Environment** secrets (`production` / `dev
 
 Production Linux releases **fail** without `LINUX_GPG_PRIVATE_KEY`. macOS and Windows require their signing secrets when building those platforms in production.
 
-### CI-Hub secrets CI-Applet does **not** need
+### CI-Hub secrets CI-Capture does **not** need
 
 | Secret / note | Why |
 |---------------|-----|
-| `SENTRY_AUTH_TOKEN`, `SENTRY_DSN`, `SENTRY_DESKTOP_DSN`, `SENTRY_FRONTEND_DSN` | No Sentry in CI-Applet workflows |
+| `SENTRY_AUTH_TOKEN`, `SENTRY_DSN`, `SENTRY_DESKTOP_DSN`, `SENTRY_FRONTEND_DSN` | No Sentry in CI-Capture workflows |
 | `SENTRY_ORG`, `SENTRY_*_PROJECT` | Metadata only in Hub vault |
 | `CF_R2_DL_API_TOKEN`, `CF_ACCOUNT_ID` | Hub desktop R2 upload |
 | `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID` | Hub container/Workers deploy |
@@ -55,7 +55,7 @@ Production Linux releases **fail** without `LINUX_GPG_PRIVATE_KEY`. macOS and Wi
 | `CI_PACKAGE_MANAGERS_TOKEN` | Hub Homebrew/Scoop publish |
 | `AZURE_CLIENT_SECRET` | **Deprecated** — neither repo uses it; signing uses GitHub OIDC |
 
-## 3. Azure federated credentials (CI-Applet-specific)
+## 3. Azure federated credentials (CI-Capture-specific)
 
 Windows signing uses **GitHub OIDC** (`permissions: id-token: write` + `azure/login@v2`). Do **not** reuse CI-Hub federated credential subjects unchanged.
 
@@ -65,8 +65,8 @@ In **Microsoft Entra** → your GitHub Actions app registration → **Certificat
 |-------|-------|
 | Issuer | `https://token.actions.githubusercontent.com` |
 | Audience | `api://AzureADTokenExchange` |
-| Subject (dev) | `repo:companionintelligence/CI-Applet:environment:dev` |
-| Subject (production) | `repo:companionintelligence/CI-Applet:environment:production` |
+| Subject (dev) | `repo:companionintelligence/CI-Capture:environment:dev` |
+| Subject (production) | `repo:companionintelligence/CI-Capture:environment:production` |
 
 You can use the **same** Entra app as CI-Hub (`AZURE_CLIENT_ID` / tenant / subscription / signing account) — only the **subject** strings are repo-specific. CI-Hub keeps:
 
@@ -77,7 +77,7 @@ Grant the service principal **Artifact Signing Certificate Profile Signer** on t
 
 ### Common Azure field mix-ups
 
-| What you might have in the vault | Maps to | Used by CI-Applet release? |
+| What you might have in the vault | Maps to | Used by CI-Capture release? |
 |----------------------------------|---------|----------------------------|
 | Entra app **Client ID** (GUID) | `AZURE_CLIENT_ID` | Yes |
 | Entra **Directory (tenant) ID** (GUID) | `AZURE_TENANT_ID` | Yes |
@@ -97,9 +97,9 @@ It is **not** a certificate hash or UUID. If the secret is wrong or empty, the w
 
 ## 4. Setup checklist
 
-1. Create GitHub Environments `dev` and `production` on **CI-Applet**.
-2. Copy Apple + Azure secrets from CI-Hub environments into both CI-Applet environments.
-3. Add Entra federated credentials for **CI-Applet** subjects (§3).
+1. Create GitHub Environments `dev` and `production` on **CI-Capture**.
+2. Copy Apple + Azure secrets from CI-Hub environments into both CI-Capture environments.
+3. Add Entra federated credentials for **CI-Capture** subjects (§3).
 4. Generate or locate a Linux release GPG key; store `LINUX_GPG_PRIVATE_KEY` (+ passphrase if any) in **production** (and **dev** if you sign prereleases).
 5. Run **Desktop Release** → environment `dev`, tag `v0.1.0-dev.1`, prerelease ✓ — verify macOS / Windows / Linux jobs.
 6. Tag `v*` push or production dispatch for a full signed release.
