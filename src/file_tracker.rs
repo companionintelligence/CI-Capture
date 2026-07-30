@@ -505,42 +505,73 @@ mod e2e {
         false
     }
 
-    /// Wait for a recorded request whose body satisfies `matches`.
+    /// Poll the recorded requests until one satisfies `matches`, returning a
+    /// clone of it. `None` on timeout — the caller reports what *was*
+    /// received, so a genuine regression still fails (loudly), it just
+    /// doesn't fail early because a *different* request landed first.
     ///
-    /// Always match on content, never on arrival position: the lane can emit
-    /// file events the test didn't write, so "the first request" and "the
-    /// request under test" are not the same thing on a loaded runner.
+    /// Always match on content, never on arrival position: the lane ships one
+    /// POST per queued event and can emit events the test never wrote, so "the
+    /// first request" and "the request under test" are not the same thing on a
+    /// loaded runner.
     async fn wait_for_request(
         recorded: &Arc<Mutex<Vec<Recorded>>>,
         timeout: Duration,
-        matches: impl Fn(&str) -> bool,
-    ) -> bool {
-        wait_until(timeout, || {
-            recorded
+        mut matches: impl FnMut(&Recorded) -> bool,
+    ) -> Option<Recorded> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let found = recorded
                 .lock()
                 .unwrap()
                 .iter()
-                .any(|(_, _, body)| matches(body))
-        })
-        .await
+                .find(|req| matches(req))
+                .cloned();
+            if found.is_some() {
+                return found;
+            }
+            if Instant::now() >= deadline {
+                return None;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
     }
 
     /// Every request the lane actually sent, for assertion messages. Locks
     /// internally — callers must not be holding the `recorded` guard.
     ///
     /// The per-body cap has to clear the event `title` (an absolute path, so
-    /// long in a temp-dir checkout): which *file* each request describes is the
-    /// whole point of the dump.
+    /// long in a temp-dir checkout) *and* the start of the `description`:
+    /// which file each request describes, and whether it carried content, is
+    /// the whole point of the dump. Routed through `truncate_on_char_boundary`
+    /// so a multi-byte char can't panic the formatter while it builds a
+    /// failure message.
     fn dump_requests(recorded: &Arc<Mutex<Vec<Recorded>>>) -> String {
         let requests = recorded.lock().unwrap();
+        if requests.is_empty() {
+            return "  (nothing at all — no request ever reached the mock server)".to_string();
+        }
         let mut out = format!("{} request(s) recorded:", requests.len());
-        for (i, (path, _, body)) in requests.iter().enumerate() {
+        for (i, (path, api_key, body)) in requests.iter().enumerate() {
             out.push_str(&format!(
-                "\n  [{i}] {path} :: {}",
-                truncate_on_char_boundary(body, 600)
+                "\n  [{i}] POST {path}  x-api-key={}\n       {}",
+                api_key.as_deref().unwrap_or("<absent>"),
+                truncate_on_char_boundary(body, 1_200)
             ));
         }
         out
+    }
+
+    /// The first event's `description` from an ingest body (`{"events":[…]}`).
+    fn description_of(body: &str) -> Option<String> {
+        let json: serde_json::Value = serde_json::from_str(body).ok()?;
+        Some(
+            json.get("events")?
+                .get(0)?
+                .get("description")?
+                .as_str()?
+                .to_string(),
+        )
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -555,45 +586,77 @@ mod e2e {
         let lane = tokio::spawn(run(config, queue_path.clone()));
 
         // Give the watcher a beat to arm, then edit a file.
+        //
+        // The `.bin` write goes first deliberately: an unsupported format is
+        // a legitimate event that ships metadata-only (no extractor, so no
+        // extracted text), and written first it queues — and POSTs — first.
+        // That makes deterministic the ordering CI hit intermittently, where
+        // the first `file_event` to arrive is not the one under test.
+        //
+        // Note the empty-*file* theory doesn't hold: `build_content` reads the
+        // file at send time, so even a create observed before the bytes landed
+        // ships the full body seconds later. What ships without content is an
+        // event with nothing to extract — an unsupported format (modelled
+        // here), a delete, or a file that couldn't be fingerprinted at all
+        // (`file: None`), which is what hashing a *directory* yields when
+        // FSEvents surfaces one for the watched folder.
         tokio::time::sleep(Duration::from_millis(500)).await;
+        std::fs::write(watched.join("opaque.bin"), b"\x00no extractor for this").unwrap();
+        tokio::time::sleep(Duration::from_millis(1_500)).await;
         std::fs::write(watched.join("notes.md"), "# Plan\n\nremember the tailscale rollout").unwrap();
 
-        // Wait for the event that carries the *content*, not merely the first
-        // file_event. `fs::write` can surface as a create observed before the
-        // bytes land, and `build_content` runs at send time — so on a loaded
-        // runner the first request out can legitimately describe a file that was
-        // still empty when it was read. Asserting on the first one made this a
-        // race that failed only under CI load.
-        let has_content = |body: &str| body.contains("remember the tailscale rollout");
-        let got_content = wait_for_request(&recorded, Duration::from_secs(30), |body| {
-            body.contains("file_event") && has_content(body)
+        // So wait for the request carrying notes.md's extracted body, rather
+        // than whichever `file_event` lands first. Failing here still means a
+        // real regression: the wait is bounded and the dump shows exactly what
+        // the lane did send.
+        const EXTRACTED: &str = "remember the tailscale rollout";
+        const WAIT: Duration = Duration::from_secs(30);
+        let found = wait_for_request(&recorded, WAIT, |(_, _, body)| {
+            body.contains("file_event") && body.contains(EXTRACTED)
         })
         .await;
-        lane.abort();
-
-        // Failing here still means a real regression — the timeout above is
-        // bounded and the dump shows exactly what the lane did send.
-        assert!(
-            got_content,
-            "no file_event carried the extracted markdown within 30s.\n{}",
-            dump_requests(&recorded)
-        );
-
-        let requests = recorded.lock().unwrap();
-        let (path, api_key, _body) = requests
-            .iter()
-            .find(|(_, _, b)| b.contains("file_event") && has_content(b))
-            .expect("checked by got_content above");
+        let Some((path, api_key, body)) = found else {
+            lane.abort();
+            panic!(
+                "no file_event carrying the extracted content ({EXTRACTED:?}) reached the \
+                 mock server within {WAIT:?}. {}",
+                dump_requests(&recorded)
+            );
+        };
         assert!(path.contains("/v1/events"), "unexpected ingest path {path}");
         assert_eq!(
             api_key.as_deref(),
             Some("ab".repeat(32).as_str()),
             "credential must ride x-api-key"
         );
+        // The recall quick win: extracted content in the description field
+        // specifically — CI-Server's indexer only embeds top-level fields, so
+        // content that rides in `payload` alone is invisible to recall.
+        let description = description_of(&body).unwrap_or_default();
+        assert!(
+            description.contains(EXTRACTED),
+            "description must carry extracted markdown, got {description:?} in body {body}"
+        );
 
-        // Ack drained the durable queue.
+        // Ack drained the durable queue. The ack lands *after* the POST the
+        // mock recorded (it needs the response), and the `.bin` event has to
+        // drain too — so poll instead of sampling the instant the request
+        // shows up, and leave the lane running until it has: aborting first
+        // would kill the very ack being asserted on.
+        let drained = wait_until(Duration::from_secs(30), || {
+            Queue::open(&queue_path)
+                .map(|q| q.depth().unwrap_or(1) == 0)
+                .unwrap_or(false)
+        })
+        .await;
+        lane.abort();
+
         let queue = Queue::open(&queue_path).unwrap();
-        assert_eq!(queue.depth().unwrap(), 0, "acked event must leave the queue");
+        assert!(
+            drained,
+            "acked events must leave the queue, still {} deep",
+            queue.depth().unwrap()
+        );
         assert_eq!(queue.dead_letter_count().unwrap(), 0);
     }
 

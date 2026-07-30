@@ -8,7 +8,7 @@
 //!   than a wall of bullets, because the first question is always "what is this
 //!   thing actually recording?"
 //! - **Connect** — one button. Browser sign-in with the Portal, after which the
-//!   Core's address is discovered rather than typed. Manual entry still exists
+//!   Companion Memory server address is discovered rather than typed. Manual entry
 //!   but is collapsed behind a disclosure; a fresh install should never open it.
 //! - **Permission** — macOS Screen Recording only, polled once a second so the
 //!   window notices the grant on its own. Skipped where the OS doesn't gate
@@ -58,8 +58,8 @@ impl Step {
 
     fn title(self) -> &'static str {
         match self {
-            Step::Welcome => "Companion Memory",
-            Step::Connect => "Connect to your Core",
+            Step::Welcome => "Companion Capture",
+            Step::Connect => "Connect your Companion Memory",
             Step::Permissions => "One permission",
             Step::Finish => "You're set",
         }
@@ -96,6 +96,32 @@ impl Step {
     }
 }
 
+/// Where to get a Companion Memory server if you don't have one.
+///
+/// Companion Capture is a recorder — it needs somewhere to record *to*. A user
+/// who installs this first and has no server has no way to guess that the answer
+/// is "install Companion Hub", so say it, and make it one click.
+const DOWNLOAD_URL: &str = "https://ci.computer/download";
+
+fn no_server_hint(ui: &mut egui::Ui) {
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        theme::caption(ui, "Don't have a Companion Memory server yet? Install");
+        if ui
+            .link(
+                egui::RichText::new("Companion Hub")
+                    .font(theme::body(tokens::text::SMALL))
+                    .color(theme::TEAL),
+            )
+            .on_hover_text(DOWNLOAD_URL)
+            .clicked()
+        {
+            let _ = crate::open_url(DOWNLOAD_URL);
+        }
+        theme::caption(ui, "to run one on your own hardware.");
+    });
+}
+
 /// Result of an async job (login or connection test): Ok(detail) / Err(msg).
 type JobResult = Result<String, String>;
 
@@ -107,7 +133,7 @@ pub fn run_onboarding_ui() -> Result<()> {
     let native_options = NativeOptions {
         centered: true,
         viewport: egui::ViewportBuilder::default()
-            .with_title("Welcome to Companion Memory")
+            .with_title("Welcome to Companion Capture")
             .with_inner_size([840.0, 680.0])
             .with_min_inner_size([720.0, 600.0]),
         ..Default::default()
@@ -116,7 +142,7 @@ pub fn run_onboarding_ui() -> Result<()> {
     let manager_c = manager.clone();
     let completed_c = completed.clone();
     eframe::run_native(
-        "Companion Memory Setup",
+        "Companion Capture Setup",
         native_options,
         Box::new(move |cc| {
             crate::theme::install_fonts(&cc.egui_ctx);
@@ -212,7 +238,7 @@ impl OnboardingApp {
         }
     }
 
-    /// Persist the current Core address + OIDC issuer (merge-safe).
+    /// Persist the current Companion Memory server address + OIDC issuer (merge-safe).
     fn save_connection_fields(&mut self) {
         let url = self.server_url.trim().to_string();
         let issuer = self.oidc_issuer.trim().to_string();
@@ -399,12 +425,13 @@ impl OnboardingApp {
     fn welcome(&mut self, ui: &mut egui::Ui) {
         theme::subtitle(
             ui,
-            "Everything you see and edit on this computer becomes searchable memory — held on \
-             your own Core, not in anyone else's cloud.",
+            "Companion Capture records what you see and edit on this computer into your \
+             Companion Memory — saved on your own Companion Memory server, not in anyone \
+             else's cloud.",
         );
         ui.add_space(14.0);
 
-        // The animated explainer: three lanes flowing to your Core.
+        // The animated explainer: three lanes flowing to your Companion Memory.
         theme::capture_flow(ui, 150.0);
         ui.add_space(18.0);
 
@@ -450,6 +477,9 @@ impl OnboardingApp {
             "Passwords, SSH keys, .env files and keychains are never read — that exclusion can't \
              be turned off.",
         );
+
+        ui.add_space(10.0);
+        no_server_hint(ui);
     }
 
     // ── step 2: connect, with everything automatic ──────────────────────────
@@ -459,7 +489,7 @@ impl OnboardingApp {
 
         theme::subtitle(
             ui,
-            "Sign in and we'll find your Core for you. Nothing to type.",
+            "Sign in and we'll find your Companion Memory server for you. Nothing to type.",
         );
         ui.add_space(16.0);
 
@@ -477,7 +507,7 @@ impl OnboardingApp {
                                 .color(theme::TEXT),
                         );
                         let target = if self.server_url.trim().is_empty() {
-                            "Looking for your Core…".to_string()
+                            "Looking for your Companion Memory server…".to_string()
                         } else {
                             self.server_url.trim().to_string()
                         };
@@ -498,6 +528,8 @@ impl OnboardingApp {
                 "Opens your browser to sign in. We never see your password.",
             );
             ui.add_space(14.0);
+            no_server_hint(ui);
+            ui.add_space(6.0);
         }
 
         if running {
@@ -523,7 +555,7 @@ impl OnboardingApp {
         .id_salt("onboarding_advanced")
         .show(ui, |ui| {
             ui.add_space(6.0);
-            theme::field_label(ui, "Your Core's address");
+            theme::field_label(ui, "Your Companion Memory server");
             theme::text_field(
                 ui,
                 &mut self.server_url,
@@ -532,7 +564,7 @@ impl OnboardingApp {
             );
             theme::caption(
                 ui,
-                "A LAN hostname or a Tailscale address — wherever your Core runs.",
+                "A LAN hostname or a Tailscale address — wherever your Companion Memory server runs.",
             );
             ui.add_space(12.0);
 
@@ -550,7 +582,7 @@ impl OnboardingApp {
                 theme::text_field(
                     ui,
                     &mut self.api_key,
-                    "Access key for your Core",
+                    "Access key for your Companion Memory server",
                     theme::FieldOpts {
                         password: true,
                         ..Default::default()
@@ -639,7 +671,7 @@ impl OnboardingApp {
         } else {
             theme::caption(
                 ui,
-                "Flip the switch next to Companion Memory in System Settings — this page notices \
+                "Flip the switch next to Companion Capture in System Settings — this page notices \
                  on its own, no need to come back and click anything.",
             );
         }
@@ -662,7 +694,7 @@ impl OnboardingApp {
             self.summary_row(
                 ui,
                 connected,
-                "Connected to your Core",
+                "Connected to your Companion Memory",
                 &match self.who() {
                     Some(w) if connected => format!("{w} · {}", self.server_url.trim()),
                     _ => "Not signed in — captures will wait on this machine until you are."
@@ -704,7 +736,7 @@ impl OnboardingApp {
         ui.add_space(8.0);
         theme::caption(
             ui,
-            "Companion Memory lives in your menu bar. Click it to pause capture, open your \
+            "Companion Capture lives in your menu bar. Click it to pause capture, open your \
              memory in a browser, add folders, or sign in again.",
         );
     }

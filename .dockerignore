@@ -22,4 +22,4 @@ node_modules
 !packaging/icons/icon.png
 *.zip
 *.tar.gz
-Companion Memory App.app
+Companion Capture.app

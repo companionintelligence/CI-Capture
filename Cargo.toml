@@ -1,5 +1,5 @@
 [package]
-name = "companion-memory-app"
+name = "companion-capture"
 version = "0.2.0-alpha.1"
 edition = "2024"
 
@@ -87,9 +87,9 @@ tempfile = "3"
 # — https://github.com/crabnebula-dev/cargo-packager. Produces the same kind of
 # distributables a Tauri app does, without making this a Tauri app.
 [package.metadata.packager]
-product-name = "Companion Memory App"
-identifier = "com.compint.CompanionMemory"
-description = "Companion Memory App — screen, activity & file capture that grows your Companion Memory"
+product-name = "Companion Capture"
+identifier = "com.compint.CompanionCapture"
+description = "Companion Capture — screen, activity & file capture that grows your Companion Memory"
 long-description = "A lightweight cross-platform menu-bar / system-tray applet that grows your Companion Memory by capturing screen activity and the files you edit, and streaming them to your CI-Server."
 authors = ["LifeScope Inc."]
 publisher = "LifeScope Inc."

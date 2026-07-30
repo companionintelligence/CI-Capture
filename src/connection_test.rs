@@ -27,7 +27,7 @@ fn client() -> Result<Client, String> {
 pub async fn test_ci_server(config: &AppConfig) -> Result<String, String> {
     let portal = config.server.portal_url.trim();
     if portal.is_empty() {
-        return Err("Add your Core's address first.".into());
+        return Err("Add your Companion Memory server address first.".into());
     }
     let origin = server_origin(portal).map_err(|e| format!("Invalid URL: {e}"))?;
     let client = client()?;
@@ -78,7 +78,7 @@ pub async fn test_ci_server(config: &AppConfig) -> Result<String, String> {
         }
     }
 
-    Err(last_err.unwrap_or_else(|| "Your Core didn't respond on any known address.".into()))
+    Err(last_err.unwrap_or_else(|| "Your Companion Memory server didn't respond on any known address.".into()))
 }
 
 /// Reachability probe for the vision endpoint. A `GET` on a POST-only path

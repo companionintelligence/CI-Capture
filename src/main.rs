@@ -138,7 +138,7 @@ fn main() -> Result<()> {
     let tray_menu = menu_state.menu.clone();
     let tray_icon = TrayIconBuilder::new()
         .with_menu(Box::new(tray_menu))
-        .with_tooltip("Companion Memory")
+        .with_tooltip("Companion Capture")
         .with_icon(icon)
         .with_icon_as_template(true)
         .build()
@@ -269,7 +269,7 @@ impl AppController {
                         show_error("Linked account, but failed to reload configuration.");
                         return;
                     }
-                    dialogs::message_box_ok("Companion Memory", &message, MessageBoxIcon::Info);
+                    dialogs::message_box_ok("Companion Capture", &message, MessageBoxIcon::Info);
                 } else {
                     show_error(&message);
                 }
@@ -407,7 +407,7 @@ impl AppController {
             Ok(url) => url,
             Err(err) => {
                 show_error(&format!(
-                    "Can't work out your Companion Memory address: {err:#}\n\nSet your server URL in Settings first."
+                    "Can't work out your Companion Memory server address: {err:#}\n\nSet it in Settings first."
                 ));
                 return;
             }
@@ -459,7 +459,9 @@ struct MenuState {
     login_item: MenuItem,
     setup_item: MenuItem,
     settings_item: MenuItem,
+    #[cfg(feature = "legacy-postgres")]
     postgres_item: MenuItem,
+    #[cfg(feature = "legacy-minio")]
     minio_item: MenuItem,
     analysis_item: MenuItem,
     show_config_item: MenuItem,
@@ -483,17 +485,21 @@ impl MenuState {
         let login_item = MenuItem::new("Login to Portal", true, None);
         let setup_item = MenuItem::new("Setup Assistant…", true, None);
         let settings_item = MenuItem::new("Open Settings…", true, None);
+        #[cfg(feature = "legacy-postgres")]
         let postgres_item = MenuItem::new("Configure Postgres", true, None);
+        #[cfg(feature = "legacy-minio")]
         let minio_item = MenuItem::new("Configure MinIO", true, None);
         let analysis_item = MenuItem::new("Configure Vision Endpoint", true, None);
         let show_config_item = MenuItem::new("Show Config Location", true, None);
-        let quit_item = MenuItem::new("Quit Companion Memory", true, None);
+        let quit_item = MenuItem::new("Quit Companion Capture", true, None);
 
         interval_item.set_enabled(false);
         threshold_item.set_enabled(false);
         identity_item.set_enabled(false);
         server_item.set_enabled(false);
+        #[cfg(feature = "legacy-postgres")]
         postgres_item.set_enabled(false);
+        #[cfg(feature = "legacy-minio")]
         minio_item.set_enabled(false);
         analysis_item.set_enabled(false);
 
@@ -512,7 +518,9 @@ impl MenuState {
             &identity_item,
             &server_item,
             &login_item,
+            #[cfg(feature = "legacy-postgres")]
             &postgres_item,
+            #[cfg(feature = "legacy-minio")]
             &minio_item,
             &analysis_item,
             &PredefinedMenuItem::separator(),
@@ -537,7 +545,9 @@ impl MenuState {
             login_item,
             setup_item,
             settings_item,
+            #[cfg(feature = "legacy-postgres")]
             postgres_item,
+            #[cfg(feature = "legacy-minio")]
             minio_item,
             analysis_item,
             show_config_item,
@@ -587,16 +597,25 @@ impl MenuState {
             .trim_start_matches("http://");
         self.login_item
             .set_text(&format!("Login via {}", issuer_display));
+        #[cfg(feature = "legacy-postgres")]
         self.postgres_item.set_text(&format!(
             "Postgres: {}:{} / {}",
             config.postgres.host, config.postgres.port, config.postgres.database
         ));
+        #[cfg(feature = "legacy-minio")]
         self.minio_item.set_text(&format!(
             "MinIO: {} @ {}",
             config.minio.bucket, config.minio.endpoint
         ));
+        // Empty endpoint is the default and means the server describes captures;
+        // naming a local model the app isn't using reads as configuration the
+        // user has to attend to.
         self.analysis_item
-            .set_text(&format!("Vision Model: {}", config.analysis.model));
+            .set_text(&if config.analysis.endpoint.trim().is_empty() {
+                "Vision: handled by your Companion Memory server".to_string()
+            } else {
+                format!("Vision: this computer · {}", config.analysis.model)
+            });
 
         // Nothing to open until a server URL is set — greying these out is
         // honest, where a click that pops an error dialog is not.
@@ -633,7 +652,7 @@ fn fallback_icon() -> Icon {
 }
 
 fn show_error(message: &str) {
-    dialogs::message_box_ok("Companion Memory", message, MessageBoxIcon::Error);
+    dialogs::message_box_ok("Companion Capture", message, MessageBoxIcon::Error);
 }
 
 /// Open a URL in the user's default browser, cross-platform.
@@ -694,11 +713,11 @@ fn open_memory_search(query: &str) -> Result<()> {
     };
 
     if config.server.portal_url.trim().is_empty() {
-        bail!("No Companion Memory address configured. Set one in Settings, or run --login.");
+        bail!("No Companion Memory server configured. Set one in Settings, or run --login.");
     }
     let url = server_common::memory_url(&config.server.portal_url, &params).map_err(|_| {
         anyhow!(
-            "\"{}\" isn't a usable Companion Memory address. Fix it in Settings.",
+            "\"{}\" isn't a usable Companion Memory server address. Fix it in Settings.",
             config.server.portal_url.trim()
         )
     })?;
@@ -850,7 +869,7 @@ fn login_with_portal() -> Result<String> {
     Ok(format!("Signed in as {who}. {discovery_note}"))
 }
 
-/// Resolve the Core address from CI-Portal after sign-in, writing it into
+/// Resolve the Companion Memory server address from CI-Portal after sign-in,
 /// `config` when there is exactly one unambiguous answer.
 ///
 /// Returns a sentence for the user. Never returns an error: this runs after a
@@ -862,11 +881,11 @@ fn login_with_portal() -> Result<String> {
 fn resolve_core_url(runtime: &Runtime, config: &mut AppConfig, access_token: &str) -> String {
     use portal_apps::Discovery;
 
-    // Never move a Core the user chose themselves.
+    // Never move a server the user chose themselves.
     if config.server.url_source == config::ServerUrlSource::Manual
         && !config.server.portal_url.trim().is_empty()
     {
-        return "Companion Memory will now attribute captures to that account.".into();
+        return "Captures will now be attributed to that account.".into();
     }
 
     let portal = config.oidc.issuer.trim().trim_end_matches("/api/auth").to_string();
@@ -878,7 +897,9 @@ fn resolve_core_url(runtime: &Runtime, config: &mut AppConfig, access_token: &st
         Discovery::Ok(apps) => {
             let candidates = portal_apps::memory_candidates(&apps);
             match candidates.len() {
-                0 => "No Companion Memory server is registered to your account yet — add its                       address in Settings once it's running."
+                0 => "No Companion Memory server is registered to your account yet. Install \
+                      Companion Hub from ci.computer/download to run one, then add its address \
+                      in Settings."
                     .into(),
                 1 => {
                     let core = &candidates[0];
@@ -886,22 +907,22 @@ fn resolve_core_url(runtime: &Runtime, config: &mut AppConfig, access_token: &st
                     config.server.url_source = config::ServerUrlSource::Discovered;
                     log::info!("discovered Companion Memory at {}", core.url);
                     match &core.device_name {
-                        Some(name) => format!("Connected to your Companion Memory on {name}."),
+                        Some(name) => format!("Saving to your Companion Memory server on {name}."),
                         None => format!("Connected to {}.", core.url),
                     }
                 }
-                // Several Cores: picking one would silently stream this
+                // Several servers: picking one would silently stream this
                 // machine's captures to the wrong box. Make the user choose.
                 n => format!(
-                    "You have Companion Memory on {n} machines — pick which one this computer                      should send to in Settings."
+                    "You have Companion Memory on {n} machines — pick which one this computer                      should record to in Settings."
                 ),
             }
         }
         // A Portal that predates /api/users/me/apps. Say nothing about it; the
         // user simply types the address as before.
         Discovery::Unsupported => {
-            log::info!("portal has no app-discovery endpoint; Core address stays manual");
-            "Companion Memory will now attribute captures to that account.".into()
+            log::info!("portal has no app-discovery endpoint; server address stays manual");
+            "Captures will now be attributed to that account.".into()
         }
         Discovery::Unauthorized => {
             // Almost always means this client is not registered in the Portal's
@@ -911,8 +932,8 @@ fn resolve_core_url(runtime: &Runtime, config: &mut AppConfig, access_token: &st
                 .into()
         }
         Discovery::Error(err) => {
-            log::warn!("Core discovery failed: {err}");
-            "Signed in. Add your Companion Memory address in Settings.".into()
+            log::warn!("Companion Memory discovery failed: {err}");
+            "Signed in. Add your Companion Memory server in Settings.".into()
         }
     }
 }

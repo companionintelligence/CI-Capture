@@ -35,14 +35,14 @@ fn error_chain(err: &reqwest::Error) -> String {
     text
 }
 
-/// Canonicalize a user-entered Core address into an origin we can build on.
+/// Canonicalize a user-entered Companion Memory server address into an origin.
 ///
 /// Strips query and fragment, and drops a `/feed` path — the Companion Memory
 /// web app's own route, which users reasonably paste when copying from a
 /// browser but which is not the API root.
 ///
 /// Shared by the settings form and by Portal discovery so a hand-typed address
-/// and a discovered one normalize identically; otherwise the same Core arriving
+/// and a discovered one normalize identically; otherwise the same server arriving
 /// by both routes would look like two different servers.
 pub fn normalize_core_url(raw: &str) -> Result<String, String> {
     let mut url =

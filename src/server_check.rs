@@ -39,8 +39,11 @@ pub fn run(portal_override: Option<String>) -> Result<()> {
 }
 
 async fn report(config: &AppConfig) -> Result<()> {
-    println!("Companion Memory App → server connection check");
-    println!("======================================\n");
+    const TITLE: &str = "Companion Capture → server connection check";
+    println!("{TITLE}");
+    // Derived, not hand-typed: the previous rule was sized for the old product
+    // name and went visibly short the moment it was renamed.
+    println!("{}\n", "=".repeat(TITLE.chars().count()));
 
     let portal = config.server.portal_url.trim();
     println!("Portal URL : {portal}");

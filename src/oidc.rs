@@ -304,9 +304,9 @@ async fn accept_code(listener: TcpListener) -> Result<(String, Option<String>)> 
 
     let ok = code.is_some() && err.is_none();
     let body = if ok {
-        "<!doctype html><meta charset=utf-8><title>Companion Memory</title><body style=\"font-family:-apple-system,system-ui,sans-serif;text-align:center;padding:3rem;color:#0d1117\"><h2>✅ Signed in</h2><p>You can close this tab and return to Companion Memory.</p></body>"
+        "<!doctype html><meta charset=utf-8><title>Companion Capture</title><body style=\"font-family:-apple-system,system-ui,sans-serif;text-align:center;padding:3rem;color:#0d1117\"><h2>✅ Signed in</h2><p>You can close this tab and return to Companion Capture.</p></body>"
     } else {
-        "<!doctype html><meta charset=utf-8><title>Companion Memory</title><body style=\"font-family:-apple-system,system-ui,sans-serif;text-align:center;padding:3rem;color:#0d1117\"><h2>Sign-in failed</h2><p>You can close this tab and try again from Companion Memory.</p></body>"
+        "<!doctype html><meta charset=utf-8><title>Companion Capture</title><body style=\"font-family:-apple-system,system-ui,sans-serif;text-align:center;padding:3rem;color:#0d1117\"><h2>Sign-in failed</h2><p>You can close this tab and try again from Companion Capture.</p></body>"
     };
     let resp = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",

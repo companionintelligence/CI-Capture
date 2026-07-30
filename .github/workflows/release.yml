@@ -581,7 +581,7 @@ jobs:
       - name: Generate checksums
         run: |
           cd release-files
-          checksum_file="CompanionMemoryApp-${{ needs.release-metadata.outputs.tag }}-SHA256SUMS.txt"
+          checksum_file="CompanionCapture-${{ needs.release-metadata.outputs.tag }}-SHA256SUMS.txt"
           checksum_tmp="../$checksum_file.tmp"
           find . -maxdepth 1 -type f ! -name "$checksum_file" -print0 \
             | sort -z \
@@ -620,13 +620,13 @@ jobs:
         with:
           tag_name: ${{ needs.release-metadata.outputs.tag }}
           target_commitish: ${{ github.sha }}
-          name: Companion Memory App ${{ needs.release-metadata.outputs.tag }}${{ needs.release-metadata.outputs.environment != 'production' && format(' ({0})', needs.release-metadata.outputs.environment) || '' }}
+          name: Companion Capture ${{ needs.release-metadata.outputs.tag }}${{ needs.release-metadata.outputs.environment != 'production' && format(' ({0})', needs.release-metadata.outputs.environment) || '' }}
           prerelease: ${{ needs.release-metadata.outputs.prerelease }}
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: release-files/*
           body: |
-            ## Companion Memory App ${{ needs.release-metadata.outputs.tag }}
+            ## Companion Capture ${{ needs.release-metadata.outputs.tag }}
 
             ### Downloads
 
@@ -639,10 +639,10 @@ jobs:
 
             ### Verification
 
-            Download `CompanionMemoryApp-${{ needs.release-metadata.outputs.tag }}-SHA256SUMS.txt` and verify with:
+            Download `CompanionCapture-${{ needs.release-metadata.outputs.tag }}-SHA256SUMS.txt` and verify with:
 
             ```bash
-            shasum -a 256 -c CompanionMemoryApp-${{ needs.release-metadata.outputs.tag }}-SHA256SUMS.txt
+            shasum -a 256 -c CompanionCapture-${{ needs.release-metadata.outputs.tag }}-SHA256SUMS.txt
             ```
 
   upload-r2:
