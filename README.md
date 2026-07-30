@@ -40,22 +40,36 @@ flowchart LR
 
 <table>
 <tr>
-<td width="40%" valign="top">
+<td width="50%" valign="top">
 
-**Menu‑bar tray** — live status across the three lanes, with quick actions one click away.
+**First run** — the setup assistant names the three lanes, and what each one records, before anything is captured.
 
-<img src="docs/assets/tray-menu.svg" alt="CI-Capture macOS tray menu" width="300">
+<img src="docs/assets/screenshot-first-run.png" alt="First-run setup assistant: what it does, connect, permission, done" width="420">
 
 </td>
-<td valign="top">
+<td width="50%" valign="top">
 
-**`--check-server`** — a built‑in connectivity self‑test, shown here verified live against a running CI‑Server gateway.
+**Settings → Connection** — point this computer at your Core, and choose how it signs in.
+
+<img src="docs/assets/screenshot-settings-connection.png" alt="Settings window, Connection tab: Core address, authentication, this device" width="420">
+
+</td>
+</tr>
+<tr>
+<td colspan="2" valign="top">
+
+**`--check-server`** — the built‑in connectivity self‑test, run against a live Core: `HTTP 200` on both probes, with the local config and OIDC state it resolved on the way.
 
 <img src="docs/assets/check-server.svg" alt="cargo run -- --check-server output" width="470">
 
 </td>
 </tr>
 </table>
+
+> Captures of the current build, not mockups — see [brand & assets](docs/assets/brand.md#screenshots)
+> for how they're taken. The tray menu is the one gap: it needs a real click to
+> open, so [`tray-menu.svg`](docs/assets/tray-menu.svg) is still an illustration
+> and is out of date (old product name, and the menu has grown six items since).
 
 ## Install
 
@@ -177,7 +191,7 @@ cargo build                            # debug
 cargo build --release                  # optimized
 cargo run                              # launch the tray Capture
 cargo test                             # unit + e2e suite
-cargo test --features rich-extractors  # + HTML/EML/EPUB extractors (185 tests)
+cargo test --features rich-extractors  # + HTML/EML/EPUB extractors (212 tests)
 ```
 
 Every push and PR is built and tested on **macOS, Linux, and Windows** by [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
