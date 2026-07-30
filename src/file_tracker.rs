@@ -485,6 +485,69 @@ mod e2e {
         false
     }
 
+    /// Poll the recorded requests until one satisfies `matches`, returning a
+    /// clone of it. `None` on timeout — the caller reports what *was*
+    /// received, so a genuine regression still fails (loudly), it just
+    /// doesn't fail early because a *different* request landed first.
+    ///
+    /// Matching on content rather than arrival order is the point: the lane
+    /// ships one POST per queued event, so "the first `file_event` request"
+    /// is not necessarily the event under test.
+    async fn wait_for_request(
+        recorded: &Arc<Mutex<Vec<Recorded>>>,
+        timeout: Duration,
+        mut matches: impl FnMut(&Recorded) -> bool,
+    ) -> Option<Recorded> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let found = recorded
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|req| matches(req))
+                .cloned();
+            if found.is_some() {
+                return found;
+            }
+            if Instant::now() >= deadline {
+                return None;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
+    /// Every request the mock server saw, rendered for a failure message.
+    /// Bodies are printed whole — they're the evidence, and test payloads are
+    /// small.
+    fn dump_requests(requests: &[Recorded]) -> String {
+        if requests.is_empty() {
+            return "  (nothing at all — no request ever reached the mock server)".to_string();
+        }
+        requests
+            .iter()
+            .enumerate()
+            .map(|(i, (path, api_key, body))| {
+                format!(
+                    "  [{i}] POST {path}  x-api-key={}\n       {body}",
+                    api_key.as_deref().unwrap_or("<absent>")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// The first event's `description` from an ingest body (`{"events":[…]}`).
+    fn description_of(body: &str) -> Option<String> {
+        let json: serde_json::Value = serde_json::from_str(body).ok()?;
+        Some(
+            json.get("events")?
+                .get(0)?
+                .get("description")?
+                .as_str()?
+                .to_string(),
+        )
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn file_edit_reaches_server_with_content_and_api_key_and_drains_queue() {
         let (origin, recorded) = spawn_mock_server(vec![]);
@@ -497,40 +560,70 @@ mod e2e {
         let lane = tokio::spawn(run(config, queue_path.clone()));
 
         // Give the watcher a beat to arm, then edit a file.
+        //
+        // The `.bin` write goes first deliberately: an unsupported format is
+        // a legitimate event that ships metadata-only (no extractor, so no
+        // extracted text), and written first it queues — and POSTs — first.
+        // That makes deterministic the ordering CI hit intermittently, where
+        // the first `file_event` to arrive is not the one under test. Other
+        // sources of the same ordering exist in the wild: a create *and* a
+        // modify for one save, or an event whose file couldn't be
+        // fingerprinted.
         tokio::time::sleep(Duration::from_millis(500)).await;
+        std::fs::write(watched.join("opaque.bin"), b"\x00no extractor for this").unwrap();
+        tokio::time::sleep(Duration::from_millis(1_500)).await;
         std::fs::write(watched.join("notes.md"), "# Plan\n\nremember the tailscale rollout").unwrap();
 
-        let got_event = wait_until(Duration::from_secs(30), || {
-            recorded
-                .lock()
-                .unwrap()
-                .iter()
-                .any(|(_, _, body)| body.contains("file_event"))
+        // So wait for the request carrying notes.md's extracted body, rather
+        // than whichever `file_event` lands first.
+        const EXTRACTED: &str = "remember the tailscale rollout";
+        const WAIT: Duration = Duration::from_secs(30);
+        let found = wait_for_request(&recorded, WAIT, |(_, _, body)| {
+            body.contains("file_event") && body.contains(EXTRACTED)
         })
         .await;
-        lane.abort();
-        assert!(got_event, "file event never reached the mock server");
-
-        let requests = recorded.lock().unwrap();
-        let (path, api_key, body) = requests
-            .iter()
-            .find(|(_, _, b)| b.contains("file_event"))
-            .unwrap();
+        let Some((path, api_key, body)) = found else {
+            lane.abort();
+            panic!(
+                "no file_event carrying the extracted content ({EXTRACTED:?}) reached the \
+                 mock server within {WAIT:?}. Requests received:\n{}",
+                dump_requests(&recorded.lock().unwrap())
+            );
+        };
         assert!(path.contains("/v1/events"), "unexpected ingest path {path}");
         assert_eq!(
             api_key.as_deref(),
             Some("ab".repeat(32).as_str()),
             "credential must ride x-api-key"
         );
-        // The recall quick win: extracted content in the description field.
+        // The recall quick win: extracted content in the description field
+        // specifically — CI-Server's indexer only embeds top-level fields, so
+        // content that rides in `payload` alone is invisible to recall.
+        let description = description_of(&body).unwrap_or_default();
         assert!(
-            body.contains("remember the tailscale rollout"),
-            "description must carry extracted markdown"
+            description.contains(EXTRACTED),
+            "description must carry extracted markdown, got {description:?} in body {body}"
         );
 
-        // Ack drained the durable queue.
+        // Ack drained the durable queue. The ack lands *after* the POST the
+        // mock recorded (it needs the response), and the `.bin` event has to
+        // drain too — so poll instead of sampling the instant the request
+        // shows up, and leave the lane running until it has: aborting first
+        // would kill the very ack being asserted on.
+        let drained = wait_until(Duration::from_secs(30), || {
+            Queue::open(&queue_path)
+                .map(|q| q.depth().unwrap_or(1) == 0)
+                .unwrap_or(false)
+        })
+        .await;
+        lane.abort();
+
         let queue = Queue::open(&queue_path).unwrap();
-        assert_eq!(queue.depth().unwrap(), 0, "acked event must leave the queue");
+        assert!(
+            drained,
+            "acked events must leave the queue, still {} deep",
+            queue.depth().unwrap()
+        );
         assert_eq!(queue.dead_letter_count().unwrap(), 0);
     }
 
