@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 
@@ -11,6 +12,7 @@ use uuid::Uuid;
 use crate::config::{AppConfig, ConfigManager, MinioConfig, PostgresConfig};
 use crate::connection_test;
 use crate::theme;
+use crate::tokens;
 
 /// Result of an inline connection test for one tab.
 #[derive(Clone)]
@@ -33,13 +35,14 @@ pub fn run_settings_ui() -> Result<()> {
     let base_clone = base_config.clone();
 
     let mut native_options = NativeOptions::default();
+    native_options.centered = true;
     native_options.viewport = egui::ViewportBuilder::default()
-        .with_title("CI-Applet Settings")
-        .with_inner_size([900.0, 620.0])
-        .with_min_inner_size([720.0, 520.0]);
+        .with_title("Companion Memory Settings")
+        .with_inner_size([1000.0, 700.0])
+        .with_min_inner_size([820.0, 600.0]);
 
     eframe::run_native(
-        "CI-Applet Settings",
+        "Companion Memory Settings",
         native_options,
         Box::new(move |cc| {
             crate::theme::install_fonts(&cc.egui_ctx);
@@ -70,6 +73,11 @@ pub struct SettingsFormState {
     pub applet_auth_token: String,
     pub screenshot_interval_secs: u64,
     pub diff_threshold_percent: f32,
+    /// Folders the file-tracking lane watches. The lane stays idle while this
+    /// is empty (`file_tracker::is_runnable`), so this is the control that
+    /// actually arms it.
+    pub watched_paths: Vec<PathBuf>,
+    pub file_tracking_enabled: bool,
     pub minio_endpoint: String,
     pub minio_bucket: String,
     pub minio_region: String,
@@ -128,6 +136,8 @@ impl From<&AppConfig> for SettingsFormState {
             applet_auth_token: config.server.applet_auth_token.clone().unwrap_or_default(),
             screenshot_interval_secs: config.capture.screenshot_interval_secs,
             diff_threshold_percent: config.capture.diff_threshold_percent,
+            watched_paths: config.file_tracker.watched_paths.clone(),
+            file_tracking_enabled: config.file_tracker.enabled,
             minio_endpoint: config.minio.endpoint.clone(),
             minio_bucket: config.minio.bucket.clone(),
             minio_region: config.minio.region.clone(),
@@ -154,67 +164,79 @@ pub enum AuthMode {
     Oidc,
 }
 
+/// The settings sections.
+///
+/// Deliberately short. A laptop running Companion Memory holds no infrastructure
+/// of its own: storage and inference live on the user's Core, reached over LAN or
+/// Tailscale. So there is nothing here to configure for either — the old Storage
+/// (MinIO) and Database (Postgres) tabs are compiled out entirely unless their
+/// legacy feature is enabled, rather than hidden behind a runtime toggle. Hiding
+/// them was worse than useless: the Storage tab configured a module that is not
+/// even compiled into a default build, so every field in it was inert.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum SettingsTab {
-    Identity,
+    Connection,
     Capture,
+    Advanced,
+    #[cfg(feature = "legacy-minio")]
     Minio,
+    #[cfg(feature = "legacy-postgres")]
     Postgres,
-    Analysis,
 }
 
 impl SettingsTab {
     fn label(&self) -> &'static str {
         match self {
-            SettingsTab::Identity => "Identity",
+            SettingsTab::Connection => "Connection",
             SettingsTab::Capture => "Capture",
+            SettingsTab::Advanced => "Advanced",
+            #[cfg(feature = "legacy-minio")]
             SettingsTab::Minio => "Storage",
+            #[cfg(feature = "legacy-postgres")]
             SettingsTab::Postgres => "Database",
-            SettingsTab::Analysis => "Vision",
         }
     }
 
     /// Short descriptor shown under the nav label.
     fn subtitle(&self) -> &'static str {
         match self {
-            SettingsTab::Identity => "Server & auth",
-            SettingsTab::Capture => "Cadence & lanes",
-            SettingsTab::Minio => "MinIO object store",
-            SettingsTab::Postgres => "Postgres",
-            SettingsTab::Analysis => "Analysis model",
+            SettingsTab::Connection => "Your Core & sign-in",
+            SettingsTab::Capture => "What gets captured",
+            SettingsTab::Advanced => "Rarely needed",
+            #[cfg(feature = "legacy-minio")]
+            SettingsTab::Minio => "Legacy MinIO",
+            #[cfg(feature = "legacy-postgres")]
+            SettingsTab::Postgres => "Legacy Postgres",
         }
     }
 
     /// Accent colour for the nav chip.
     fn accent(&self) -> egui::Color32 {
         match self {
-            SettingsTab::Identity => theme::TEAL_DIM,
-            SettingsTab::Capture => theme::BLUE,
-            SettingsTab::Minio => theme::PURPLE,
-            SettingsTab::Postgres => theme::TEAL_DIM,
-            SettingsTab::Analysis => theme::BLUE,
+            SettingsTab::Connection => theme::TEAL,
+            SettingsTab::Capture => theme::LANE_ACTIVITY,
+            SettingsTab::Advanced => theme::MUTED,
+            #[cfg(feature = "legacy-minio")]
+            SettingsTab::Minio => theme::AMBER,
+            #[cfg(feature = "legacy-postgres")]
+            SettingsTab::Postgres => theme::AMBER,
         }
     }
 
     /// Whether this tab configures a remote service that can be test-probed.
     fn has_connection(&self) -> bool {
-        !matches!(self, SettingsTab::Capture)
+        !matches!(self, SettingsTab::Capture | SettingsTab::Advanced)
     }
 
-    /// Legacy direct-write connections (Storage/Database). The supported path
-    /// streams everything through CI-Server, so these are hidden unless the
-    /// user opts into the advanced section.
-    fn is_advanced(&self) -> bool {
-        matches!(self, SettingsTab::Minio | SettingsTab::Postgres)
-    }
-
-    fn all() -> [SettingsTab; 5] {
-        [
-            SettingsTab::Identity,
+    fn all() -> Vec<SettingsTab> {
+        vec![
+            SettingsTab::Connection,
             SettingsTab::Capture,
+            SettingsTab::Advanced,
+            #[cfg(feature = "legacy-minio")]
             SettingsTab::Minio,
+            #[cfg(feature = "legacy-postgres")]
             SettingsTab::Postgres,
-            SettingsTab::Analysis,
         ]
     }
 }
@@ -231,7 +253,8 @@ struct SettingsApp {
     test_tx: Sender<(SettingsTab, Result<String, String>)>,
     test_rx: Receiver<(SettingsTab, Result<String, String>)>,
     tests: HashMap<SettingsTab, TestState>,
-    show_advanced: bool,
+    /// One-shot latch for [`theme::center_once`].
+    centered: bool,
 }
 
 impl SettingsApp {
@@ -255,7 +278,7 @@ impl SettingsApp {
             manager,
             base_config,
             form,
-            current_tab: SettingsTab::Identity,
+            current_tab: SettingsTab::Connection,
             error: None,
             saved_flag,
             logo,
@@ -263,7 +286,7 @@ impl SettingsApp {
             test_tx,
             test_rx,
             tests: HashMap::new(),
-            show_advanced: false,
+            centered: false,
         }
     }
 
@@ -301,6 +324,8 @@ impl SettingsApp {
         c.oidc.redirect_uri = self.form.oidc_redirect_uri.trim().to_string();
         c.capture.screenshot_interval_secs = self.form.screenshot_interval_secs;
         c.capture.diff_threshold_percent = self.form.diff_threshold_percent;
+        c.file_tracker.watched_paths = self.form.watched_paths.clone();
+        c.file_tracker.enabled = self.form.file_tracking_enabled;
         c.minio = MinioConfig {
             endpoint: self.form.minio_endpoint.clone(),
             bucket: self.form.minio_bucket.clone(),
@@ -334,10 +359,12 @@ impl SettingsApp {
         let ctx = ctx.clone();
         self.runtime.spawn(async move {
             let result = match tab {
-                SettingsTab::Identity => connection_test::test_ci_server(&config).await,
+                SettingsTab::Connection => connection_test::test_ci_server(&config).await,
+                SettingsTab::Advanced => connection_test::test_vision(&config).await,
+                #[cfg(feature = "legacy-minio")]
                 SettingsTab::Minio => connection_test::test_minio(&config).await,
+                #[cfg(feature = "legacy-postgres")]
                 SettingsTab::Postgres => connection_test::test_postgres(&config).await,
-                SettingsTab::Analysis => connection_test::test_vision(&config).await,
                 SettingsTab::Capture => return,
             };
             let _ = tx.send((tab, result));
@@ -365,11 +392,11 @@ impl SettingsApp {
             AuthMode::Oidc => !self.form.oidc_issuer.trim().is_empty(),
         };
         if has_url && has_cred {
-            ("Configured", "Streaming target set", theme::GREEN)
+            ("Connected", "Sending to your Core", theme::GREEN)
         } else if has_url {
-            ("Incomplete", "Add credentials to stream", theme::AMBER)
+            ("Almost there", "Sign in to start sending", theme::AMBER)
         } else {
-            ("Not configured", "Set a CI-Server URL", theme::RED)
+            ("Not set up", "Add your Core's address", theme::RED)
         }
     }
 
@@ -424,7 +451,7 @@ impl SettingsApp {
         let has_oidc_issuer = self.form.auth_mode == AuthMode::Oidc;
 
         if self.form.portal_url.trim().is_empty() && (has_server_credential || has_oidc_issuer) {
-            return Err("CI-Server URL is required.".into());
+            return Err("Your Core's address is required.".into());
         }
         if !self.form.portal_url.trim().is_empty() {
             normalize_ci_server_url(self.form.portal_url.trim())?;
@@ -465,15 +492,17 @@ impl SettingsApp {
         if !(0.0..=100.0).contains(&self.form.diff_threshold_percent) {
             return Err("Diff threshold must be between 0 and 100.".into());
         }
-        if self.form.postgres_port == 0 {
-            return Err("Postgres port must be greater than zero.".into());
-        }
+        // Deliberately no Postgres port check. The default build never opens a
+        // database connection, so a stale `postgres.port: 0` in an old
+        // config.json must not block saving a perfectly valid Core URL with an
+        // error about infrastructure this machine doesn't use.
         Ok(())
     }
 }
 
 impl eframe::App for SettingsApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        theme::center_once(ctx, &mut self.centered);
         self.drain_tests();
         self.render_sidebar(ctx);
         self.render_footer(ctx);
@@ -491,11 +520,13 @@ impl eframe::App for SettingsApp {
                         ui.set_width(ui.available_width());
                         let tab = self.current_tab;
                         let changed = match tab {
-                            SettingsTab::Identity => render_identity_tab(ui, &mut self.form),
+                            SettingsTab::Connection => render_connection_tab(ui, &mut self.form),
                             SettingsTab::Capture => render_capture_tab(ui, &mut self.form),
+                            SettingsTab::Advanced => render_advanced_tab(ui, &mut self.form),
+                            #[cfg(feature = "legacy-minio")]
                             SettingsTab::Minio => render_minio_tab(ui, &mut self.form),
+                            #[cfg(feature = "legacy-postgres")]
                             SettingsTab::Postgres => render_postgres_tab(ui, &mut self.form),
-                            SettingsTab::Analysis => render_analysis_tab(ui, &mut self.form),
                         };
                         // Editing a field invalidates a prior test result.
                         if changed {
@@ -539,57 +570,29 @@ impl SettingsApp {
                     ui.vertical(|ui| {
                         ui.spacing_mut().item_spacing.y = 1.0;
                         ui.label(
-                            egui::RichText::new("CI-Applet")
-                                .font(theme::light(16.0))
+                            egui::RichText::new("Companion Memory")
+                                .font(theme::light(18.0))
                                 .color(theme::TEXT),
                         );
                         ui.label(
                             egui::RichText::new("Settings")
-                                .font(theme::body(11.0))
+                                .font(theme::body(13.0))
                                 .color(theme::MUTED),
                         );
                     });
                 });
                 ui.add_space(14.0);
 
-                // Nav items — advanced (legacy) connections stay hidden unless
-                // the user opts in below.
+                // Every tab is always shown. The legacy Storage/Database tabs
+                // are compiled out of a default build rather than hidden, so
+                // there is nothing left to reveal at runtime.
                 for tab in SettingsTab::all() {
-                    if tab.is_advanced() && !self.show_advanced {
-                        continue;
-                    }
                     let selected = self.current_tab == tab;
                     if theme::nav_item(ui, tab.accent(), tab.label(), tab.subtitle(), selected) {
                         self.current_tab = tab;
                     }
                     ui.add_space(3.0);
                 }
-
-                // Advanced toggle: reveals the legacy Storage/Database tabs.
-                ui.add_space(7.0);
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 10.0;
-                    if theme::toggle(ui, &mut self.show_advanced).changed()
-                        && !self.show_advanced
-                        && self.current_tab.is_advanced()
-                    {
-                        // Hid the tab we were on — fall back to Identity.
-                        self.current_tab = SettingsTab::Identity;
-                    }
-                    ui.vertical(|ui| {
-                        ui.spacing_mut().item_spacing.y = 1.0;
-                        ui.label(
-                            egui::RichText::new("Advanced")
-                                .font(theme::body(12.5))
-                                .color(theme::TEXT),
-                        );
-                        ui.label(
-                            egui::RichText::new("Legacy storage & database")
-                                .font(theme::body(10.5))
-                                .color(theme::MUTED),
-                        );
-                    });
-                });
 
                 // Push the connection card to the bottom.
                 let (text, sub, color) = self.connection_status();
@@ -601,7 +604,7 @@ impl SettingsApp {
                             theme::status_dot(ui, color, true);
                             ui.label(
                                 egui::RichText::new(text)
-                                    .font(theme::semibold(12.5))
+                                    .font(theme::semibold(14.0))
                                     .color(theme::TEXT),
                             );
                         });
@@ -611,8 +614,10 @@ impl SettingsApp {
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 6.0;
                             for c in [theme::LANE_SHOT, theme::LANE_ACTIVITY, theme::LANE_FILE] {
-                                let (r, _) =
-                                    ui.allocate_exact_size(egui::Vec2::splat(7.0), egui::Sense::hover());
+                                let (r, _) = ui.allocate_exact_size(
+                                    egui::Vec2::splat(7.0),
+                                    egui::Sense::hover(),
+                                );
                                 ui.painter().circle_filled(r.center(), 3.5, c);
                             }
                             ui.with_layout(
@@ -634,24 +639,40 @@ impl SettingsApp {
                     .inner_margin(egui::Margin::symmetric(22, 14)),
             )
             .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    if let Some(error) = self.error.clone() {
-                        theme::status_dot(ui, theme::RED, false);
-                        ui.label(
-                            egui::RichText::new(error)
-                                .font(theme::body(11.5))
-                                .color(theme::RED),
-                        );
-                    } else {
-                        theme::mono_label(ui, &config_path, theme::FAINT);
+                // Right-to-left for the whole row: the buttons reserve their
+                // width first and the status text truncates into the remainder.
+                // Laying the text out first instead let a long config path run
+                // underneath Close/Save.
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.spacing_mut().item_spacing.x = 10.0;
+                    if theme::primary_button(ui, "Save").clicked() {
+                        self.save(ctx);
                     }
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.spacing_mut().item_spacing.x = 10.0;
-                        if theme::primary_button(ui, "Save").clicked() {
-                            self.save(ctx);
-                        }
-                        if theme::ghost_button(ui, "Close").clicked() {
-                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    if theme::ghost_button(ui, "Close").clicked() {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                    ui.add_space(12.0);
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        if let Some(error) = self.error.clone() {
+                            theme::status_dot(ui, theme::RED, false);
+                            ui.label(
+                                egui::RichText::new(error)
+                                    .font(theme::body(tokens::text::SMALL))
+                                    .color(theme::RED),
+                            );
+                        } else {
+                            // `truncate` is load-bearing: an egui label does not
+                            // clip to its rect by default, so a long config path
+                            // renders straight over the buttons to its right.
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(&config_path)
+                                        .font(theme::mono(tokens::text::MIN))
+                                        .color(theme::FAINT),
+                                )
+                                .truncate(),
+                            )
+                            .on_hover_text(&config_path);
                         }
                     });
                 });
@@ -686,7 +707,7 @@ fn render_test_row(ui: &mut egui::Ui, state: Option<&TestState>) -> bool {
                 ui.add(egui::Spinner::new().size(16.0).color(theme::AMBER));
                 ui.label(
                     egui::RichText::new("Testing…")
-                        .font(theme::body(12.0))
+                        .font(theme::body(13.0))
                         .color(theme::AMBER),
                 );
             }
@@ -714,21 +735,47 @@ fn page_header(ui: &mut egui::Ui, title: &str, subtitle: &str) {
     ui.add_space(20.0);
 }
 
-fn render_identity_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bool {
+fn render_connection_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bool {
     let mut changed = false;
     page_header(
         ui,
-        "Identity",
-        "Where captures are sent, and how the applet authenticates.",
+        "Connection",
+        "Where your Core is, and how this computer signs in to it.",
     );
 
     changed |= field(
         ui,
-        "CI-Server URL",
+        "Your Core's address",
         &mut form.portal_url,
-        "https://your-ci-server.example.com",
+        "http://core-1:8642 or http://my-core.tailnet.ts.net:8642",
         theme::FieldOpts::monospace(),
     );
+    theme::caption(
+        ui,
+        "A machine on your LAN or Tailscale network. Everything captured on this \
+         computer is sent there and nowhere else.",
+    );
+    ui.add_space(6.0);
+
+    // A plain-http origin that isn't loopback means captures cross the network
+    // in the clear. Not a blocker — a LAN Core has no cert — but never silent.
+    let target = form.portal_url.trim();
+    if target.starts_with("http://")
+        && !target.contains("//localhost")
+        && !target.contains("//127.0.0.1")
+    {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(
+                egui::RichText::new(
+                    "⚠  This address isn't encrypted, so captures cross your network in the \
+                     clear. Fine on a trusted LAN; on Tailscale, use the https:// name instead.",
+                )
+                .font(theme::body(tokens::text::SMALL))
+                .color(theme::AMBER),
+            );
+        });
+        ui.add_space(10.0);
+    }
 
     theme::field_label(ui, "Authentication");
     ui.add_space(6.0);
@@ -758,7 +805,7 @@ fn render_identity_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bool 
                 ui,
                 "API Key",
                 &mut form.applet_auth_token,
-                "Paste CI-Server API key",
+                "Paste an access key for your Core",
                 theme::FieldOpts::password(),
             );
             theme::caption(
@@ -768,73 +815,186 @@ fn render_identity_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bool 
             ui.add_space(15.0);
         }
         AuthMode::Oidc => {
-            changed |= field(
+            theme::caption(
                 ui,
-                "OIDC Issuer URL",
-                &mut form.oidc_issuer,
-                "https://your-ci-server.example.com/api/auth",
-                theme::FieldOpts::monospace(),
+                "Sign in from the menu bar — it opens your browser and fills the rest in.",
             );
-            ui.columns(2, |cols| {
+            ui.add_space(10.0);
+
+            // OIDC wiring. Correct out of the box for the production Portal, so
+            // this is collapsed: a working install should never need to open it,
+            // and four monospace URLs on the main pane read as "you must
+            // configure this" when you must not.
+            egui::CollapsingHeader::new(
+                egui::RichText::new("Sign-in details")
+                    .font(theme::body(tokens::text::SMALL))
+                    .color(theme::MUTED),
+            )
+            .id_salt("settings_oidc_details")
+            .show(ui, |ui| {
+                ui.add_space(6.0);
                 changed |= field(
-                    &mut cols[0],
-                    "Client ID",
-                    &mut form.oidc_client_id,
-                    "ci-applet",
+                    ui,
+                    "Portal sign-in URL",
+                    &mut form.oidc_issuer,
+                    "https://hub.ci.computer/api/auth",
                     theme::FieldOpts::monospace(),
                 );
+                ui.columns(2, |cols| {
+                    changed |= field(
+                        &mut cols[0],
+                        "Client ID",
+                        &mut form.oidc_client_id,
+                        "ci-applet",
+                        theme::FieldOpts::monospace(),
+                    );
+                    changed |= field(
+                        &mut cols[1],
+                        "Scopes",
+                        &mut form.oidc_scopes,
+                        "openid profile email",
+                        theme::FieldOpts::monospace(),
+                    );
+                });
                 changed |= field(
-                    &mut cols[1],
-                    "Scopes",
-                    &mut form.oidc_scopes,
-                    "openid profile email",
+                    ui,
+                    "Redirect URI",
+                    &mut form.oidc_redirect_uri,
+                    "http://127.0.0.1:0/callback",
                     theme::FieldOpts::monospace(),
                 );
             });
-            changed |= field(
-                ui,
-                "Redirect URI",
-                &mut form.oidc_redirect_uri,
-                "http://127.0.0.1:49473/callback",
-                theme::FieldOpts::monospace(),
-            );
         }
     }
 
-    ui.add_space(3.0);
-    theme::field_label(ui, "Advanced identity");
-    ui.add_space(10.0);
-    ui.columns(2, |cols| {
-        cols[0].label(
-            egui::RichText::new("User ID override")
-                .font(theme::body(11.5))
-                .color(theme::MUTED),
-        );
-        cols[0].add_space(5.0);
-        changed |= theme::text_field(
-            &mut cols[0],
-            &mut form.user_id,
-            "User UUID",
-            theme::FieldOpts::monospace(),
-        );
+    ui.add_space(14.0);
+    theme::field_label(ui, "This device");
+    ui.add_space(8.0);
+    theme::card(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.columns(2, |cols| {
+            theme::caption(&mut cols[0], "User");
+            cols[0].add_space(4.0);
+            if form.user_id.is_empty() {
+                theme::mono_label(&mut cols[0], "set on sign-in", theme::FAINT);
+            } else {
+                theme::mono_label(&mut cols[0], &form.user_id, theme::MUTED);
+            }
 
-        cols[1].label(
-            egui::RichText::new("Device ID (auto)")
-                .font(theme::body(11.5))
-                .color(theme::MUTED),
-        );
-        cols[1].add_space(5.0);
-        if form.device_id.is_empty() {
-            theme::mono_label(&mut cols[1], "set after login / save", theme::FAINT);
-        } else {
-            theme::mono_label(&mut cols[1], &form.device_id, theme::TEXT);
-        }
+            theme::caption(&mut cols[1], "Device");
+            cols[1].add_space(4.0);
+            if form.device_id.is_empty() {
+                theme::mono_label(&mut cols[1], "registered on sign-in", theme::FAINT);
+            } else {
+                theme::mono_label(&mut cols[1], &form.device_id, theme::MUTED);
+            }
+        });
     });
     changed
 }
 
+/// Settings that exist for people with an unusual setup. Everything here has a
+/// working default and an empty state that means "let my Core handle it".
+fn render_advanced_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bool {
+    let mut changed = false;
+    page_header(
+        ui,
+        "Advanced",
+        "You shouldn't need anything on this page. It's here for unusual setups.",
+    );
+
+    theme::field_label(ui, "Describing your screenshots");
+    ui.add_space(8.0);
+
+    let local = !form.analysis_endpoint.trim().is_empty();
+    theme::card(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.horizontal(|ui| {
+            theme::status_dot(ui, if local { theme::AMBER } else { theme::GREEN }, false);
+            ui.add_space(8.0);
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 3.0;
+                ui.label(
+                    egui::RichText::new(if local {
+                        "This computer describes them"
+                    } else {
+                        "Your Core describes them"
+                    })
+                    .font(theme::semibold(tokens::text::BODY))
+                    .color(theme::TEXT),
+                );
+                theme::caption(
+                    ui,
+                    if local {
+                        "Screenshots are sent to the endpoint below for analysis, and your \
+                         Core is told to skip its own."
+                    } else {
+                        "The default. Your Core runs the vision model, so this computer \
+                         doesn't need one and nothing extra leaves it."
+                    },
+                );
+            });
+        });
+    });
+    ui.add_space(12.0);
+
+    // The endpoint is an unrestricted URL — it will happily accept a public
+    // cloud API. Off by default is the right default, but a user who fills it
+    // in deserves to know exactly what it does before they do.
+    if local {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(
+                egui::RichText::new(
+                    "⚠  Full screenshots are POSTed to this address. Point it at something on \
+                     your own machine or your own network — a public API endpoint here would \
+                     send your screen contents to a third party.",
+                )
+                .font(theme::body(tokens::text::SMALL))
+                .color(theme::AMBER),
+            );
+        });
+        ui.add_space(10.0);
+    }
+
+    egui::CollapsingHeader::new(
+        egui::RichText::new("Use a vision model on this computer instead")
+            .font(theme::body(tokens::text::SMALL))
+            .color(theme::MUTED),
+    )
+    .id_salt("settings_local_vision")
+    .default_open(local)
+    .show(ui, |ui| {
+        ui.add_space(6.0);
+        // The client POSTs `{endpoint}/chat/completions` with Bearer auth (OpenAI
+        // protocol), so this is a base URL — NOT an Anthropic /messages URL.
+        changed |= field(
+            ui,
+            "Endpoint",
+            &mut form.analysis_endpoint,
+            "http://localhost:1234/v1  (leave blank to use your Core)",
+            theme::FieldOpts::monospace(),
+        );
+        changed |= field(
+            ui,
+            "API key",
+            &mut form.analysis_api_key,
+            "lm-studio (local endpoints often ignore this)",
+            theme::FieldOpts::password(),
+        );
+        changed |= field(
+            ui,
+            "Model",
+            &mut form.analysis_model,
+            "lmstudio-community/vision-large",
+            theme::FieldOpts::monospace(),
+        );
+    });
+
+    changed
+}
+
 fn normalize_ci_server_url(raw: &str) -> Result<String, String> {
-    let mut url = Url::parse(raw).map_err(|_| "CI-Server URL must be a valid URL.".to_string())?;
+    let mut url = Url::parse(raw).map_err(|_| "That doesn't look like a valid address.".to_string())?;
     url.set_query(None);
     url.set_fragment(None);
 
@@ -905,7 +1065,7 @@ fn render_capture_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bool {
     page_header(
         ui,
         "Capture",
-        "How often the desktop is perceived, and the diff gate that skips near-identical frames.",
+        "What gets recorded from this computer, and how often.",
     );
 
     ui.columns(2, |cols| {
@@ -927,12 +1087,12 @@ fn render_capture_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bool {
                         ui.horizontal(|ui| {
                             ui.label(
                                 egui::RichText::new(form.screenshot_interval_secs.to_string())
-                                    .font(theme::light(30.0))
+                                    .font(theme::light(34.0))
                                     .color(theme::TEXT),
                             );
                             ui.label(
                                 egui::RichText::new("s")
-                                    .font(theme::body(14.0))
+                                    .font(theme::body(16.0))
                                     .color(theme::MUTED),
                             );
                         });
@@ -956,12 +1116,12 @@ fn render_capture_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bool {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(
                         egui::RichText::new("%")
-                            .font(theme::body(13.0))
+                            .font(theme::body(15.0))
                             .color(theme::TEAL),
                     );
                     ui.label(
                         egui::RichText::new(format!("{:.0}", form.diff_threshold_percent))
-                            .font(theme::light(22.0))
+                            .font(theme::light(26.0))
                             .color(theme::TEAL),
                     );
                 });
@@ -981,29 +1141,155 @@ fn render_capture_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bool {
     ui.add_space(20.0);
     theme::field_label(ui, "Capture lanes");
     ui.add_space(10.0);
+    // Plain language: these rows describe what the user gets, not how it is
+    // implemented. "vizier", "JSON-Patch" and "durable queue" are internals and
+    // told a first-time reader nothing.
     theme::lane_row(
         ui,
         theme::LANE_SHOT,
-        "Screenshots",
-        "Primary display, diff-gated & screensaver-aware",
-        "vision-analyzed",
+        "Screens",
+        "Your main display, skipping frames that barely changed. Paused while locked.",
+        "on",
     );
     ui.add_space(10.0);
     theme::lane_row(
         ui,
         theme::LANE_ACTIVITY,
         "Activity",
-        "vizier perception · app, window, filesystem deltas",
-        "JSON-Patch",
+        "Which app and window you're in, so your memory has context.",
+        "on",
     );
     ui.add_space(10.0);
     theme::lane_row(
         ui,
         theme::LANE_FILE,
-        "File tracking",
-        "Watched folders → Markdown · durable queue",
-        "queued",
+        "Files",
+        "Documents you edit in the folders below, saved as readable text.",
+        if form.watched_paths.is_empty() {
+            "off"
+        } else {
+            "on"
+        },
     );
+
+    changed |= render_watched_folders(ui, form);
+    changed
+}
+
+/// The watched-folder list — the control that arms the file-tracking lane.
+///
+/// Until this existed the onboarding wizard told users to "open Settings to add
+/// folders you want tracked" against a Settings window that had no such control,
+/// leaving the whole watcher/queue/extractor path reachable only by hand-editing
+/// `config.json`.
+fn render_watched_folders(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bool {
+    let mut changed = false;
+
+    ui.add_space(20.0);
+    ui.horizontal(|ui| {
+        theme::field_label(ui, "Watched folders");
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if theme::primary_button(ui, "Add folder…").clicked() {
+                // Start the picker somewhere useful rather than at "/".
+                let start = form
+                    .watched_paths
+                    .last()
+                    .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+                    .or_else(|| directories::UserDirs::new().map(|d| d.home_dir().to_path_buf()))
+                    .unwrap_or_default();
+                if let Some(picked) = tinyfiledialogs::select_folder_dialog(
+                    "Watch a folder",
+                    &start.to_string_lossy(),
+                ) {
+                    let path = PathBuf::from(picked);
+                    if form.watched_paths.contains(&path) {
+                        // Silently ignoring a duplicate looks like the click
+                        // did nothing; adding it twice would double-watch.
+                    } else if let Some(parent) = form
+                        .watched_paths
+                        .iter()
+                        .find(|existing| path.starts_with(existing))
+                    {
+                        log::info!(
+                            "not adding {} — already covered by watched folder {}",
+                            path.display(),
+                            parent.display()
+                        );
+                    } else {
+                        // Adding a parent supersedes any nested folders already
+                        // listed; keeping both would emit duplicate events.
+                        form.watched_paths.retain(|p| !p.starts_with(&path));
+                        form.watched_paths.push(path);
+                        form.file_tracking_enabled = true;
+                        changed = true;
+                    }
+                }
+            }
+        });
+    });
+    ui.add_space(10.0);
+
+    if form.watched_paths.is_empty() {
+        theme::card(ui, |ui| {
+            ui.set_width(ui.available_width());
+            theme::subtitle(
+                ui,
+                "No folders watched yet — file tracking is off. Add a folder and the files you \
+                 edit inside it become part of your Companion Memory.",
+            );
+        });
+    } else {
+        let mut remove = None;
+        for (i, path) in form.watched_paths.iter().enumerate() {
+            theme::card(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    let exists = path.is_dir();
+                    theme::status_dot(ui, if exists { theme::GREEN } else { theme::AMBER }, false);
+                    ui.add_space(8.0);
+                    ui.vertical(|ui| {
+                        ui.spacing_mut().item_spacing.y = 2.0;
+                        ui.label(
+                            egui::RichText::new(
+                                path.file_name()
+                                    .map(|n| n.to_string_lossy().to_string())
+                                    .unwrap_or_else(|| path.to_string_lossy().to_string()),
+                            )
+                            .font(theme::body(tokens::text::BODY))
+                            .color(theme::TEXT),
+                        );
+                        theme::mono_label(
+                            ui,
+                            &path.to_string_lossy(),
+                            if exists { theme::MUTED } else { theme::AMBER },
+                        );
+                        if !exists {
+                            theme::caption(ui, "This folder is missing — it will be skipped.");
+                        }
+                    });
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if theme::ghost_button(ui, "Remove").clicked() {
+                            remove = Some(i);
+                        }
+                    });
+                });
+            });
+            ui.add_space(8.0);
+        }
+        if let Some(i) = remove {
+            form.watched_paths.remove(i);
+            changed = true;
+        }
+
+        ui.add_space(4.0);
+        changed |= theme::toggle_row(
+            ui,
+            &mut form.file_tracking_enabled,
+            "File tracking enabled",
+            "Turn off to stop watching without losing the folder list.",
+        );
+    }
+
     changed
 }
 
@@ -1011,7 +1297,7 @@ fn render_capture_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bool {
 fn stepper_button(ui: &mut egui::Ui, glyph: &str) -> bool {
     let btn = egui::Button::new(
         egui::RichText::new(glyph)
-            .font(theme::body(18.0))
+            .font(theme::body(20.0))
             .color(theme::TEXT),
     )
     .fill(theme::INPUT)
@@ -1021,6 +1307,9 @@ fn stepper_button(ui: &mut egui::Ui, glyph: &str) -> bool {
     ui.add(btn).clicked()
 }
 
+/// Legacy: writes screenshot bytes straight to a MinIO/S3 bucket, bypassing the
+/// Core. Compiled out of a default build.
+#[cfg(feature = "legacy-minio")]
 fn render_minio_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bool {
     let mut changed = false;
     page_header(
@@ -1077,6 +1366,9 @@ fn render_minio_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bool {
     changed
 }
 
+/// Legacy: opens a plaintext database connection from this machine. Compiled
+/// out of a default build — see [`crate::db`].
+#[cfg(feature = "legacy-postgres")]
 fn render_postgres_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bool {
     let mut changed = false;
     page_header(ui, "Database", "Postgres connection for capture metadata.");
@@ -1132,37 +1424,3 @@ fn render_postgres_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bool 
     changed
 }
 
-fn render_analysis_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bool {
-    let mut changed = false;
-    page_header(
-        ui,
-        "Vision",
-        "Optional local vision model. Leave blank to let CI-Server describe captures; \
-         set an OpenAI-compatible endpoint (e.g. LM Studio or Ollama) to analyse them on this machine.",
-    );
-
-    // The client POSTs `{endpoint}/chat/completions` with Bearer auth (OpenAI
-    // protocol), so the endpoint is a base URL — NOT an Anthropic /messages URL.
-    changed |= field(
-        ui,
-        "Endpoint",
-        &mut form.analysis_endpoint,
-        "http://localhost:1234/v1",
-        theme::FieldOpts::monospace(),
-    );
-    changed |= field(
-        ui,
-        "API Key",
-        &mut form.analysis_api_key,
-        "lm-studio (local endpoints often ignore this)",
-        theme::FieldOpts::password(),
-    );
-    changed |= field(
-        ui,
-        "Model",
-        &mut form.analysis_model,
-        "lmstudio-community/vision-large",
-        theme::FieldOpts::monospace(),
-    );
-    changed
-}

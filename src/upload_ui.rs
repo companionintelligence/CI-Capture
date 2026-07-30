@@ -6,24 +6,25 @@ use eframe::{NativeOptions, egui};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 use crate::config::{AppConfig, ConfigManager};
-use crate::theme;
 use crate::server_upload::{
     ParseStatusValue, TerminalParseStatus, UploadedFile, poll_parse_status, supported_extensions,
     upload_files,
 };
+use crate::theme;
 
 pub fn run_upload_ui() -> Result<()> {
     let manager = ConfigManager::new()?;
     let config = manager.load_or_default()?;
 
     let mut native_options = NativeOptions::default();
+    native_options.centered = true;
     native_options.viewport = egui::ViewportBuilder::default()
-        .with_title("Upload Documents — CI-Applet")
-        .with_inner_size([620.0, 520.0])
-        .with_min_inner_size([480.0, 360.0]);
+        .with_title("Upload Documents — Companion Memory")
+        .with_inner_size([700.0, 600.0])
+        .with_min_inner_size([560.0, 440.0]);
 
     eframe::run_native(
-        "Upload Documents — CI-Applet",
+        "Upload Documents — Companion Memory",
         native_options,
         Box::new(move |cc| {
             crate::theme::install_fonts(&cc.egui_ctx);
@@ -70,9 +71,19 @@ struct FileEntry {
 // ── Channel messages from background tasks ────────────────────────────────────
 
 enum StatusUpdate {
-    UploadFailed { filename: String, error: String },
-    Uploaded { filename: String, file: UploadedFile },
-    PollDone { file_id: String, result: TerminalParseStatus, was_duplicate: bool },
+    UploadFailed {
+        filename: String,
+        error: String,
+    },
+    Uploaded {
+        filename: String,
+        file: UploadedFile,
+    },
+    PollDone {
+        file_id: String,
+        result: TerminalParseStatus,
+        was_duplicate: bool,
+    },
 }
 
 // ── App ───────────────────────────────────────────────────────────────────────
@@ -86,6 +97,8 @@ struct UploadApp {
     uploading: bool,
     upload_error: Option<String>,
     logo: egui::TextureHandle,
+    /// One-shot latch for [`theme::center_once`].
+    centered: bool,
 }
 
 impl UploadApp {
@@ -104,6 +117,7 @@ impl UploadApp {
             rx,
             uploading: false,
             upload_error: None,
+            centered: false,
             logo,
         }
     }
@@ -208,14 +222,16 @@ impl UploadApp {
                         let ctx = ctx.clone();
                         tokio::spawn(async move {
                             let result =
-                                poll_parse_status(&config, &file_id).await.unwrap_or_else(|err| {
-                                    log::error!("poll error for {file_id}: {err:?}");
-                                    TerminalParseStatus {
-                                        value: ParseStatusValue::Skipped,
-                                        error: None,
-                                        parsed_at: None,
-                                    }
-                                });
+                                poll_parse_status(&config, &file_id)
+                                    .await
+                                    .unwrap_or_else(|err| {
+                                        log::error!("poll error for {file_id}: {err:?}");
+                                        TerminalParseStatus {
+                                            value: ParseStatusValue::Skipped,
+                                            error: None,
+                                            parsed_at: None,
+                                        }
+                                    });
                             let _ = tx.send(StatusUpdate::PollDone {
                                 file_id,
                                 result,
@@ -247,7 +263,11 @@ impl UploadApp {
                         };
                     }
                 }
-                StatusUpdate::PollDone { file_id, result, was_duplicate } => {
+                StatusUpdate::PollDone {
+                    file_id,
+                    result,
+                    was_duplicate,
+                } => {
                     for entry in self.files.iter_mut() {
                         if matches!(&entry.phase,
                             Phase::Polling { file_id: id } | Phase::AlreadyUploaded { file_id: id }
@@ -264,7 +284,12 @@ impl UploadApp {
                     }
                     // If no files are still in-flight, unlock the upload button.
                     let any_in_flight = self.files.iter().any(|f| {
-                        matches!(f.phase, Phase::Uploading | Phase::Polling { .. } | Phase::AlreadyUploaded { .. })
+                        matches!(
+                            f.phase,
+                            Phase::Uploading
+                                | Phase::Polling { .. }
+                                | Phase::AlreadyUploaded { .. }
+                        )
                     });
 
                     if !any_in_flight {
@@ -278,6 +303,7 @@ impl UploadApp {
 
 impl eframe::App for UploadApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        theme::center_once(ctx, &mut self.centered);
         self.drain_updates();
 
         let authed = self.is_authenticated();
@@ -294,7 +320,7 @@ impl eframe::App for UploadApp {
                     theme::logo(ui, &self.logo, 24.0, theme::TEAL);
                     ui.label(
                         egui::RichText::new("Upload Documents")
-                            .font(theme::light(18.0))
+                            .font(theme::light(20.0))
                             .color(theme::TEXT),
                     );
                 });
@@ -306,14 +332,14 @@ impl eframe::App for UploadApp {
                         theme::status_dot(ui, theme::GREEN, false);
                         ui.label(
                             egui::RichText::new("Signed in")
-                                .font(theme::body(12.0))
+                                .font(theme::body(13.0))
                                 .color(theme::MUTED),
                         );
                     } else {
                         theme::status_dot(ui, theme::AMBER, false);
                         ui.label(
                             egui::RichText::new("Not logged in — use the tray 'Login to …' first")
-                                .font(theme::body(12.0))
+                                .font(theme::body(13.0))
                                 .color(theme::AMBER),
                         );
                     }
@@ -340,7 +366,7 @@ impl eframe::App for UploadApp {
                     ui.add_space(8.0);
                     ui.label(
                         egui::RichText::new(err)
-                            .font(theme::body(11.5))
+                            .font(theme::body(13.0))
                             .color(theme::RED),
                     );
                 }
@@ -386,7 +412,11 @@ fn dropzone(ui: &mut egui::Ui) {
         egui::Sense::hover(),
     );
     let painter = ui.painter();
-    painter.rect_filled(rect, egui::CornerRadius::same(13), theme::tint(egui::Color32::BLACK, 30));
+    painter.rect_filled(
+        rect,
+        egui::CornerRadius::same(13),
+        theme::tint(egui::Color32::BLACK, 30),
+    );
     // Dashed rounded-ish border (four dashed edges).
     let inset = rect.shrink(1.0);
     let corners = [
@@ -406,7 +436,7 @@ fn dropzone(ui: &mut egui::Ui) {
         egui::pos2(rect.center().x, rect.center().y - 9.0),
         egui::Align2::CENTER_CENTER,
         "Drop documents to upload",
-        theme::body(13.0),
+        theme::body(15.0),
         theme::MUTED,
     );
     let exts = supported_extensions()
@@ -418,7 +448,7 @@ fn dropzone(ui: &mut egui::Ui) {
         egui::pos2(rect.center().x, rect.center().y + 11.0),
         egui::Align2::CENTER_CENTER,
         exts,
-        theme::mono(10.5),
+        theme::mono(12.0),
         theme::FAINT,
     );
 }
@@ -436,7 +466,7 @@ fn file_row(ui: &mut egui::Ui, entry: &FileEntry) {
                 theme::file_badge(ui, ext_of(&entry.filename));
                 ui.label(
                     egui::RichText::new(&entry.filename)
-                        .font(theme::body(13.0))
+                        .font(theme::body(15.0))
                         .color(theme::TEXT),
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
