@@ -95,6 +95,34 @@ async fn report(config: &AppConfig) -> Result<()> {
         }
     );
 
+    // OS capture permissions. A denied Screen Recording grant is one of the
+    // most common reasons capture produces nothing on macOS, and it is
+    // invisible from the server's side — so the self-test someone runs when
+    // "nothing is being captured" has to say so. `permissions::status()` is
+    // documented non-prompting, so this never pops a dialog at the CLI.
+    let perms = crate::permissions::status();
+    println!("\nCapture permissions");
+    println!("-------------------");
+    // Named as System Settings names them, so the labels match what the user
+    // has to go find.
+    println!(
+        "Screen Recording : {} — required for the screenshot lane",
+        perms.screen_recording.badge()
+    );
+    // Say plainly that this one is optional. Nothing reads AX data, and a bare
+    // "Not granted" would send someone off to grant a permission that changes
+    // nothing — while looking like the reason capture is broken.
+    println!(
+        "Accessibility    : {} — optional, reported for diagnostics only",
+        perms.accessibility.badge()
+    );
+    if perms.needs_attention() {
+        println!(
+            "\nScreen Recording is off, so no screenshots will be captured.\nGrant it in System Settings → Privacy & Security:\n  {}",
+            crate::permissions::screen_recording_settings_url()
+        );
+    }
+
     println!("\nPortal sign-in (OIDC)");
     println!("---------------------");
     println!(
