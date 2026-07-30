@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 #
-# Linux container image for CI-Applet, published to GitHub Packages (ghcr.io).
+# Linux container image for Companion Memory App, published to GitHub Packages (ghcr.io).
 #
 # Headless use works out of the box:
 #   docker run --rm ghcr.io/companionintelligence/ci-applet --check-server
@@ -27,8 +27,8 @@ COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
     cargo build --release --locked --features rich-extractors \
-    && cp target/release/CI-Applet /usr/local/bin/CI-Applet \
-    && (strip /usr/local/bin/CI-Applet || true)
+    && cp target/release/companion-memory-app /usr/local/bin/companion-memory-app \
+    && (strip /usr/local/bin/companion-memory-app || true)
 
 # ─── runtime ──────────────────────────────────────────────────────────────────
 FROM debian:bookworm-slim
@@ -44,11 +44,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN useradd --create-home --uid 10001 app
 USER app
 
-COPY --from=builder /usr/local/bin/CI-Applet /usr/local/bin/CI-Applet
+COPY --from=builder /usr/local/bin/companion-memory-app /usr/local/bin/companion-memory-app
 
-LABEL org.opencontainers.image.title="CI-Applet" \
+LABEL org.opencontainers.image.title="Companion Memory App" \
       org.opencontainers.image.description="Companion Intelligence capture applet — screen, activity & file capture for CI-Server" \
       org.opencontainers.image.source="https://github.com/companionintelligence/CI-Applet" \
       org.opencontainers.image.licenses="LicenseRef-CI-Commercial-1.0"
 
-ENTRYPOINT ["/usr/local/bin/CI-Applet"]
+ENTRYPOINT ["/usr/local/bin/companion-memory-app"]

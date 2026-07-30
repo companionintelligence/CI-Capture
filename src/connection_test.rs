@@ -16,6 +16,7 @@ const TIMEOUT: Duration = Duration::from_secs(10);
 
 fn client() -> Result<Client, String> {
     Client::builder()
+        .no_proxy()
         .timeout(TIMEOUT)
         .build()
         .map_err(|e| e.to_string())
@@ -26,7 +27,7 @@ fn client() -> Result<Client, String> {
 pub async fn test_ci_server(config: &AppConfig) -> Result<String, String> {
     let portal = config.server.portal_url.trim();
     if portal.is_empty() {
-        return Err("Set a CI-Server URL first.".into());
+        return Err("Add your Core's address first.".into());
     }
     let origin = server_origin(portal).map_err(|e| format!("Invalid URL: {e}"))?;
     let client = client()?;
@@ -77,7 +78,7 @@ pub async fn test_ci_server(config: &AppConfig) -> Result<String, String> {
         }
     }
 
-    Err(last_err.unwrap_or_else(|| "No CI-Server endpoint responded.".into()))
+    Err(last_err.unwrap_or_else(|| "Your Core didn't respond on any known address.".into()))
 }
 
 /// Reachability probe for the vision endpoint. A `GET` on a POST-only path
@@ -91,7 +92,10 @@ pub async fn test_vision(config: &AppConfig) -> Result<String, String> {
     let url = reqwest::Url::parse(endpoint).map_err(|e| format!("Invalid endpoint URL: {e}"))?;
     let client = client()?;
     match client.get(url).send().await {
-        Ok(resp) => Ok(format!("Endpoint reachable · HTTP {}", resp.status().as_u16())),
+        Ok(resp) => Ok(format!(
+            "Endpoint reachable · HTTP {}",
+            resp.status().as_u16()
+        )),
         Err(err) => Err(friendly_error(&err)),
     }
 }
@@ -99,6 +103,11 @@ pub async fn test_vision(config: &AppConfig) -> Result<String, String> {
 /// Open a real Postgres connection and run `SELECT 1`. Connects without TLS,
 /// matching the recorder's pool, so the "Require SSL" toggle is not exercised
 /// by this probe.
+///
+/// Only meaningful alongside the direct-Postgres writer, so it shares that
+/// path's `legacy-postgres` gate rather than offering to probe a database the
+/// default build can never write to.
+#[cfg(feature = "legacy-postgres")]
 pub async fn test_postgres(config: &AppConfig) -> Result<String, String> {
     use tokio_postgres::{Config, NoTls};
 
@@ -146,26 +155,3 @@ pub async fn test_minio(config: &AppConfig) -> Result<String, String> {
     }
 }
 
-#[cfg(not(feature = "legacy-minio"))]
-pub async fn test_minio(config: &AppConfig) -> Result<String, String> {
-    let raw = config.minio.endpoint.trim();
-    if raw.is_empty() {
-        return Err("Set a storage endpoint first.".into());
-    }
-    let endpoint = if raw.starts_with("http://") || raw.starts_with("https://") {
-        raw.to_string()
-    } else {
-        let scheme = if config.minio.use_ssl { "https" } else { "http" };
-        format!("{scheme}://{raw}")
-    };
-    let url = reqwest::Url::parse(&endpoint).map_err(|e| format!("Invalid endpoint URL: {e}"))?;
-    let client = client()?;
-    match client.get(url).send().await {
-        // MinIO answers the root with 403/400; any HTTP reply proves reachability.
-        Ok(resp) => Ok(format!(
-            "Endpoint reachable · HTTP {} · full bucket check needs the legacy-minio build",
-            resp.status().as_u16()
-        )),
-        Err(err) => Err(friendly_error(&err)),
-    }
-}

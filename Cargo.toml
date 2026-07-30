@@ -1,5 +1,5 @@
 [package]
-name = "CI-Applet"
+name = "companion-memory-app"
 version = "0.1.3"
 edition = "2024"
 
@@ -28,8 +28,12 @@ tao = "0.29"
 thiserror = "1"
 tinyfiledialogs = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync", "net", "io-util"] }
-tokio-postgres = { version = "0.7", features = ["with-uuid-1", "with-chrono-0_4", "with-serde_json-1"] }
-deadpool-postgres = "0.8"
+# Legacy direct-to-Postgres writes — the applet used to talk to a database
+# itself. Superseded by CI-Server ingest, which is the only path that keeps
+# capture data on the user's own appliance behind an auth guard. Off by
+# default; enable with `--features legacy-postgres`.
+tokio-postgres = { version = "0.7", features = ["with-uuid-1", "with-chrono-0_4", "with-serde_json-1"], optional = true }
+deadpool-postgres = { version = "0.8", optional = true }
 tray-icon = "0.11"
 uuid = { version = "1", features = ["v4", "serde"] }
 egui = "0.33.2"
@@ -57,10 +61,24 @@ epub = { version = "2", optional = true }
 
 [features]
 default = []
+# Direct Postgres access from the client. A laptop should not hold database
+# credentials or open a plaintext (NoTls) connection to one — capture data goes
+# through CI-Server. Retained only for legacy self-hosted setups.
+legacy-postgres = ["dep:tokio-postgres", "dep:deadpool-postgres"]
 rich-extractors = ["dep:html2md", "dep:mail-parser", "dep:epub"]
 # Legacy screenshot upload straight to MinIO/S3 (bypasses CI-Server). Off by
 # default — the server ingest path is the supported one.
-legacy-minio = ["dep:aws-config", "dep:aws-credential-types", "dep:aws-sdk-s3"]
+#
+# Implies `legacy-postgres`: the old flow wrote the bytes to MinIO *and* the row
+# to Postgres, so `record_capture_legacy` needs the recorder. Note that the
+# `ci.screen_captures` table it targets was dropped from CI-Server, so this path
+# now writes to a table it re-creates itself and nothing reads.
+legacy-minio = [
+    "legacy-postgres",
+    "dep:aws-config",
+    "dep:aws-credential-types",
+    "dep:aws-sdk-s3",
+]
 
 [dev-dependencies]
 tempfile = "3"
@@ -69,9 +87,9 @@ tempfile = "3"
 # — https://github.com/crabnebula-dev/cargo-packager. Produces the same kind of
 # distributables a Tauri app does, without making this a Tauri app.
 [package.metadata.packager]
-product-name = "CI-Applet"
-identifier = "com.compint.CI-Applet"
-description = "Companion Intelligence capture applet — screen, activity & file capture for CI-Server"
+product-name = "Companion Memory App"
+identifier = "com.compint.CompanionMemory"
+description = "Companion Memory App — screen, activity & file capture that grows your Companion Memory"
 long-description = "A lightweight cross-platform menu-bar / system-tray applet that grows your Companion Memory by capturing screen activity and the files you edit, and streaming them to your CI-Server."
 authors = ["LifeScope Inc."]
 publisher = "LifeScope Inc."

@@ -1,0 +1,20 @@
+<!--
+  Companion Memory tray glyph.
+
+  Deliberately a *silhouette*: macOS renders status-bar icons set with
+  `with_icon_as_template(true)` from the alpha channel alone, inverting for
+  light/dark menu bars. Shape therefore has to live in coverage, not colour —
+  which is why this is filled geometry rather than a stroked outline, and why
+  the ring is 3 units thick on a 24 grid (~2.2 device px at AppKit's 18pt
+  status-bar height, the point below which a ring reads as a smudge).
+
+  Original artwork; no third-party icon set, nothing to attribute.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
+  <!-- Outer ring: two concentric subpaths, evenodd punches the hole. -->
+  <path fill="#000000" fill-rule="evenodd"
+        d="M12 1.75 a10.25 10.25 0 1 1 -0.01 0 z
+           M12 4.75 a7.25 7.25 0 1 0 0.01 0 z" />
+  <!-- Core. -->
+  <circle cx="12" cy="12" r="3.75" fill="#000000" />
+</svg>

@@ -73,6 +73,28 @@ pub fn devices_urls(portal_url: &str) -> Result<Vec<Url>> {
     api_endpoint_urls(portal_url, "/api/devices")
 }
 
+/// The user-facing Companion Memory web app, for opening in a browser.
+///
+/// CI-Server serves the memory SPA and the API from a single origin, so this is
+/// the ingest origin with `/memory` joined on. `query` pairs are appended
+/// percent-encoded — `/memory` accepts `search`, `view`, `from`/`to`, `tags`,
+/// `people` and `semantic`.
+///
+/// Unlike the ingest builders there is no candidate list: a browser gets one
+/// URL, and guessing wrong would open a 404 rather than fall through.
+pub fn memory_url(portal_url: &str, query: &[(&str, &str)]) -> Result<Url> {
+    let mut url = server_origin(portal_url)?
+        .join("/memory")
+        .context("building memory URL")?;
+    if !query.is_empty() {
+        let mut pairs = url.query_pairs_mut();
+        for (k, v) in query {
+            pairs.append_pair(k, v);
+        }
+    }
+    Ok(url)
+}
+
 /// Candidate URLs for a single file resource (`/api/files/{id}` and the bare
 /// `/files/{id}` fallback), used for metadata updates.
 pub fn files_urls(portal_url: &str, file_id: &str) -> Result<Vec<Url>> {
@@ -188,7 +210,7 @@ fn is_ci_server_api_key(token: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{AuthCredential, events_urls, graphql_urls, upload_urls};
+    use super::{AuthCredential, events_urls, graphql_urls, memory_url, upload_urls};
 
     #[test]
     fn detects_ci_server_api_key_shape() {
@@ -249,5 +271,41 @@ mod tests {
             events[0].as_str(),
             "https://server.example.com/custom/api/v1/events"
         );
+    }
+
+    #[test]
+    fn memory_url_targets_the_spa_on_the_ingest_origin() {
+        assert_eq!(
+            memory_url("http://core-1:8642", &[]).unwrap().as_str(),
+            "http://core-1:8642/memory"
+        );
+        // An API base path on the ingest URL must not leak into the SPA link —
+        // the web app is mounted at the origin root, not under /api.
+        assert_eq!(
+            memory_url("https://core.example.com/api/", &[])
+                .unwrap()
+                .as_str(),
+            "https://core.example.com/memory"
+        );
+    }
+
+    #[test]
+    fn memory_url_percent_encodes_query_values() {
+        let url = memory_url(
+            "http://core-1:8642",
+            &[("search", "budget & forecast"), ("view", "list")],
+        )
+        .unwrap();
+        // `&` inside a value must arrive encoded, or it reads as a second
+        // parameter — and on Windows would also truncate the shell invocation.
+        assert_eq!(
+            url.as_str(),
+            "http://core-1:8642/memory?search=budget+%26+forecast&view=list"
+        );
+    }
+
+    #[test]
+    fn memory_url_rejects_an_unset_server() {
+        assert!(memory_url("", &[]).is_err());
     }
 }

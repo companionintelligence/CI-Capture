@@ -7,9 +7,11 @@
 //! style themselves exclusively through this module so colours and widget code
 //! live in exactly one place.
 //!
-//! The palette and layout are translated from the `Redesign/` mockup
-//! (`oklch(...)`/hex → `Color32`). egui has no CSS-gradient primitive for
-//! widgets, so the mockup's gradients are approximated with solid accent fills.
+//! The palette is the canonical Companion Intelligence one, transcribed from
+//! `@companionintelligence/tokens` into [`crate::tokens`]. This module maps
+//! those upstream token names onto the applet's semantic roles; it should not
+//! introduce colours of its own. egui has no CSS-gradient primitive for
+//! widgets, so CI-Common's gradients are approximated with solid accent fills.
 
 use anyhow::{Context as _, Result};
 use eframe::egui::{
@@ -17,47 +19,59 @@ use eframe::egui::{
     TextureHandle, Ui, Vec2,
 };
 
-// ── Colour tokens ───────────────────────────────────────────────────────────
+use crate::tokens::{self, accent, dark, teal};
 
-/// App canvas (deepest blue-purple). Part of the palette for completeness;
-/// the windows are fully covered by panels so it is rarely drawn directly.
-#[allow(dead_code)]
-pub const BG: Color32 = Color32::from_rgb(0x12, 0x12, 0x26);
+// ── Colour tokens ───────────────────────────────────────────────────────────
+//
+// Semantic role  ←  CI-Common token. Every value below is a re-export, never a
+// fresh hex; add new roles by mapping another token, not by inventing a colour.
+
+/// App canvas — the deepest surface. Windows are fully covered by panels, so
+/// this is rarely drawn directly.
+pub const BG: Color32 = dark::BACKGROUND;
 /// Window / panel surface.
-pub const PANEL: Color32 = Color32::from_rgb(0x1b, 0x1f, 0x33);
+pub const PANEL: Color32 = dark::CARD;
 /// Slightly lighter surface for titlebars / sidebar.
-pub const PANEL_HI: Color32 = Color32::from_rgb(0x21, 0x25, 0x3a);
-/// Recessed surface behind cards / inputs.
-pub const INPUT: Color32 = Color32::from_rgb(0x14, 0x13, 0x20);
-/// Card fill (sits on top of PANEL).
-pub const CARD: Color32 = Color32::from_rgb(0x12, 0x14, 0x22);
+pub const PANEL_HI: Color32 = teal::T800;
+/// Recessed surface behind cards / inputs. Deliberately *darker* than `PANEL`
+/// so text fields read as wells rather than raised chips.
+pub const INPUT: Color32 = dark::BACKGROUND;
+/// Card fill (sits on top of `PANEL`).
+pub const CARD: Color32 = teal::T900;
 
 /// Hairline borders.
-pub const BORDER: Color32 = Color32::from_rgb(0x2b, 0x2f, 0x45);
-pub const BORDER_HI: Color32 = Color32::from_rgb(0x3a, 0x3f, 0x57);
+pub const BORDER: Color32 = dark::BORDER;
+pub const BORDER_HI: Color32 = accent::TEAL_MID;
 
 // Accents.
-pub const TEAL: Color32 = Color32::from_rgb(0x58, 0xeb, 0xbf);
-pub const TEAL_DIM: Color32 = Color32::from_rgb(0x2d, 0xd4, 0xbf);
-pub const BLUE: Color32 = Color32::from_rgb(0x5c, 0x8d, 0xff);
-pub const PURPLE: Color32 = Color32::from_rgb(0x7c, 0x6b, 0xff);
+/// Primary accent. CI-Common's `dark.primary`.
+pub const TEAL: Color32 = dark::PRIMARY;
+pub const TEAL_DIM: Color32 = accent::TEAL_MID;
+pub const BLUE: Color32 = accent::AQUA_LIGHT;
+pub const PURPLE: Color32 = accent::AQUA;
+/// Focus ring / live highlight. CI-Common's `dark.ring`.
+pub const MINT: Color32 = accent::MINT;
 
 // Status.
-pub const GREEN: Color32 = Color32::from_rgb(0x34, 0xd3, 0x99);
-pub const AMBER: Color32 = Color32::from_rgb(0xf5, 0x9e, 0x0b);
-pub const RED: Color32 = Color32::from_rgb(0xf4, 0x67, 0x5b);
+pub const GREEN: Color32 = dark::SUCCESS;
+pub const AMBER: Color32 = dark::WARNING;
+pub const RED: Color32 = dark::DESTRUCTIVE;
 
 // Text.
-pub const TEXT: Color32 = Color32::from_rgb(0xee, 0xf2, 0xf7);
-pub const MUTED: Color32 = Color32::from_rgb(0x98, 0xa2, 0xb3);
-pub const FAINT: Color32 = Color32::from_rgb(0x6b, 0x72, 0x80);
+/// Primary copy. CI-Common's `dark.secondary-foreground` — the high-contrast
+/// near-white, not `dark.foreground` (a ~6:1 desaturated sage that is too low
+/// contrast for a dense settings window).
+pub const TEXT: Color32 = dark::SECONDARY_FOREGROUND;
+pub const MUTED: Color32 = dark::MUTED_FOREGROUND;
+pub const FAINT: Color32 = dark::FOREGROUND;
 /// Dark text drawn on top of a teal fill (primary buttons).
-pub const ON_TEAL: Color32 = Color32::from_rgb(0x04, 0x16, 0x20);
+pub const ON_TEAL: Color32 = dark::PRIMARY_FOREGROUND;
 
-/// Capture-lane accent colours, in the mockup's order.
-pub const LANE_SHOT: Color32 = BLUE;
-pub const LANE_ACTIVITY: Color32 = PURPLE;
-pub const LANE_FILE: Color32 = TEAL_DIM;
+/// Capture-lane accent colours, drawn from the token chart ramp so the three
+/// lanes stay distinguishable and on-brand.
+pub const LANE_SHOT: Color32 = dark::CHART_4;
+pub const LANE_ACTIVITY: Color32 = dark::CHART_2;
+pub const LANE_FILE: Color32 = dark::CHART_1;
 
 /// Return `color` at the given 0–255 alpha so it blends with what's behind it.
 pub fn tint(color: Color32, alpha: u8) -> Color32 {
@@ -183,15 +197,45 @@ pub fn apply_visuals(ctx: &egui::Context) {
     style.spacing.window_margin = egui::Margin::same(0);
 
     style.text_styles = [
-        (TextStyle::Heading, light(18.0)),
-        (TextStyle::Body, body(13.0)),
-        (TextStyle::Button, body(13.0)),
-        (TextStyle::Small, body(11.0)),
-        (TextStyle::Monospace, mono(12.0)),
+        (TextStyle::Heading, light(tokens::text::HEADING)),
+        (TextStyle::Body, body(tokens::text::BODY)),
+        (TextStyle::Button, body(tokens::text::BUTTON)),
+        (TextStyle::Small, body(tokens::text::SMALL)),
+        (TextStyle::Monospace, mono(tokens::text::MONO)),
     ]
     .into();
 
-    ctx.set_style(style);
+    // `Context::set_style` writes only the *currently active* theme's slot. At
+    // eframe-creation time the active theme is the fallback (Dark), so on a
+    // light-mode host egui swaps to its untouched `light_style` on the first
+    // real pass and silently discards everything above — stock egui colours,
+    // spacing and text sizes, and a white logo on a near-white panel.
+    //
+    // The applet is dark-only, so: pin the preference *and* register the style
+    // under both slots, which makes the result correct even if the preference
+    // is later overridden.
+    ctx.set_theme(egui::ThemePreference::Dark);
+    ctx.set_style_of(egui::Theme::Dark, style.clone());
+    ctx.set_style_of(egui::Theme::Light, style);
+}
+
+/// Centre a window on screen.
+///
+/// Call from `update` behind a once-flag: the viewport reports no `outer_rect`
+/// or `monitor_size` until the first pass, so this cannot run from the eframe
+/// creation closure (where `NativeOptions::centered` runs instead).
+///
+/// Caveat: egui derives the position from the current monitor's *size* but
+/// does not offset by that monitor's origin in the virtual desktop, so on a
+/// secondary display the window lands centred-but-offset. Good enough for a
+/// setup wizard; exact multi-head placement needs the `window_builder` hook.
+pub fn center_once(ctx: &egui::Context, done: &mut bool) {
+    if !*done {
+        *done = true;
+        if let Some(cmd) = egui::ViewportCommand::center_on_screen(ctx) {
+            ctx.send_viewport_cmd(cmd);
+        }
+    }
 }
 
 /// A 0.4–1.0 breathing factor (~2s period) for live status dots. Requests a
@@ -202,6 +246,140 @@ pub fn pulse(ctx: &egui::Context) -> f32 {
     0.4 + 0.6 * (0.5 + 0.5 * (t * std::f64::consts::PI).sin()) as f32
 }
 
+// ── Explainer animation ─────────────────────────────────────────────────────
+
+/// An animated "what this app does" diagram: this computer on the left, three
+/// capture lanes flowing right into your Core.
+///
+/// Drawn procedurally with [`egui::Painter`] rather than shipped as a video or
+/// GIF. That is a deliberate trade: it adds no dependency (the crate graph has
+/// no video codec, no Lottie, and `image` is compiled with only `png`), it
+/// recolours for free from [`crate::tokens`], and it stays crisp at any DPI or
+/// zoom — which matters because this same window also has to satisfy "larger,
+/// easier-to-read text". `usvg` has no SMIL support, so animated SVG was never
+/// an option either.
+///
+/// Returns the [`egui::Rect`] consumed. Requests repaints while visible.
+pub fn capture_flow(ui: &mut Ui, height: f32) -> egui::Rect {
+    let width = ui.available_width();
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
+    if !ui.is_rect_visible(rect) {
+        return rect;
+    }
+
+    // ~9s loop: long enough to read, short enough to see it repeat.
+    ui.ctx().request_repaint();
+    let t = ui.ctx().input(|i| i.time) as f32;
+
+    let p = ui.painter_at(rect);
+    let mid_y = rect.center().y;
+    p.rect_filled(rect, CornerRadius::same(tokens::radius::XL), BG);
+
+    // ── endpoints ───────────────────────────────────────────────────────────
+    let device_w = (width * 0.20).clamp(74.0, 128.0);
+    let device_h = device_w * 0.66;
+    let device = egui::Rect::from_center_size(
+        egui::pos2(rect.left() + device_w * 0.62 + 8.0, mid_y),
+        Vec2::new(device_w, device_h),
+    );
+    let core_r = (width * 0.075).clamp(28.0, 46.0);
+    let core_c = egui::pos2(rect.right() - core_r - 12.0, mid_y);
+
+    // This computer: a simple laptop silhouette.
+    p.rect_filled(device, CornerRadius::same(6), CARD);
+    p.rect_stroke(
+        device,
+        CornerRadius::same(6),
+        Stroke::new(1.5, BORDER_HI),
+        StrokeKind::Inside,
+    );
+    p.rect_filled(
+        egui::Rect::from_min_max(
+            egui::pos2(device.left() - 6.0, device.bottom() + 2.0),
+            egui::pos2(device.right() + 6.0, device.bottom() + 5.0),
+        ),
+        CornerRadius::same(2),
+        BORDER_HI,
+    );
+    p.text(
+        egui::pos2(device.center().x, device.bottom() + 18.0),
+        Align2::CENTER_TOP,
+        "This computer",
+        body(tokens::text::SMALL),
+        MUTED,
+    );
+
+    // Your Core: concentric ring + dot, echoing the tray glyph so the two read
+    // as the same product.
+    let breathe = 0.85 + 0.15 * (t * 1.1).sin();
+    p.circle_filled(core_c, core_r * breathe, tint(TEAL, 26));
+    p.circle_stroke(core_c, core_r * 0.72, Stroke::new(2.5, TEAL));
+    p.circle_filled(core_c, core_r * 0.26, TEAL);
+    p.text(
+        egui::pos2(core_c.x, core_c.y + core_r + 10.0),
+        Align2::CENTER_TOP,
+        "Your Core",
+        body(tokens::text::SMALL),
+        MUTED,
+    );
+
+    // ── the three lanes ─────────────────────────────────────────────────────
+    let lanes: [(Color32, &str); 3] = [
+        (LANE_SHOT, "Screens"),
+        (LANE_ACTIVITY, "Activity"),
+        (LANE_FILE, "Files"),
+    ];
+    let x0 = device.right() + 14.0;
+    let x1 = core_c.x - core_r - 10.0;
+    let span = (x1 - x0).max(1.0);
+    let lane_gap = (height * 0.19).clamp(16.0, 30.0);
+
+    for (i, (color, label)) in lanes.iter().enumerate() {
+        let y = mid_y + (i as f32 - 1.0) * lane_gap;
+
+        // Track.
+        p.line_segment(
+            [egui::pos2(x0, y), egui::pos2(x1, y)],
+            Stroke::new(1.0, tint(*color, 40)),
+        );
+        p.text(
+            egui::pos2(x0 + 2.0, y - 6.0),
+            Align2::LEFT_BOTTOM,
+            *label,
+            body(tokens::text::MIN),
+            tint(*color, 210),
+        );
+
+        // Two packets per lane, staggered per-lane so it reads as continuous
+        // flow rather than a marching row.
+        for k in 0..2 {
+            let phase = (t * 0.34 + i as f32 * 0.21 + k as f32 * 0.5).fract();
+            let x = x0 + span * phase;
+            // Fade in and out at the ends so packets don't pop.
+            let edge = (phase / 0.12).min((1.0 - phase) / 0.12).clamp(0.0, 1.0);
+            let alpha = (edge * 235.0) as u8;
+            p.circle_filled(egui::pos2(x, y), 3.4, tint(*color, alpha));
+            // Short comet tail.
+            p.line_segment(
+                [egui::pos2(x - 13.0, y), egui::pos2(x, y)],
+                Stroke::new(2.0, tint(*color, alpha / 3)),
+            );
+        }
+    }
+
+    // Arrival flash on the Core each time a packet lands.
+    let land = 1.0 - ((t * 0.34).fract() / 0.14).min(1.0);
+    if land > 0.0 {
+        p.circle_stroke(
+            core_c,
+            core_r * (0.72 + 0.5 * (1.0 - land)),
+            Stroke::new(1.5, tint(MINT, (land * 150.0) as u8)),
+        );
+    }
+
+    rect
+}
+
 // ── Logo ────────────────────────────────────────────────────────────────────
 
 const CI_MARK_WHITE: &[u8] = include_bytes!("../assets/ci-mark-white.svg");
@@ -209,9 +387,8 @@ const CI_MARK_WHITE: &[u8] = include_bytes!("../assets/ci-mark-white.svg");
 /// Rasterise the CI mark (white) into a texture. Tint at draw time via
 /// [`logo`]. Load once (e.g. in the eframe creation closure) and reuse.
 pub fn load_logo(ctx: &egui::Context) -> TextureHandle {
-    let image = rasterize_svg(CI_MARK_WHITE, 128).unwrap_or_else(|_| {
-        egui::ColorImage::from_rgba_unmultiplied([1, 1], &[0, 0, 0, 0])
-    });
+    let image = rasterize_svg(CI_MARK_WHITE, 128)
+        .unwrap_or_else(|_| egui::ColorImage::from_rgba_unmultiplied([1, 1], &[0, 0, 0, 0]));
     ctx.load_texture("ci-mark", image, egui::TextureOptions::LINEAR)
 }
 
@@ -247,31 +424,31 @@ pub fn logo(ui: &mut Ui, tex: &TextureHandle, size: f32, color: Color32) {
 
 /// Big light heading (page title).
 pub fn heading(ui: &mut Ui, text: &str) {
-    ui.label(egui::RichText::new(text).font(light(19.0)).color(TEXT));
+    ui.label(egui::RichText::new(text).font(light(22.0)).color(TEXT));
 }
 
 /// Muted descriptive subtitle under a heading.
 pub fn subtitle(ui: &mut Ui, text: &str) {
-    ui.label(egui::RichText::new(text).font(body(12.5)).color(MUTED));
+    ui.label(egui::RichText::new(text).font(body(14.0)).color(MUTED));
 }
 
 /// Uppercase, slightly bold field/section label.
 pub fn field_label(ui: &mut Ui, text: &str) {
     ui.label(
         egui::RichText::new(text.to_uppercase())
-            .font(semibold(10.5))
+            .font(semibold(12.0))
             .color(MUTED),
     );
 }
 
 /// Small faint caption / helper text.
 pub fn caption(ui: &mut Ui, text: &str) {
-    ui.label(egui::RichText::new(text).font(body(11.0)).color(FAINT));
+    ui.label(egui::RichText::new(text).font(body(13.0)).color(FAINT));
 }
 
 /// Monospace value (config paths, IDs, tags).
 pub fn mono_label(ui: &mut Ui, text: &str, color: Color32) {
-    ui.label(egui::RichText::new(text).font(mono(11.0)).color(color));
+    ui.label(egui::RichText::new(text).font(mono(13.0)).color(color));
 }
 
 // ── Inputs ────────────────────────────────────────────────────────────────--
@@ -285,16 +462,26 @@ pub struct FieldOpts {
 
 impl FieldOpts {
     pub fn password() -> Self {
-        Self { password: true, monospace: true }
+        Self {
+            password: true,
+            monospace: true,
+        }
     }
     pub fn monospace() -> Self {
-        Self { monospace: true, ..Self::default() }
+        Self {
+            monospace: true,
+            ..Self::default()
+        }
     }
 }
 
 /// A consistently styled single-line text field. Returns whether it changed.
 pub fn text_field(ui: &mut Ui, value: &mut String, hint: &str, opts: FieldOpts) -> bool {
-    let font = if opts.monospace { mono(13.0) } else { body(13.0) };
+    let font = if opts.monospace {
+        mono(15.0)
+    } else {
+        body(15.0)
+    };
     let edit = egui::TextEdit::singleline(value)
         .hint_text(egui::RichText::new(hint).color(FAINT))
         .password(opts.password)
@@ -340,7 +527,7 @@ pub fn status_badge(ui: &mut Ui, text: &str, color: Color32) -> Response {
                 ui.spacing_mut().item_spacing.x = 7.0;
                 let (r, _) = ui.allocate_exact_size(Vec2::splat(6.0), Sense::hover());
                 ui.painter().circle_filled(r.center(), 3.0, color);
-                ui.label(egui::RichText::new(text).font(semibold(11.0)).color(color));
+                ui.label(egui::RichText::new(text).font(semibold(13.0)).color(color));
             });
         })
         .response
@@ -360,14 +547,11 @@ pub fn lane_row(ui: &mut Ui, color: Color32, title: &str, subtitle: &str, tag: &
                 ui.spacing_mut().item_spacing.x = 13.0;
                 let (r, _) = ui.allocate_exact_size(Vec2::splat(9.0), Sense::hover());
                 ui.painter().circle_filled(r.center(), 4.5, color);
-                ui.painter()
-                    .circle_filled(r.center(), 7.5, tint(color, 45));
+                ui.painter().circle_filled(r.center(), 7.5, tint(color, 45));
                 ui.vertical(|ui| {
                     ui.spacing_mut().item_spacing.y = 2.0;
-                    ui.label(egui::RichText::new(title).font(body(13.0)).color(TEXT));
-                    ui.label(
-                        egui::RichText::new(subtitle).font(body(11.5)).color(MUTED),
-                    );
+                    ui.label(egui::RichText::new(title).font(body(15.0)).color(TEXT));
+                    ui.label(egui::RichText::new(subtitle).font(body(13.0)).color(MUTED));
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     mono_label(ui, tag, MUTED);
@@ -393,7 +577,11 @@ pub fn toggle(ui: &mut Ui, on: &mut bool) -> Response {
     let painter = ui.painter();
     painter.rect_filled(rect, radius, track);
     let cx = egui::lerp((rect.left() + radius)..=(rect.right() - radius), how);
-    painter.circle_filled(egui::pos2(cx, rect.center().y), radius - 3.0, Color32::WHITE);
+    painter.circle_filled(
+        egui::pos2(cx, rect.center().y),
+        radius - 3.0,
+        Color32::WHITE,
+    );
     resp
 }
 
@@ -411,10 +599,8 @@ pub fn toggle_row(ui: &mut Ui, on: &mut bool, title: &str, subtitle: &str) -> bo
                 changed = toggle(ui, on).changed();
                 ui.vertical(|ui| {
                     ui.spacing_mut().item_spacing.y = 2.0;
-                    ui.label(egui::RichText::new(title).font(body(13.0)).color(TEXT));
-                    ui.label(
-                        egui::RichText::new(subtitle).font(body(11.5)).color(MUTED),
-                    );
+                    ui.label(egui::RichText::new(title).font(body(15.0)).color(TEXT));
+                    ui.label(egui::RichText::new(subtitle).font(body(13.0)).color(MUTED));
                 });
             });
         });
@@ -425,16 +611,20 @@ pub fn toggle_row(ui: &mut Ui, on: &mut bool, title: &str, subtitle: &str) -> bo
 
 /// Solid teal primary button with dark text (approximates the mockup gradient).
 pub fn primary_button(ui: &mut Ui, text: &str) -> Response {
-    let btn = egui::Button::new(egui::RichText::new(text).font(semibold(13.0)).color(ON_TEAL))
-        .fill(TEAL)
-        .corner_radius(CornerRadius::same(10))
-        .min_size(Vec2::new(0.0, 32.0));
+    let btn = egui::Button::new(
+        egui::RichText::new(text)
+            .font(semibold(15.0))
+            .color(ON_TEAL),
+    )
+    .fill(TEAL)
+    .corner_radius(CornerRadius::same(10))
+    .min_size(Vec2::new(0.0, 32.0));
     ui.add(btn)
 }
 
 /// Outlined "ghost" button.
 pub fn ghost_button(ui: &mut Ui, text: &str) -> Response {
-    let btn = egui::Button::new(egui::RichText::new(text).font(body(13.0)).color(TEXT))
+    let btn = egui::Button::new(egui::RichText::new(text).font(body(15.0)).color(TEXT))
         .fill(Color32::TRANSPARENT)
         .stroke(Stroke::new(1.0, BORDER_HI))
         .corner_radius(CornerRadius::same(10))
@@ -451,7 +641,7 @@ pub fn segment(ui: &mut Ui, text: &str, selected: bool) -> bool {
     } else {
         (Color32::TRANSPARENT, MUTED)
     };
-    let font = if selected { semibold(12.5) } else { body(12.5) };
+    let font = if selected { semibold(14.0) } else { body(14.0) };
     let btn = egui::Button::new(egui::RichText::new(text).font(font).color(fg))
         .fill(fill)
         .corner_radius(CornerRadius::same(8))
@@ -463,13 +653,7 @@ pub fn segment(ui: &mut Ui, text: &str, selected: bool) -> bool {
 
 /// A sidebar navigation entry: leading accent chip, title + subtitle, active
 /// background and left accent bar. Returns true when clicked.
-pub fn nav_item(
-    ui: &mut Ui,
-    accent: Color32,
-    title: &str,
-    subtitle: &str,
-    selected: bool,
-) -> bool {
+pub fn nav_item(ui: &mut Ui, accent: Color32, title: &str, subtitle: &str, selected: bool) -> bool {
     let desired = Vec2::new(ui.available_width(), 46.0);
     let (rect, resp) = ui.allocate_exact_size(desired, Sense::click());
     let painter = ui.painter();
@@ -496,22 +680,30 @@ pub fn nav_item(
         egui::pos2(rect.left() + 26.0, rect.center().y),
         Vec2::splat(20.0),
     );
-    painter.rect_filled(chip, CornerRadius::same(6), tint(accent, if selected { 70 } else { 40 }));
+    painter.rect_filled(
+        chip,
+        CornerRadius::same(6),
+        tint(accent, if selected { 70 } else { 40 }),
+    );
     painter.circle_filled(chip.center(), 3.0, accent);
 
-    let title_color = if selected { TEXT } else { Color32::from_rgb(0xc4, 0xcb, 0xd8) };
+    let title_color = if selected {
+        TEXT
+    } else {
+        Color32::from_rgb(0xc4, 0xcb, 0xd8)
+    };
     painter.text(
         egui::pos2(rect.left() + 46.0, rect.center().y - 8.0),
         Align2::LEFT_CENTER,
         title,
-        body(13.5),
+        body(15.0),
         title_color,
     );
     painter.text(
         egui::pos2(rect.left() + 46.0, rect.center().y + 8.0),
         Align2::LEFT_CENTER,
         subtitle,
-        body(11.0),
+        body(13.0),
         MUTED,
     );
 
@@ -541,7 +733,7 @@ pub fn file_badge(ui: &mut Ui, ext: &str) {
         rect.center(),
         Align2::CENTER_CENTER,
         label,
-        mono(9.0),
+        mono(12.0),
         color,
     );
 }

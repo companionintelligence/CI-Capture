@@ -17,9 +17,11 @@ use vizier::observer::{Observer, ObserverConfig, create_observer};
 use crate::analysis::{AnalysisResult, VisionAnalyzer};
 use crate::capture::{CapturedImage, capture_primary, diff_percent, save_to_path};
 use crate::config::AppConfig;
+#[cfg(feature = "legacy-postgres")]
+use crate::db::PostgresRecorder;
 #[cfg(feature = "legacy-minio")]
 use crate::db::ScreenshotRecord;
-use crate::db::{PostgresRecorder, VizierEventRecord};
+use crate::db::VizierEventRecord;
 use crate::file_tracker;
 #[cfg(feature = "legacy-minio")]
 use crate::minio::MinioUploader;
@@ -241,7 +243,8 @@ async fn sweep_capture_store(analyzer: &VisionAnalyzer, ctx: &SweepContext) {
         return;
     }
 
-    let plan = crate::capture_store::plan_sweep(entries, &config.capture, std::time::SystemTime::now());
+    let plan =
+        crate::capture_store::plan_sweep(entries, &config.capture, std::time::SystemTime::now());
 
     for path in &plan.prune {
         match std::fs::remove_file(path) {
@@ -310,14 +313,22 @@ async fn ingest_capture_to_server(
     };
     let analysed_locally = local_analysis.is_some();
 
-    // `inventoryCapture=true` asks CI-Server to run its own Ollama analysis;
-    // `skipDescription=true` suppresses it. Suppress ONLY when we have a local
-    // result to PATCH in below.
+    // `skipDescription=true` suppresses CI-Server's own Ollama description pass.
+    // Suppress ONLY when we have a local result to PATCH in below; otherwise the
+    // server describes the capture, which is the supported default.
+    //
+    // `inventory` is always false. It does NOT request the description — that
+    // was true before CI-Server #1615 and this call site was never updated. What
+    // it actually triggers is CI-Server's InventoryListener: a *second* vision
+    // pass over the full-resolution original running an "identify objects and
+    // estimate their USD value" prompt, writing ci.inventory rows. On screen
+    // captures that is meaningless output bought with roughly double the GPU
+    // time on the user's Core.
     let file_id = match server_ingest::ingest_capture(
         config,
         filename,
         png_bytes,
-        !analysed_locally,
+        false,
         analysed_locally,
         None,
     )
@@ -368,7 +379,10 @@ async fn ingest_capture_to_server(
     if let Err(err) = std::fs::remove_file(&local_path)
         && err.kind() != std::io::ErrorKind::NotFound
     {
-        log::warn!("failed to remove acked screenshot {}: {err}", local_path.display());
+        log::warn!(
+            "failed to remove acked screenshot {}: {err}",
+            local_path.display()
+        );
     }
 }
 
@@ -567,9 +581,7 @@ impl WorkerState {
             // hasn't landed yet — skip rather than emit nil-attributed events
             // every tick during that window; the refresh loop registers the
             // device and the next tick sends properly.
-            _ if self.config.oidc_session.is_some()
-                && self.config.identity.device_id.is_none() =>
-            {
+            _ if self.config.oidc_session.is_some() && self.config.identity.device_id.is_none() => {
                 log::debug!("vizier: awaiting device registration; skipping tick");
                 return Ok(());
             }
@@ -644,9 +656,6 @@ impl WorkerState {
 
         if server_configured {
             // Guard against payloads CI-Server's JSON body limit will reject.
-            // Skipping (or failing) is non-fatal and we still advance the
-            // baseline below, so we never wedge re-sending the same oversized
-            // snapshot every tick.
             let payload_bytes = serde_json::to_vec(&event.payload)
                 .map(|v| v.len())
                 .unwrap_or(0);
@@ -657,19 +666,55 @@ impl WorkerState {
                     payload_bytes as f64 / 1_048_576.0,
                     MAX_VIZIER_PAYLOAD_BYTES / 1_048_576
                 );
+                // Oversized: the server will never receive this state, so the
+                // baseline must not advance to it. Drop back to None so the next
+                // tick sends a full snapshot, and start a new session so the
+                // server sees an explicit discontinuity rather than silently
+                // applying a patch to a state it never held.
+                self.vizier_previous = None;
+                self.vizier_session_id = Uuid::new_v4();
+                return Ok(());
             } else if let Err(err) =
                 server_ingest::ingest_vizier_event(&self.config, device_id, &event).await
             {
-                log::warn!("failed to write vizier event via CI-Server: {err:?}");
+                // Same reasoning as the oversize path. This lane is
+                // fire-and-forget with no durable queue, so an unacknowledged
+                // send is simply lost — and advancing the baseline anyway would
+                // make every subsequent tick a patch against a state the server
+                // never received, desyncing its view of the activity timeline
+                // permanently. On a laptop (sleep/wake, changing networks) that
+                // is routine, not rare. Resetting costs one larger snapshot on
+                // the next tick and self-heals on the first reconnect.
+                log::warn!(
+                    "failed to write vizier event via CI-Server, resetting baseline: {err:?}"
+                );
+                self.vizier_previous = None;
+                self.vizier_session_id = Uuid::new_v4();
+                return Ok(());
             }
-        } else if let Some(recorder) = build_legacy_recorder(&self.config) {
-            if let Err(err) = recorder.record_vizier_event(event).await {
-                log::warn!("failed to write vizier event to postgres: {err:?}");
+        } else {
+            #[cfg(feature = "legacy-postgres")]
+            if let Some(recorder) = build_legacy_recorder(&self.config) {
+                if let Err(err) = recorder.record_vizier_event(event).await {
+                    log::warn!("failed to write vizier event to postgres: {err:?}");
+                }
             }
+            // Default build: there is deliberately no fallback. Writing activity
+            // data — window titles, terminal cwd, filesystem deltas — from the
+            // client straight into a plaintext database is precisely what the
+            // server-relay model exists to prevent. Say so once per tick at
+            // debug, and let the tray's "⚠︎ Setup needed" status carry the
+            // user-visible signal.
+            #[cfg(not(feature = "legacy-postgres"))]
+            log::debug!(
+                "no server credential; dropping vizier {} (activity capture needs a Companion Memory server)",
+                event.event_kind
+            );
         }
 
-        // Always advance the baseline — even on skip/failure — so the next tick
-        // produces a small diff rather than re-sending this snapshot.
+        // Advance the baseline only on a successful send (every failure path
+        // above returns early after resetting it). The server and the applet now
+        // agree on what state the next diff is relative to.
         self.vizier_previous = Some(current);
         Ok(())
     }
@@ -747,6 +792,7 @@ impl WorkerState {
     }
 }
 
+#[cfg(feature = "legacy-postgres")]
 fn build_legacy_recorder(config: &AppConfig) -> Option<PostgresRecorder> {
     match PostgresRecorder::new(config) {
         Ok(recorder) => Some(recorder),
@@ -859,10 +905,13 @@ mod sensitive_scrub_tests {
             fs("/Users/x/certs/server.pem"),
             fs("/Users/x/.aws/credentials"),
             fs("/Users/x/Documents/notes.md"), // benign — must survive
-            fs("/Users/x/src/main.rs"),         // benign — must survive
+            fs("/Users/x/src/main.rs"),        // benign — must survive
         ];
         events.retain(|e| !rules.is_sensitive(&e.path));
         let kept: Vec<&str> = events.iter().map(|e| e.path.as_str()).collect();
-        assert_eq!(kept, vec!["/Users/x/Documents/notes.md", "/Users/x/src/main.rs"]);
+        assert_eq!(
+            kept,
+            vec!["/Users/x/Documents/notes.md", "/Users/x/src/main.rs"]
+        );
     }
 }

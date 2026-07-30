@@ -87,7 +87,7 @@ impl IngestError {
             StatusCode::BAD_REQUEST                     // validation rejection
                 | StatusCode::PAYLOAD_TOO_LARGE         // this payload will never fit
                 | StatusCode::UNSUPPORTED_MEDIA_TYPE
-                | StatusCode::UNPROCESSABLE_ENTITY      // schema rejection
+                | StatusCode::UNPROCESSABLE_ENTITY // schema rejection
         );
         Self { permanent, message }
     }
@@ -99,7 +99,11 @@ impl std::fmt::Display for IngestError {
             f,
             "{} ({})",
             self.message,
-            if self.permanent { "permanent" } else { "transient" }
+            if self.permanent {
+                "permanent"
+            } else {
+                "transient"
+            }
         )
     }
 }
@@ -135,7 +139,16 @@ pub async fn ingest_capture(
 ) -> Result<String> {
     let credential = AuthCredential::from_config(config)?;
 
+    // Never inherit an ambient proxy. reqwest honours HTTP_PROXY / HTTPS_PROXY /
+    // ALL_PROXY from the environment by default, which would silently route screen
+    // captures and window titles through a third party — and terminate TLS there
+    // for a plain-http Core. A capture client whose whole claim is "your data
+    // reaches only your own machines" cannot let an inherited shell export
+    // override that. Every client in this crate sets `.no_proxy()` for the same
+    // reason; if proxy support is ever wanted it belongs in config as an explicit,
+    // visible field.
     let client = Client::builder()
+        .no_proxy()
         .use_rustls_tls()
         .build()
         .context("building capture upload client")?;
@@ -232,8 +245,14 @@ pub async fn ingest_file_event(
             source_system: "ci-applet",
             source_id: event.event_id.clone(),
             kind: "file_event".to_string(),
-            occurred_at: event.occurred_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
-            observed_at: Some(event.observed_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)),
+            occurred_at: event
+                .occurred_at
+                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            observed_at: Some(
+                event
+                    .observed_at
+                    .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            ),
             title: path,
             description: Some(file_event_description(event.event_type, content)),
             payload,
@@ -301,8 +320,14 @@ pub async fn ingest_vizier_event(
                 event.session_id, event.monotonic_ms, event.event_kind
             ),
             kind: format!("vizier_{}", event.event_kind),
-            occurred_at: event.observed_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
-            observed_at: Some(event.observed_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)),
+            occurred_at: event
+                .observed_at
+                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            observed_at: Some(
+                event
+                    .observed_at
+                    .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            ),
             title: event
                 .focus_title
                 .clone()
@@ -325,6 +350,7 @@ async fn post_capture_event(config: &AppConfig, event: CaptureEvent) -> Result<(
     let credential =
         AuthCredential::from_config(config).map_err(|e| IngestError::transient(e.to_string()))?;
     let client = Client::builder()
+        .no_proxy()
         .use_rustls_tls()
         .timeout(std::time::Duration::from_secs(30))
         .build()
@@ -337,7 +363,11 @@ async fn post_capture_event(config: &AppConfig, event: CaptureEvent) -> Result<(
     for url in
         events_urls(&config.server.portal_url).map_err(|e| IngestError::transient(e.to_string()))?
     {
-        let response = match credential.apply(client.post(url.clone())).json(&request).send().await
+        let response = match credential
+            .apply(client.post(url.clone()))
+            .json(&request)
+            .send()
+            .await
         {
             Ok(r) => r,
             Err(e) => {
@@ -384,8 +414,7 @@ async fn post_capture_event(config: &AppConfig, event: CaptureEvent) -> Result<(
         return Ok(());
     }
 
-    Err(last_error
-        .unwrap_or_else(|| IngestError::transient("no event ingest endpoint candidates")))
+    Err(last_error.unwrap_or_else(|| IngestError::transient("no event ingest endpoint candidates")))
 }
 
 fn capture_upload_form(
@@ -433,6 +462,7 @@ pub async fn set_file_metadata(
     }
     let credential = AuthCredential::from_config(config)?;
     let client = Client::builder()
+        .no_proxy()
         .use_rustls_tls()
         .timeout(std::time::Duration::from_secs(30))
         .build()
@@ -459,12 +489,16 @@ pub async fn set_file_metadata(
         let status = response.status();
         if should_try_next_endpoint(status) {
             let text = response.text().await.unwrap_or_default();
-            last_error = Some(anyhow!("file metadata update failed with HTTP {status}: {text}"));
+            last_error = Some(anyhow!(
+                "file metadata update failed with HTTP {status}: {text}"
+            ));
             continue;
         }
         if !status.is_success() {
             let text = response.text().await.unwrap_or_default();
-            return Err(anyhow!("file metadata update failed with HTTP {status}: {text}"));
+            return Err(anyhow!(
+                "file metadata update failed with HTTP {status}: {text}"
+            ));
         }
         return Ok(());
     }
@@ -542,7 +576,9 @@ mod tests {
         let body = "é".repeat(DESCRIPTION_CONTENT_BYTES); // 2 bytes each
         let d = file_event_description(EventType::FileCreated, &content(Some(&body)));
         assert!(d.ends_with("…[truncated]"));
-        assert!(d.len() <= "FileCreated\n\n".len() + DESCRIPTION_CONTENT_BYTES + "\n…[truncated]".len());
+        assert!(
+            d.len() <= "FileCreated\n\n".len() + DESCRIPTION_CONTENT_BYTES + "\n…[truncated]".len()
+        );
         // Must still be valid UTF-8 end to end (String guarantees it; also
         // check we kept at least most of the budget rather than over-trimming).
         assert!(d.len() > DESCRIPTION_CONTENT_BYTES / 2);

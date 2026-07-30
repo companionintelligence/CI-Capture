@@ -52,6 +52,7 @@ pub async fn upload_files(config: &AppConfig, paths: &[PathBuf]) -> Result<Vec<U
     let credential = AuthCredential::from_config(config)?;
 
     let client = Client::builder()
+        .no_proxy()
         .use_rustls_tls()
         .build()
         .context("building upload HTTP client")?;
@@ -173,6 +174,7 @@ pub async fn poll_parse_status(config: &AppConfig, file_id: &str) -> Result<Term
 
     let gql_urls = graphql_urls(&config.server.portal_url)?;
     let client = Client::builder()
+        .no_proxy()
         .use_rustls_tls()
         .build()
         .context("building poll HTTP client")?;

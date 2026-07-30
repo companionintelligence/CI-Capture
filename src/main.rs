@@ -21,6 +21,7 @@ mod settings_ui;
 mod svg_icon;
 mod sync;
 mod theme;
+mod tokens;
 mod upload_ui;
 mod watcher;
 mod worker;
@@ -123,7 +124,7 @@ fn main() -> Result<()> {
     let tray_menu = menu_state.menu.clone();
     let tray_icon = TrayIconBuilder::new()
         .with_menu(Box::new(tray_menu))
-        .with_tooltip("CI-Applet")
+        .with_tooltip("Companion Memory")
         .with_icon(icon)
         .with_icon_as_template(true)
         .build()
@@ -201,6 +202,16 @@ impl AppController {
             self.worker.capture_now();
         } else if menu_id == *self.menu_state.upload_item.id() {
             self.open_upload_window();
+        } else if menu_id == *self.menu_state.open_memory_item.id() {
+            self.open_memory(&[]);
+        } else if menu_id == *self.menu_state.today_item.id() {
+            let from = Utc::now()
+                .date_naive()
+                .and_hms_opt(0, 0, 0)
+                .map(|d| d.and_utc().to_rfc3339())
+                .unwrap_or_default();
+            let to = Utc::now().to_rfc3339();
+            self.open_memory(&[("from", &from), ("to", &to), ("view", "list")]);
         } else if menu_id == *self.menu_state.settings_item.id() {
             self.open_settings_window();
         } else if menu_id == *self.menu_state.login_item.id() {
@@ -244,7 +255,7 @@ impl AppController {
                         show_error("Linked account, but failed to reload configuration.");
                         return;
                     }
-                    dialogs::message_box_ok("CI-Applet", &message, MessageBoxIcon::Info);
+                    dialogs::message_box_ok("Companion Memory", &message, MessageBoxIcon::Info);
                 } else {
                     show_error(&message);
                 }
@@ -374,6 +385,24 @@ impl AppController {
         dialogs::message_box_ok("Config Path", &path, MessageBoxIcon::Info);
     }
 
+    /// Open the Companion Memory web app in the user's browser, optionally
+    /// deep-linked with query parameters.
+    fn open_memory(&self, query: &[(&str, &str)]) {
+        let config = self.current_config();
+        let url = match server_common::memory_url(&config.server.portal_url, query) {
+            Ok(url) => url,
+            Err(err) => {
+                show_error(&format!(
+                    "Can't work out your Companion Memory address: {err:#}\n\nSet your server URL in Settings first."
+                ));
+                return;
+            }
+        };
+        if let Err(err) = open_url(url.as_str()) {
+            show_error(&format!("Couldn't open {url}: {err}"));
+        }
+    }
+
     fn shutdown(&mut self) {
         self.worker.shutdown();
         if let Some(icon) = self.tray_icon.take() {
@@ -407,6 +436,8 @@ struct MenuState {
     toggle_item: MenuItem,
     capture_now_item: MenuItem,
     upload_item: MenuItem,
+    open_memory_item: MenuItem,
+    today_item: MenuItem,
     interval_item: MenuItem,
     threshold_item: MenuItem,
     identity_item: MenuItem,
@@ -429,6 +460,8 @@ impl MenuState {
         let toggle_item = MenuItem::new("Pause Captures", true, None);
         let capture_now_item = MenuItem::new("Capture Now", true, None);
         let upload_item = MenuItem::new("Upload Document…", true, None);
+        let open_memory_item = MenuItem::new("Open Companion Memory", true, None);
+        let today_item = MenuItem::new("Today's Activity", true, None);
         let interval_item = MenuItem::new("Screenshot Interval", true, None);
         let threshold_item = MenuItem::new("Diff Threshold", true, None);
         let identity_item = MenuItem::new("Set Identity IDs", true, None);
@@ -440,7 +473,7 @@ impl MenuState {
         let minio_item = MenuItem::new("Configure MinIO", true, None);
         let analysis_item = MenuItem::new("Configure Vision Endpoint", true, None);
         let show_config_item = MenuItem::new("Show Config Location", true, None);
-        let quit_item = MenuItem::new("Quit CI-Applet", true, None);
+        let quit_item = MenuItem::new("Quit Companion Memory", true, None);
 
         interval_item.set_enabled(false);
         threshold_item.set_enabled(false);
@@ -456,6 +489,9 @@ impl MenuState {
             &toggle_item,
             &capture_now_item,
             &upload_item,
+            &PredefinedMenuItem::separator(),
+            &open_memory_item,
+            &today_item,
             &PredefinedMenuItem::separator(),
             &interval_item,
             &threshold_item,
@@ -478,6 +514,8 @@ impl MenuState {
             toggle_item,
             capture_now_item,
             upload_item,
+            open_memory_item,
+            today_item,
             interval_item,
             threshold_item,
             identity_item,
@@ -545,22 +583,20 @@ impl MenuState {
         ));
         self.analysis_item
             .set_text(&format!("Vision Model: {}", config.analysis.model));
+
+        // Nothing to open until a server URL is set — greying these out is
+        // honest, where a click that pops an error dialog is not.
+        let has_server = !config.server.portal_url.trim().is_empty();
+        self.open_memory_item.set_enabled(has_server);
+        self.today_item.set_enabled(has_server);
     }
 }
 
 fn build_icon() -> Icon {
-    #[cfg(target_os = "macos")]
-    const ICON_SIZE: u32 = 36;
-    #[cfg(not(target_os = "macos"))]
-    const ICON_SIZE: u32 = 22;
-    const ICON_BYTES: &[u8] = include_bytes!("../packaging/icons/icon.png");
-
-    match svg_icon::load_png_icon(ICON_BYTES, ICON_SIZE) {
+    match svg_icon::load_tray_icon() {
         Ok(icon) => icon,
         Err(err) => {
-            log::warn!(
-                "Failed to load embedded tray icon PNG: {err}. Falling back to default vector icon"
-            );
+            log::warn!("Failed to rasterize the tray glyph: {err}. Falling back to a drawn icon");
             fallback_icon()
         }
     }
@@ -583,10 +619,17 @@ fn fallback_icon() -> Icon {
 }
 
 fn show_error(message: &str) {
-    dialogs::message_box_ok("CI-Applet", message, MessageBoxIcon::Error);
+    dialogs::message_box_ok("Companion Memory", message, MessageBoxIcon::Error);
 }
 
 /// Open a URL in the user's default browser, cross-platform.
+///
+/// Deep links carry query strings, which is what makes the Windows arm subtle:
+/// `cmd.exe` re-parses the raw command line and splits on `&` *before* argument
+/// parsing, so a plain `Command::arg` — whose MSVC-style quoting `cmd.exe` does
+/// not honour — truncates every multi-parameter URL at the first `&`. Passing
+/// the pieces through `raw_arg` and quoting the URL ourselves is what actually
+/// suppresses `& | ^ < >`.
 fn open_url(url: &str) -> std::io::Result<std::process::ExitStatus> {
     #[cfg(target_os = "macos")]
     let mut cmd = {
@@ -596,9 +639,19 @@ fn open_url(url: &str) -> std::io::Result<std::process::ExitStatus> {
     };
     #[cfg(target_os = "windows")]
     let mut cmd = {
+        use std::os::windows::process::CommandExt;
+
+        // A literal `"` would close our quoting and let the rest of the string
+        // reach the shell unquoted. Valid URLs percent-encode it as %22, so
+        // dropping it is both safe and the conservative choice.
+        let sanitized = url.replace('"', "");
         let mut c = Command::new("cmd");
-        // The empty "" is `start`'s window-title argument.
-        c.args(["/C", "start", "", url]);
+        c.raw_arg("/C");
+        c.raw_arg("start");
+        // `start` reads a leading quoted token as the window title; give it an
+        // empty one so it treats ours as the target.
+        c.raw_arg("\"\"");
+        c.raw_arg(format!("\"{sanitized}\""));
         c
     };
     #[cfg(all(unix, not(target_os = "macos")))]
@@ -730,7 +783,7 @@ fn login_with_portal() -> Result<String> {
         .or(outcome.claims.sub)
         .unwrap_or_else(|| "your account".to_string());
     Ok(format!(
-        "Signed in as {who}. CI-Applet will now attribute captures to that account."
+        "Signed in as {who}. Companion Memory will now attribute captures to that account."
     ))
 }
 
@@ -746,7 +799,10 @@ fn print_login_summary() {
         return;
     };
     if let Some(session) = &config.oidc_session {
-        println!("  subject   : {}", session.subject.as_deref().unwrap_or("-"));
+        println!(
+            "  subject   : {}",
+            session.subject.as_deref().unwrap_or("-")
+        );
         println!("  email     : {}", session.email.as_deref().unwrap_or("-"));
         println!(
             "  expires   : {}",
@@ -758,7 +814,9 @@ fn print_login_summary() {
         if let Some(token) = &session.id_token {
             match decode_jwt_aud_iss(token) {
                 Some((aud, iss)) => {
-                    println!("  token aud : {aud}   (CI-Server must list this in PORTAL_OIDC_AUDIENCE)");
+                    println!(
+                        "  token aud : {aud}   (CI-Server must list this in PORTAL_OIDC_AUDIENCE)"
+                    );
                     println!("  token iss : {iss}");
                 }
                 None => println!("  id_token  : present (claims not decodable)"),
@@ -822,6 +880,7 @@ async fn register_device(config: &AppConfig, bearer: &str) -> Result<Uuid> {
         "is_active": true,
     });
     let client = reqwest::Client::builder()
+        .no_proxy()
         .use_rustls_tls()
         .timeout(Duration::from_secs(30))
         .build()
@@ -928,8 +987,7 @@ fn spawn_token_refresh(worker: WorkerHandle, shared: Arc<Mutex<AppConfig>>) {
                         ConcernOutcome::Succeeded => registration_failures = 0,
                         ConcernOutcome::Failed => {
                             registration_failures += 1;
-                            skip_registration_ticks =
-                                failure_backoff_ticks(registration_failures);
+                            skip_registration_ticks = failure_backoff_ticks(registration_failures);
                         }
                         ConcernOutcome::Idle => {}
                     }
@@ -985,6 +1043,7 @@ fn token_refresh_tick(
     {
         let refreshed = runtime.block_on(async {
             let client = reqwest::Client::builder()
+                .no_proxy()
                 .use_rustls_tls()
                 .timeout(Duration::from_secs(30))
                 .build()
@@ -1013,9 +1072,7 @@ fn token_refresh_tick(
                     outcome.refresh = ConcernOutcome::Succeeded;
                     log::info!("refreshed portal token");
                 } else {
-                    log::info!(
-                        "discarding refreshed token: session was superseded during refresh"
-                    );
+                    log::info!("discarding refreshed token: session was superseded during refresh");
                 }
             }
             Err(err) => {
