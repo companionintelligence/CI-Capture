@@ -500,32 +500,48 @@ mod e2e {
         tokio::time::sleep(Duration::from_millis(500)).await;
         std::fs::write(watched.join("notes.md"), "# Plan\n\nremember the tailscale rollout").unwrap();
 
-        let got_event = wait_until(Duration::from_secs(30), || {
+        // Wait for the event that carries the *content*, not merely the first
+        // file_event. `fs::write` can surface as a create observed before the
+        // bytes land, and `build_content` runs at send time — so on a loaded
+        // runner the first request out can legitimately describe a file that was
+        // still empty when it was read. Asserting on the first one made this a
+        // race that failed only under CI load.
+        let has_content = |body: &str| body.contains("remember the tailscale rollout");
+        let got_content = wait_until(Duration::from_secs(30), || {
             recorded
                 .lock()
                 .unwrap()
                 .iter()
-                .any(|(_, _, body)| body.contains("file_event"))
+                .any(|(_, _, body)| body.contains("file_event") && has_content(body))
         })
         .await;
         lane.abort();
-        assert!(got_event, "file event never reached the mock server");
 
         let requests = recorded.lock().unwrap();
-        let (path, api_key, body) = requests
+        // Failing here still means a real regression — the timeout above is
+        // bounded and the dump shows exactly what the lane did send.
+        assert!(
+            got_content,
+            "no file_event carried the extracted markdown within 30s.\n\
+             {} request(s) recorded:\n{}",
+            requests.len(),
+            requests
+                .iter()
+                .enumerate()
+                .map(|(i, (p, _, b))| format!("  [{i}] {p} :: {}", &b[..b.len().min(300)]))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+
+        let (path, api_key, _body) = requests
             .iter()
-            .find(|(_, _, b)| b.contains("file_event"))
-            .unwrap();
+            .find(|(_, _, b)| b.contains("file_event") && has_content(b))
+            .expect("checked by got_content above");
         assert!(path.contains("/v1/events"), "unexpected ingest path {path}");
         assert_eq!(
             api_key.as_deref(),
             Some("ab".repeat(32).as_str()),
             "credential must ride x-api-key"
-        );
-        // The recall quick win: extracted content in the description field.
-        assert!(
-            body.contains("remember the tailscale rollout"),
-            "description must carry extracted markdown"
         );
 
         // Ack drained the durable queue.
