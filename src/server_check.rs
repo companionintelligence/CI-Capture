@@ -95,6 +95,34 @@ async fn report(config: &AppConfig) -> Result<()> {
         }
     );
 
+    // OS capture permissions. A denied Screen Recording grant is one of the
+    // most common reasons capture produces nothing on macOS, and it is
+    // invisible from the server's side — so the self-test someone runs when
+    // "nothing is being captured" has to say so. `permissions::status()` is
+    // documented non-prompting, so this never pops a dialog at the CLI.
+    let perms = crate::permissions::status();
+    println!("\nCapture permissions");
+    println!("-------------------");
+    // Named as System Settings names them, so the labels match what the user
+    // has to go find.
+    println!(
+        "Screen Recording : {} — required for the screenshot lane",
+        perms.screen_recording.badge()
+    );
+    // Say plainly that this one is optional. Nothing reads AX data, and a bare
+    // "Not granted" would send someone off to grant a permission that changes
+    // nothing — while looking like the reason capture is broken.
+    println!(
+        "Accessibility    : {} — optional, reported for diagnostics only",
+        perms.accessibility.badge()
+    );
+    if perms.needs_attention() {
+        println!(
+            "\nScreen Recording is off, so no screenshots will be captured.\nGrant it in System Settings → Privacy & Security:\n  {}",
+            crate::permissions::screen_recording_settings_url()
+        );
+    }
+
     println!("\nPortal sign-in (OIDC)");
     println!("---------------------");
     println!(
@@ -147,7 +175,9 @@ async fn report(config: &AppConfig) -> Result<()> {
     match graphql_urls(portal) {
         Ok(urls) => {
             let mut last_err = None;
-            for gql in urls {
+            let last_index = urls.len().saturating_sub(1);
+            for (i, gql) in urls.iter().enumerate() {
+                let more_to_try = i < last_index;
                 let mut req = client
                     .post(gql.clone())
                     .json(&serde_json::json!({ "query": "query{__typename}" }));
@@ -169,8 +199,13 @@ async fn report(config: &AppConfig) -> Result<()> {
                             status.as_u16(),
                             if reachable {
                                 "✓ reachable"
-                            } else if route_miss {
+                            } else if route_miss && more_to_try {
                                 "route not found; trying next"
+                            } else if route_miss {
+                                // Don't promise a retry that isn't coming: a
+                                // portal URL carrying its own base path has a
+                                // single candidate, so this is the verdict.
+                                "✗ route not found — is this the right address?"
                             } else {
                                 "(unexpected body)"
                             }

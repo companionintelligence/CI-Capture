@@ -296,6 +296,10 @@ impl SettingsApp {
     /// probes exactly what the form shows.
     fn build_config(&self) -> AppConfig {
         let mut c = self.base_config.lock().clone();
+        // `validate()` gates Save on the same call, so the fallback here is
+        // only reached by the connection test probing a half-typed field —
+        // keep the raw text in that case so the test reports what the user is
+        // actually looking at.
         let typed = normalize_core_url(self.form.portal_url.trim())
             .unwrap_or_else(|_| self.form.portal_url.trim().to_string());
         // Saving from this form is an explicit choice, so mark the address

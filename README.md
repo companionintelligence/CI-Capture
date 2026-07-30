@@ -242,7 +242,7 @@ Configuration lives in the app config directory as `config.json`. Key fields:
 - `server.Capture_auth_token` — JWT bearer token or 64-character CI-Server API key used for CI-Server calls (set by login or pasted in settings)
 - `oidc.issuer` — OIDC issuer opened by the tray login (blank by default; optional when using an API key)
 - `oidc.client_id` — registered client (default `ci-Capture`)
-- `oidc.redirect_uri` — loopback callback (default `http://127.0.0.1:49473/callback`)
+- `oidc.redirect_uri` — loopback callback (default `http://127.0.0.1:0/callback`; port `0` means the OS picks a free port at sign-in, so a busy port can't block login — the resolved port is what's sent to the issuer, which must accept any `127.0.0.1` port)
 - `screenshot_interval_secs` (default 300, floored to 30) and `diff_threshold_percent` (default 10)
 - `file_tracker.watched_paths` — folders to watch recursively (**empty = file tracking off**); plus `ignore_globs`, `max_file_bytes`, `send_content`, `max_content_bytes`
 

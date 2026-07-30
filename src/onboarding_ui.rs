@@ -238,9 +238,37 @@ impl OnboardingApp {
         }
     }
 
+    /// Canonicalize the typed address, reporting the problem in the wizard
+    /// rather than writing an address that cannot work.
+    ///
+    /// This is a new user's first field, so it's the one most likely to arrive
+    /// mistyped — and a bad value saved here surfaces much later as an opaque
+    /// ingest error, with nothing pointing back at this screen.
+    fn normalized_server_url(&mut self) -> Option<String> {
+        let raw = self.server_url.trim();
+        if raw.is_empty() {
+            return Some(String::new());
+        }
+        match crate::server_common::normalize_core_url(raw) {
+            Ok(url) => {
+                // Show what was actually stored: the scheme it gained, or the
+                // `/feed` it lost, should not be a silent edit.
+                self.server_url = url.clone();
+                Some(url)
+            }
+            Err(msg) => {
+                self.status_line = Some(Err(msg));
+                None
+            }
+        }
+    }
+
     /// Persist the current Companion Memory server address + OIDC issuer (merge-safe).
-    fn save_connection_fields(&mut self) {
-        let url = self.server_url.trim().to_string();
+    /// Returns false when the address was rejected, so callers can stop.
+    fn save_connection_fields(&mut self) -> bool {
+        let Some(url) = self.normalized_server_url() else {
+            return false;
+        };
         let issuer = self.oidc_issuer.trim().to_string();
         self.persist_merged(|c| {
             // Same rule as the settings form: an address typed here is the
@@ -252,6 +280,7 @@ impl OnboardingApp {
             c.server.portal_url = url;
             c.oidc.issuer = issuer;
         });
+        true
     }
 
     fn reload_config(&mut self) {
@@ -270,7 +299,9 @@ impl OnboardingApp {
             ));
             return;
         }
-        self.save_connection_fields();
+        if !self.save_connection_fields() {
+            return;
+        }
         let (tx, rx) = channel();
         self.login_rx = Some(rx);
         self.status_line = Some(Ok("Opening your browser to sign in…".into()));
@@ -288,7 +319,9 @@ impl OnboardingApp {
             self.status_line = Some(Err("Paste an API key first.".into()));
             return;
         }
-        let url = self.server_url.trim().to_string();
+        let Some(url) = self.normalized_server_url() else {
+            return;
+        };
         // Choosing an API key means API-key auth: store the key and clear any
         // stale OIDC session so the refresh loop doesn't fight it.
         self.persist_merged(|c| {
@@ -303,7 +336,11 @@ impl OnboardingApp {
     }
 
     fn start_connection_test(&mut self) {
-        self.save_connection_fields();
+        // A rejected address has nothing to test — the message from
+        // `normalized_server_url` is the useful result here.
+        if !self.save_connection_fields() {
+            return;
+        }
         let (tx, rx) = channel();
         self.test_rx = Some(rx);
         let config = self.config.clone();
@@ -819,10 +856,15 @@ impl OnboardingApp {
                             "Skip for now  →"
                         };
                         if theme::primary_button(ui, label).clicked() {
-                            self.save_connection_fields();
-                            self.perms = permissions::status();
-                            if let Some(next) = self.step.next() {
-                                self.step = next;
+                            // An empty address is a real skip and advances. One
+                            // that was typed but can't be used holds the step,
+                            // so the message lands next to the field that
+                            // caused it rather than a screen later.
+                            if self.save_connection_fields() {
+                                self.perms = permissions::status();
+                                if let Some(next) = self.step.next() {
+                                    self.step = next;
+                                }
                             }
                         }
                         if !self.has_credential() {
