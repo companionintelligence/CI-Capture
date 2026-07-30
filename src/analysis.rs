@@ -34,6 +34,7 @@ impl Default for VisionAnalyzer {
     fn default() -> Self {
         Self {
             client: Client::builder()
+                .no_proxy()
                 .connect_timeout(Duration::from_secs(10))
                 .timeout(Duration::from_secs(120))
                 .build()
@@ -264,7 +265,10 @@ fn extract_content_text(payload: &Value) -> Result<String> {
     // (e.g. Qwen3 via LM Studio) leave `content` empty and emit the whole
     // answer — JSON included — in `reasoning_content`. Fall back to that so the
     // analysis isn't lost just because the model "thought" its reply.
-    let content = message.get("content").map(content_to_text).unwrap_or_default();
+    let content = message
+        .get("content")
+        .map(content_to_text)
+        .unwrap_or_default();
     if !content.trim().is_empty() {
         return Ok(content);
     }
@@ -412,7 +416,9 @@ mod tests {
 
     #[test]
     fn strips_reasoning_block_before_json() {
-        let raw = format!("<think>The user seems to be coding. I'll emit {{a draft}}.</think>\n{{{FIELDS}}}");
+        let raw = format!(
+            "<think>The user seems to be coding. I'll emit {{a draft}}.</think>\n{{{FIELDS}}}"
+        );
         let v = parse_analysis_json(&raw).expect("should parse JSON after </think>");
         assert_eq!(v["primary_application"], "p");
     }
@@ -442,8 +448,8 @@ mod tests {
         let payload = serde_json::json!({
             "choices": [{ "message": { "content": "", "reasoning_content": format!("{{{FIELDS}}}") } }]
         });
-        let text = super::extract_content_text(&payload)
-            .expect("should fall back to reasoning_content");
+        let text =
+            super::extract_content_text(&payload).expect("should fall back to reasoning_content");
         let v = parse_analysis_json(&text).expect("reasoning JSON should parse");
         assert_eq!(v["primary_application"], "p");
     }

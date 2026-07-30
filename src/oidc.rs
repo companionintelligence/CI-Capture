@@ -128,7 +128,8 @@ pub fn authorize_url(
     nonce: &str,
     challenge: &str,
 ) -> Result<String> {
-    let mut u = Url::parse(&disco.authorization_endpoint).context("parsing authorization endpoint")?;
+    let mut u =
+        Url::parse(&disco.authorization_endpoint).context("parsing authorization endpoint")?;
     u.query_pairs_mut()
         .append_pair("response_type", "code")
         .append_pair("client_id", &cfg.client_id)
@@ -193,7 +194,9 @@ pub async fn refresh(
         let body = resp.text().await.unwrap_or_default();
         bail!("token refresh failed: HTTP {status}{}", trim_body(&body));
     }
-    resp.json().await.context("parsing refreshed token response")
+    resp.json()
+        .await
+        .context("parsing refreshed token response")
 }
 
 /// Decode the (unverified) claims from an `id_token` JWT payload segment.
@@ -251,7 +254,10 @@ async fn accept_code(listener: TcpListener) -> Result<(String, Option<String>)> 
     let (mut sock, _) = listener.accept().await.context("accepting OIDC callback")?;
 
     let mut buf = vec![0u8; 16 * 1024];
-    let n = sock.read(&mut buf).await.context("reading OIDC callback request")?;
+    let n = sock
+        .read(&mut buf)
+        .await
+        .context("reading OIDC callback request")?;
     let req = String::from_utf8_lossy(&buf[..n]);
     let request_target = req
         .lines()
@@ -277,9 +283,9 @@ async fn accept_code(listener: TcpListener) -> Result<(String, Option<String>)> 
 
     let ok = code.is_some() && err.is_none();
     let body = if ok {
-        "<!doctype html><meta charset=utf-8><title>CI-Applet</title><body style=\"font-family:-apple-system,system-ui,sans-serif;text-align:center;padding:3rem;color:#0d1117\"><h2>✅ Signed in</h2><p>You can close this tab and return to CI-Applet.</p></body>"
+        "<!doctype html><meta charset=utf-8><title>Companion Memory</title><body style=\"font-family:-apple-system,system-ui,sans-serif;text-align:center;padding:3rem;color:#0d1117\"><h2>✅ Signed in</h2><p>You can close this tab and return to Companion Memory.</p></body>"
     } else {
-        "<!doctype html><meta charset=utf-8><title>CI-Applet</title><body style=\"font-family:-apple-system,system-ui,sans-serif;text-align:center;padding:3rem;color:#0d1117\"><h2>Sign-in failed</h2><p>You can close this tab and try again from CI-Applet.</p></body>"
+        "<!doctype html><meta charset=utf-8><title>Companion Memory</title><body style=\"font-family:-apple-system,system-ui,sans-serif;text-align:center;padding:3rem;color:#0d1117\"><h2>Sign-in failed</h2><p>You can close this tab and try again from Companion Memory.</p></body>"
     };
     let resp = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
@@ -302,6 +308,7 @@ async fn accept_code(listener: TcpListener) -> Result<(String, Option<String>)> 
 /// authorization URL (the caller opens it in the system browser).
 pub async fn login(cfg: &OidcConfig, open_browser: impl Fn(&str)) -> Result<LoginOutcome> {
     let client = Client::builder()
+        .no_proxy()
         .use_rustls_tls()
         .timeout(Duration::from_secs(30))
         .build()
@@ -365,8 +372,8 @@ mod tests {
     #[test]
     fn authorize_url_has_all_pkce_params() {
         let disco = Discovery {
-            authorization_endpoint: "https://hub.companionintelligence.com/api/auth/oauth2/authorize"
-                .into(),
+            authorization_endpoint:
+                "https://hub.companionintelligence.com/api/auth/oauth2/authorize".into(),
             token_endpoint: "https://x/token".into(),
             jwks_uri: "https://x/jwks".into(),
             userinfo_endpoint: None,
@@ -404,7 +411,8 @@ mod tests {
 
     #[test]
     fn token_response_parses_minimal() {
-        let t: TokenSet = serde_json::from_str(r#"{"access_token":"a","token_type":"Bearer"}"#).unwrap();
+        let t: TokenSet =
+            serde_json::from_str(r#"{"access_token":"a","token_type":"Bearer"}"#).unwrap();
         assert_eq!(t.access_token, "a");
         assert!(t.id_token.is_none() && t.refresh_token.is_none());
     }
@@ -416,11 +424,23 @@ mod tests {
             .with_timezone(&Utc);
         let skew = chrono::Duration::minutes(2);
         // Plenty of time left → not expiring.
-        assert!(!token_expiring(Some(now + chrono::Duration::minutes(10)), now, skew));
+        assert!(!token_expiring(
+            Some(now + chrono::Duration::minutes(10)),
+            now,
+            skew
+        ));
         // Inside the skew window → expiring.
-        assert!(token_expiring(Some(now + chrono::Duration::minutes(1)), now, skew));
+        assert!(token_expiring(
+            Some(now + chrono::Duration::minutes(1)),
+            now,
+            skew
+        ));
         // Already past → expiring.
-        assert!(token_expiring(Some(now - chrono::Duration::minutes(5)), now, skew));
+        assert!(token_expiring(
+            Some(now - chrono::Duration::minutes(5)),
+            now,
+            skew
+        ));
         // Unknown expiry → don't churn.
         assert!(!token_expiring(None, now, skew));
     }

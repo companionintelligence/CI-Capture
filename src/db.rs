@@ -1,22 +1,41 @@
-// The screenshot-recording helpers here are only reached by the legacy
-// MinIO path (`--features legacy-minio`); they're dead code in the default
-// build. The vizier snapshot path is always used.
+//! Record types for capture data, plus the **legacy** direct-to-Postgres
+//! writer.
+//!
+//! The record structs are plain DTOs and are always compiled — `server_ingest`
+//! uses [`VizierEventRecord`] as its wire shape.
+//!
+//! [`PostgresRecorder`] is different: it opens a **plaintext** (`NoTls`)
+//! connection from the client straight to a database. That is incompatible with
+//! the product model — a laptop is a thin capture client whose data reaches the
+//! user's own appliance through authenticated CI-Server ingest — so the whole
+//! writer is behind the opt-in `legacy-postgres` feature and cannot be reached
+//! by a default build.
 #![allow(dead_code)]
 
+use chrono::{DateTime, Utc};
+use serde_json::Value;
+use uuid::Uuid;
+
+#[cfg(feature = "legacy-postgres")]
 use std::sync::Arc;
+#[cfg(feature = "legacy-postgres")]
 use std::sync::atomic::{AtomicBool, Ordering};
 
+#[cfg(feature = "legacy-postgres")]
 use anyhow::{Context, Result};
-use chrono::{DateTime, Utc};
+#[cfg(feature = "legacy-postgres")]
 use deadpool_postgres::{Client, Config, ManagerConfig, Pool, RecyclingMethod};
-use serde_json::{Value, json};
+#[cfg(feature = "legacy-postgres")]
+use serde_json::json;
+#[cfg(feature = "legacy-postgres")]
 use tokio_postgres::{
     NoTls,
     types::{Json, ToSql},
 };
-use uuid::Uuid;
 
+#[cfg(feature = "legacy-postgres")]
 use crate::analysis::AnalysisResult;
+#[cfg(feature = "legacy-postgres")]
 use crate::config::AppConfig;
 
 #[derive(Clone)]
@@ -44,6 +63,7 @@ pub struct VizierEventRecord {
     pub fs_event_count: i32,
 }
 
+#[cfg(feature = "legacy-postgres")]
 #[derive(Clone)]
 pub struct PostgresRecorder {
     pool: Pool<NoTls>,
@@ -51,6 +71,7 @@ pub struct PostgresRecorder {
     screen_capture_schema_ready: Arc<AtomicBool>,
 }
 
+#[cfg(feature = "legacy-postgres")]
 impl PostgresRecorder {
     pub fn new(config: &AppConfig) -> Result<Self> {
         let mut pg_config = Config::new();

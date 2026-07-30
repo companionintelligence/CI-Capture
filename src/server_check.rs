@@ -39,7 +39,7 @@ pub fn run(portal_override: Option<String>) -> Result<()> {
 }
 
 async fn report(config: &AppConfig) -> Result<()> {
-    println!("CI-Applet → CI-Server connection check");
+    println!("Companion Memory App → server connection check");
     println!("======================================\n");
 
     let portal = config.server.portal_url.trim();
@@ -124,6 +124,7 @@ async fn report(config: &AppConfig) -> Result<()> {
     println!("\nLive probe");
     println!("----------");
     let client = Client::builder()
+        .no_proxy()
         .use_rustls_tls()
         .timeout(PROBE_TIMEOUT)
         .build()
@@ -200,4 +201,3 @@ fn join_urls(urls: &[reqwest::Url]) -> String {
         .collect::<Vec<_>>()
         .join(" | ")
 }
-
