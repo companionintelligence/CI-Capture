@@ -27,6 +27,14 @@ use crate::watcher::types::NormalizedEvent;
 
 const SCHEMA_SQL: &str = include_str!("schema.sql");
 
+/// One parked (dead-lettered) event: the event itself, plus why it parked.
+#[derive(Debug, Clone)]
+pub struct ParkedEvent {
+    pub event_id: String,
+    pub event: NormalizedEvent,
+    pub reason: String,
+}
+
 /// One event sitting in the queue.
 #[derive(Debug, Clone)]
 pub struct QueuedEvent {
@@ -192,6 +200,45 @@ impl Queue {
             .query_row("SELECT COUNT(*) FROM dead_letters", [], |row| row.get(0))
             .context("dead_letter_count")?;
         Ok(n.max(0) as u64)
+    }
+
+    /// Every parked event, ordered by park time (ties — a coarse system
+    /// clock can stamp two parks alike — are arbitrary).
+    /// [`Queue::dead_letter_count`] answers "how many parked"; this answers
+    /// *which* ones, and why — the only way a caller can tell that a specific
+    /// event was parked rather than that some event was.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn dead_letters(&self) -> Result<Vec<ParkedEvent>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT event_id, payload_json, reason
+                 FROM dead_letters
+                 ORDER BY dead_lettered_at",
+            )
+            .context("preparing dead_letters")?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
+            .context("executing dead_letters")?;
+
+        let mut out = Vec::new();
+        for row in rows {
+            let (event_id, payload_json, reason) = row.context("reading dead-letter row")?;
+            let event: NormalizedEvent = serde_json::from_str(&payload_json)
+                .with_context(|| format!("deserializing parked event {event_id}"))?;
+            out.push(ParkedEvent {
+                event_id,
+                event,
+                reason,
+            });
+        }
+        Ok(out)
     }
 
     /// How many events remain in the queue (across all states).
@@ -442,6 +489,30 @@ mod dead_letter_tests {
             .unwrap();
         assert!(reason.contains("bad payload"));
         assert_eq!(attempts, 1);
+    }
+
+    #[test]
+    fn dead_letters_identify_which_events_parked() {
+        let q = Queue::open_in_memory().unwrap();
+        for id in ["keeper", "poison", "other-poison"] {
+            q.enqueue(&evt(id)).unwrap();
+        }
+        q.dead_letter("poison", "HTTP 400: bad payload").unwrap();
+        q.dead_letter("other-poison", "HTTP 422: schema").unwrap();
+
+        let parked = q.dead_letters().unwrap();
+        assert_eq!(parked.len(), 2);
+        // Look rows up by id rather than by position: a coarse system clock
+        // can stamp both parks with the same `dead_lettered_at`, leaving the
+        // order arbitrary.
+        let poison = parked.iter().find(|p| p.event_id == "poison").unwrap();
+        // The payload round-trips, so callers can inspect the event itself.
+        assert_eq!(poison.event.event_id, "poison");
+        assert!(poison.reason.contains("bad payload"));
+        assert!(
+            parked.iter().all(|p| p.event_id != "keeper"),
+            "an un-parked event must not appear in dead_letters"
+        );
     }
 
     #[test]

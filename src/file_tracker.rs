@@ -384,16 +384,30 @@ mod e2e {
     /// One recorded request: (path, x-api-key header value, body).
     type Recorded = (String, Option<String>, String);
 
-    /// Minimal HTTP/1.1 responder. Each incoming request pops the next
-    /// scripted status (default 200). 200s answer with a valid
-    /// `/v1/events` ingest body; 4xx/5xx answer with that status.
-    fn spawn_mock_server(
-        script: Vec<u16>,
-    ) -> (String, Arc<Mutex<Vec<Recorded>>>) {
+    /// A scripted response rule: when a request body contains `needle`, answer
+    /// with the next status from `statuses` (consumed in order, then the rule
+    /// stops matching).
+    type Rule = (&'static str, Vec<u16>);
+
+    /// Minimal HTTP/1.1 responder, scripted by request *content*.
+    ///
+    /// Each request is matched against `rules` in order; the first rule whose
+    /// needle appears in the body and still has a status left answers with it.
+    /// Anything unmatched gets 200. Content-addressing (rather than "pop the
+    /// next status per arrival") is what makes these tests deterministic: the
+    /// lane legitimately emits file events the test never wrote — a create
+    /// *and* a modify for one save, or a metadata-only event for a file it
+    /// couldn't fingerprint — and under an arrival-ordered script any of those
+    /// could consume the status meant for the event under test, so the
+    /// assertions would hold while describing the wrong event.
+    ///
+    /// 200s answer with a valid `/v1/events` ingest body; 4xx/5xx answer with
+    /// that status.
+    fn spawn_mock_server(rules: Vec<Rule>) -> (String, Arc<Mutex<Vec<Recorded>>>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let origin = format!("http://{}", listener.local_addr().unwrap());
         let recorded: Arc<Mutex<Vec<Recorded>>> = Arc::default();
-        let script = Arc::new(Mutex::new(script));
+        let rules = Arc::new(Mutex::new(rules));
         let rec = recorded.clone();
 
         std::thread::spawn(move || {
@@ -427,11 +441,17 @@ mod e2e {
                 let mut body = vec![0u8; content_length];
                 let _ = reader.read_exact(&mut body);
                 let body = String::from_utf8_lossy(&body).to_string();
-                rec.lock().unwrap().push((path, api_key, body));
+                rec.lock().unwrap().push((path, api_key, body.clone()));
 
                 let status = {
-                    let mut s = script.lock().unwrap();
-                    if s.is_empty() { 200 } else { s.remove(0) }
+                    let mut rules = rules.lock().unwrap();
+                    rules
+                        .iter_mut()
+                        .find(|(needle, statuses)| {
+                            !statuses.is_empty() && body.contains(needle)
+                        })
+                        .map(|(_, statuses)| statuses.remove(0))
+                        .unwrap_or(200)
                 };
                 let response = if status == 200 {
                     let payload = r#"{"ingested":1,"duplicate":0,"rejected":[]}"#;
@@ -485,6 +505,44 @@ mod e2e {
         false
     }
 
+    /// Wait for a recorded request whose body satisfies `matches`.
+    ///
+    /// Always match on content, never on arrival position: the lane can emit
+    /// file events the test didn't write, so "the first request" and "the
+    /// request under test" are not the same thing on a loaded runner.
+    async fn wait_for_request(
+        recorded: &Arc<Mutex<Vec<Recorded>>>,
+        timeout: Duration,
+        matches: impl Fn(&str) -> bool,
+    ) -> bool {
+        wait_until(timeout, || {
+            recorded
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(_, _, body)| matches(body))
+        })
+        .await
+    }
+
+    /// Every request the lane actually sent, for assertion messages. Locks
+    /// internally — callers must not be holding the `recorded` guard.
+    ///
+    /// The per-body cap has to clear the event `title` (an absolute path, so
+    /// long in a temp-dir checkout): which *file* each request describes is the
+    /// whole point of the dump.
+    fn dump_requests(recorded: &Arc<Mutex<Vec<Recorded>>>) -> String {
+        let requests = recorded.lock().unwrap();
+        let mut out = format!("{} request(s) recorded:", requests.len());
+        for (i, (path, _, body)) in requests.iter().enumerate() {
+            out.push_str(&format!(
+                "\n  [{i}] {path} :: {}",
+                truncate_on_char_boundary(body, 600)
+            ));
+        }
+        out
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn file_edit_reaches_server_with_content_and_api_key_and_drains_queue() {
         let (origin, recorded) = spawn_mock_server(vec![]);
@@ -507,32 +565,21 @@ mod e2e {
         // still empty when it was read. Asserting on the first one made this a
         // race that failed only under CI load.
         let has_content = |body: &str| body.contains("remember the tailscale rollout");
-        let got_content = wait_until(Duration::from_secs(30), || {
-            recorded
-                .lock()
-                .unwrap()
-                .iter()
-                .any(|(_, _, body)| body.contains("file_event") && has_content(body))
+        let got_content = wait_for_request(&recorded, Duration::from_secs(30), |body| {
+            body.contains("file_event") && has_content(body)
         })
         .await;
         lane.abort();
 
-        let requests = recorded.lock().unwrap();
         // Failing here still means a real regression — the timeout above is
         // bounded and the dump shows exactly what the lane did send.
         assert!(
             got_content,
-            "no file_event carried the extracted markdown within 30s.\n\
-             {} request(s) recorded:\n{}",
-            requests.len(),
-            requests
-                .iter()
-                .enumerate()
-                .map(|(i, (p, _, b))| format!("  [{i}] {p} :: {}", &b[..b.len().min(300)]))
-                .collect::<Vec<_>>()
-                .join("\n")
+            "no file_event carried the extracted markdown within 30s.\n{}",
+            dump_requests(&recorded)
         );
 
+        let requests = recorded.lock().unwrap();
         let (path, api_key, _body) = requests
             .iter()
             .find(|(_, _, b)| b.contains("file_event") && has_content(b))
@@ -552,9 +599,14 @@ mod e2e {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn rejected_event_is_parked_while_outage_event_is_retried() {
-        // Script: first POST → 400 (permanent), second → 500 (transient),
-        // third → 200. One file edit per phase.
-        let (origin, recorded) = spawn_mock_server(vec![400, 500, 200]);
+        // Content-addressed script: poison.md is rejected once (400,
+        // permanent), survivor.md hits one outage (500, transient) then
+        // succeeds (200). Anything else the lane emits gets a plain 200 and so
+        // cannot shift this script — see `spawn_mock_server`.
+        let (origin, recorded) = spawn_mock_server(vec![
+            ("poison.md", vec![400]),
+            ("survivor.md", vec![500, 200]),
+        ]);
         let dir = watchable_tempdir();
         let watched = dir.path().join("watched");
         std::fs::create_dir_all(&watched).unwrap();
@@ -564,16 +616,33 @@ mod e2e {
         let lane = tokio::spawn(run(config, queue_path.clone()));
 
         tokio::time::sleep(Duration::from_millis(500)).await;
+        // A decoy edit ahead of the poison one, standing in for the events the
+        // lane emits on its own. It must be answered 200 and drain; if the mock
+        // ever goes back to handing out statuses by arrival order, this is what
+        // eats poison.md's 400 and fails the test instead of hiding the hole.
+        std::fs::write(watched.join("decoy.md"), "unrelated change").unwrap();
         std::fs::write(watched.join("poison.md"), "rejected payload").unwrap();
 
-        // 400 → parked in dead_letters, not retried, not lost.
-        let parked = wait_until(Duration::from_secs(30), || {
-            Queue::open(&queue_path)
-                .map(|q| q.dead_letter_count().unwrap_or(0) == 1)
+        // 400 → parked in dead_letters, not retried, not lost. Identify the
+        // parked row by path: a count alone would be satisfied by any event
+        // parking, which is the bug this test exists to catch.
+        let parked_is_poison = |q: &Queue| {
+            q.dead_letters()
+                .map(|rows| {
+                    rows.iter()
+                        .any(|row| describe(&row.event).contains("poison.md"))
+                })
                 .unwrap_or(false)
+        };
+        let parked = wait_until(Duration::from_secs(30), || {
+            Queue::open(&queue_path).map(|q| parked_is_poison(&q)).unwrap_or(false)
         })
         .await;
-        assert!(parked, "permanently rejected event was not parked");
+        assert!(
+            parked,
+            "poison.md's rejected event was not parked.\n{}",
+            dump_requests(&recorded)
+        );
 
         // Next edit: first attempt hits the scripted 500 (transient), the
         // retry hits 200 — the event must survive the outage and drain.
@@ -588,10 +657,34 @@ mod e2e {
         })
         .await;
         lane.abort();
-        assert!(drained, "transient failure must retry to success, not drop");
+        assert!(
+            drained,
+            "transient failure must retry to success, not drop.\n{}",
+            dump_requests(&recorded)
+        );
 
-        // The poison event is still recoverable on disk.
+        // The poison event — and only it — is still parked, recoverable on disk.
         let queue = Queue::open(&queue_path).unwrap();
-        assert_eq!(queue.dead_letter_count().unwrap(), 1);
+        let parked_rows = queue.dead_letters().unwrap();
+        let parked_paths: Vec<String> = parked_rows
+            .iter()
+            .map(|row| describe(&row.event))
+            .collect();
+        assert_eq!(
+            parked_paths.len(),
+            1,
+            "exactly one event must be parked, got {parked_paths:?}.\n{}",
+            dump_requests(&recorded)
+        );
+        assert!(
+            parked_paths[0].contains("poison.md"),
+            "the parked event must be poison.md's, got {parked_paths:?}.\n{}",
+            dump_requests(&recorded)
+        );
+        assert!(
+            parked_rows[0].reason.contains("400"),
+            "park reason should record the rejection, got {:?}",
+            parked_rows[0].reason
+        );
     }
 }
