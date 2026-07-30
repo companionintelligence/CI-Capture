@@ -32,7 +32,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use chrono::Utc;
 use config::{AppConfig, ConfigManager};
 use env_logger::Env;
@@ -80,6 +80,19 @@ fn main() -> Result<()> {
     if std::env::args().any(|arg| arg == "--check-server") {
         server_check::run(parse_portal_override())?;
         return Ok(());
+    }
+
+    // Scriptable entry points. These exist to be driven by macOS Shortcuts'
+    // "Run Shell Script" action — which is what people mean when they ask for
+    // Siri, since Siri runs Shortcuts by name. Cheap, and they work on every
+    // platform rather than only where App Intents exist.
+    // See docs/siri-test-plan.md.
+    if let Some(query) = parse_flag_value("--search") {
+        return open_memory_search(&query);
+    }
+
+    if std::env::args().any(|arg| arg == "--open-memory") {
+        return open_memory_search("");
     }
 
     // Headless portal sign-in: runs the OIDC Authorization Code + PKCE flow
@@ -662,6 +675,52 @@ fn open_url(url: &str) -> std::io::Result<std::process::ExitStatus> {
         c
     };
     cmd.status()
+}
+
+/// Open Companion Memory in the browser, optionally deep-linked to a search.
+///
+/// Runs in the *invoking* process rather than messaging the tray, so it works
+/// whether or not the menu-bar app is running — a Shortcut should not fail
+/// because the user quit the tray.
+fn open_memory_search(query: &str) -> Result<()> {
+    let manager = ConfigManager::new().context("loading config")?;
+    let config = manager.load_or_default().context("loading config")?;
+
+    let query = query.trim();
+    let params: Vec<(&str, &str)> = if query.is_empty() {
+        Vec::new()
+    } else {
+        vec![("search", query), ("view", "list")]
+    };
+
+    if config.server.portal_url.trim().is_empty() {
+        bail!("No Companion Memory address configured. Set one in Settings, or run --login.");
+    }
+    let url = server_common::memory_url(&config.server.portal_url, &params).map_err(|_| {
+        anyhow!(
+            "\"{}\" isn't a usable Companion Memory address. Fix it in Settings.",
+            config.server.portal_url.trim()
+        )
+    })?;
+
+    open_url(url.as_str()).with_context(|| format!("opening {url}"))?;
+    println!("{url}");
+    Ok(())
+}
+
+/// Read `--flag <value>` or `--flag=<value>` from the command line.
+fn parse_flag_value(flag: &str) -> Option<String> {
+    let args: Vec<String> = std::env::args().collect();
+    let eq = format!("{flag}=");
+    for (i, arg) in args.iter().enumerate() {
+        if let Some(rest) = arg.strip_prefix(&eq) {
+            return Some(rest.to_string());
+        }
+        if arg == flag {
+            return args.get(i + 1).cloned();
+        }
+    }
+    None
 }
 
 /// Parse an optional `--portal <url>` / `--portal=<url>` override used by
