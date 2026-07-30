@@ -1,7 +1,7 @@
 # config.rs
 
 ## Purpose
-Defines persisted application configuration for CI-Applet. It is the schema boundary for the tray app, worker loops, and database integrations.
+Defines persisted application configuration for Companion Capture. It is the schema boundary for the tray app, worker loops, and database integrations.
 
 ## Components
 

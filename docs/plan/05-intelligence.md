@@ -15,9 +15,9 @@ Turn the activity + content streams already landing on CI-Server (Phases 2 + 3) 
 - "When did I first open this spreadsheet?"
 - "What changed in this folder over the past month?"
 
-CI-Applet's job here is to (a) keep its data clean enough that these queries are answerable, and (b) provide deep-link surfaces (e.g. "open in CI-Server timeline").
+Companion Capture's job here is to (a) keep its data clean enough that these queries are answerable, and (b) provide deep-link surfaces (e.g. "open in CI-Server timeline").
 
-## 2. What CI-Applet contributes here
+## 2. What Companion Capture contributes here
 
 | Item | Why it's on the applet |
 |---|---|
@@ -41,7 +41,7 @@ Bulk of the work, listed here for context:
 
 ```mermaid
 flowchart LR
-    Applet["CI-Applet<br/>(this repo)"] -- "file events + extracted docs" --> Server[("CI-Server")]
+    Applet["Companion Capture<br/>(this repo)"] -- "file events + extracted docs" --> Server[("CI-Server")]
     Server -- "embeddings + clustering" --> Server
     Applet -- "GET /history/timeline?date=…" --> Server
     Applet -- "POST /history/ask {question}" --> Server

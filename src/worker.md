@@ -1,7 +1,7 @@
 # worker.rs
 
 ## Purpose
-Runs CI-Applet background capture loops. It manages screenshot capture/analysis and records embedded `vizier` observations in lockstep with saved screenshots, preferring authenticated CI-Server GraphQL ingest when the applet has been paired.
+Runs Companion Capture background capture loops. It manages screenshot capture/analysis and records embedded `vizier` observations in lockstep with saved screenshots, preferring authenticated CI-Server GraphQL ingest when the applet has been paired.
 
 ## Components
 

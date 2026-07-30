@@ -1,13 +1,13 @@
-<p align="center"><img src="assets/icon.svg" alt="CI-Applet" width="80" height="80"></p>
+<p align="center"><img src="assets/icon.svg" alt="Companion Capture" width="80" height="80"></p>
 
-# CI-Applet — Architecture
+# Companion Capture — Architecture
 
 > **Companion Intelligence — Capture layer.** This document describes how the
 > applet is structured today, after the file-tracking lane landed. For the
 > rollout plan and design records see [`plan/00-overview.md`](plan/00-overview.md);
 > for visual identity see [`assets/brand.md`](assets/brand.md).
 
-CI-Applet is a **cross-platform** menu-bar / system-tray applet (macOS, Windows,
+Companion Capture is a **cross-platform** menu-bar / system-tray applet (macOS, Windows,
 Linux) that grows your **Companion Memory** by perceiving your desktop and
 streaming it to your CI-Server. It runs **three capture lanes** on one shared
 worker runtime, config, identity, and server connection.
@@ -16,7 +16,7 @@ worker runtime, config, identity, and server connection.
 
 ```mermaid
 flowchart LR
-    subgraph Applet["CI-Applet (tray process)"]
+    subgraph Applet["Companion Capture (tray process)"]
         direction TB
         TRAY["tao + tray-icon<br/>menu / settings"]
         WORKER["worker runtime<br/>(tokio, background thread)"]
@@ -206,6 +206,10 @@ flowchart LR
     end
     body --> CI[("CI-Server")]
 ```
+
+`source_system` stays `ci-applet` — it is a **frozen wire identifier**, kept at
+its original value so already-ingested CI-Server rows keep matching. It was
+deliberately *not* renamed with the product.
 
 `/api/v1/events` accepts arbitrary JSON payloads and uses the authenticated
 server context to attribute events. Verify connectivity anytime:

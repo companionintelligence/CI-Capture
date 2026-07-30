@@ -1,26 +1,26 @@
-# AGENTS.md — CI-Applet
+# AGENTS.md — Companion Capture
 
 ## Platform context
 
-CI-Applet is the **Capture** layer component of the Companion Intelligence platform — a private, local-first digital memory system.
+Companion Capture (repo `CI-Capture`) is the **Capture** layer component of the Companion Intelligence platform — a private, local-first digital memory system.
 
 Full architecture: `CI-Engineering/architecture/architecture.md`
 
 ## Repo summary
 
-Rust/Tauri desktop applet — a Companion Intelligence fork of Screenpipe that captures screen, audio, and activity data and streams it to CI-Server.
+Pure-Rust menu-bar / system-tray desktop app — a Companion Intelligence fork of Screenpipe that captures screenshots, system activity, and file edits and streams them to CI-Server.
 
 ## Stack
 
 - Rust / Cargo (core capture engine)
-- Tauri (desktop shell)
-- Bun (JS tooling)
+- egui / eframe (windows) + tray-icon (menu bar)
+- cargo-packager (installers: dmg, nsis, deb, AppImage)
 - Screenpipe pipeline
 
 ## Setup & commands
 
 ```bash
-bun install && cargo build   # install
+cargo build                  # build
 cargo run   # dev
 cargo test   # test
 cargo build --release   # build

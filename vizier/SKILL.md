@@ -180,9 +180,9 @@ Use embedding when:
 - you want no subprocess management
 - you want direct access to `Observation` structs
 
-## CI-Applet Integration
+## Companion Capture Integration
 
-`CI-Applet` already embeds `vizier` directly rather than spawning `vz`.
+`Companion Capture` already embeds `vizier` directly rather than spawning `vz`.
 
 Current pattern:
 - create a `vizier` observer in the worker loop

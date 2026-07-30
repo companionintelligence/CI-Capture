@@ -1,10 +1,10 @@
-# CLAUDE.md — CI-Applet
+# CLAUDE.md — Companion Capture
 
 > **Private & Confidential — Property of Lifescope Inc. Do not distribute.**
 
 ## Platform role
 
-**CI-Applet** sits in the **Capture** layer of the Companion Intelligence platform.
+**Companion Capture** (repo `CI-Capture`) sits in the **Capture** layer of the Companion Intelligence platform.
 
 Architecture: `CI-Engineering/architecture/architecture.md`
 Roadmap: `CI-Engineering/architecture/roadmap.md`
@@ -12,20 +12,20 @@ Issues: <https://github.com/companionintelligence/CI-Engineering/issues>
 
 ## What this repo does
 
-Rust/Tauri desktop applet — a Companion Intelligence fork of Screenpipe that captures screen, audio, and activity data and streams it to CI-Server.
+Pure-Rust menu-bar / system-tray desktop app — a Companion Intelligence fork of Screenpipe that captures screenshots, system activity, and file edits and streams them to CI-Server.
 
 ## Stack
 
 - Rust / Cargo (core capture engine)
-- Tauri (desktop shell)
-- Bun (JS tooling)
+- egui / eframe (windows) + tray-icon (menu bar)
+- cargo-packager (installers: dmg, nsis, deb, AppImage)
 - Screenpipe pipeline
 
 ## Key commands
 
 ```bash
 # Install dependencies
-bun install && cargo build
+cargo build
 
 # Start development server / service
 cargo run
@@ -43,7 +43,7 @@ cargo build --release
 
 ## Cross-repo connections
 
-- Streams captured data to CI-Server (screen activity, audio, accessibility text)
+- Streams captured data to CI-Server (screenshots, system activity, file edits)
 - Shares screenpipe pipeline with Companion-Pipe
 - macOS TCC: signing identity required for consistent permissions
 

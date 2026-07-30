@@ -1,6 +1,6 @@
 # Phase 2 — File watcher MVP
 
-**Tracks:** [#4](https://github.com/companionintelligence/CI-Applet/issues/4) (data-model redesign), and Phase 1 of [#3](https://github.com/companionintelligence/CI-Applet/issues/3) ("Core Monitoring & Server Connection").
+**Tracks:** [#4](https://github.com/companionintelligence/CI-Capture/issues/4) (data-model redesign), and Phase 1 of [#3](https://github.com/companionintelligence/CI-Capture/issues/3) ("Core Monitoring & Server Connection").
 **Branch:** `phase-2-file-watcher`
 **Coordinates:**
 - **CI-Server:** new endpoints `POST /devices/register`, `POST /devices/heartbeat`, `POST /history/file-events/batch`, `POST /history/files/upsert`, `POST /history/file-versions/upsert`, and matching tables.
@@ -46,7 +46,7 @@ flowchart TB
         Norm["Event normalizer<br/>(debounce + rename inference)"]
         Settle["Settle detector<br/>(file stops being written)"]
         Fp["Fingerprinter<br/>(sha256 + size + mtime + inode)"]
-        SQL["SQLite queue<br/>~/.config/ci-applet/queue.db"]
+        SQL["SQLite queue<br/>~/.config/Companion Capture/queue.db"]
         Sync["Sync engine<br/>POST batches"]
       end
     end

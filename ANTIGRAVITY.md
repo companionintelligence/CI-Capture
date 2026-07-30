@@ -1,27 +1,27 @@
-# ANTIGRAVITY.md — CI-Applet
+# ANTIGRAVITY.md — Companion Capture
 
 ## Context
 
-**CI-Applet** — **Capture** layer of the Companion Intelligence platform (Lifescope Inc).
+**Companion Capture** (repo `CI-Capture`) — **Capture** layer of the Companion Intelligence platform (Lifescope Inc).
 
 Architecture: `CI-Engineering/architecture/architecture.md`
 Roadmap: `CI-Engineering/architecture/roadmap.md`
 
 ## Purpose
 
-Rust/Tauri desktop applet — a Companion Intelligence fork of Screenpipe that captures screen, audio, and activity data and streams it to CI-Server.
+Pure-Rust menu-bar / system-tray desktop app — a Companion Intelligence fork of Screenpipe that captures screenshots, system activity, and file edits and streams them to CI-Server.
 
 ## Stack
 
 - Rust / Cargo (core capture engine)
-- Tauri (desktop shell)
-- Bun (JS tooling)
+- egui / eframe (windows) + tray-icon (menu bar)
+- cargo-packager (installers: dmg, nsis, deb, AppImage)
 - Screenpipe pipeline
 
 ## Commands
 
 ```bash
-bun install && cargo build
+cargo build
 cargo run
 cargo test
 ```

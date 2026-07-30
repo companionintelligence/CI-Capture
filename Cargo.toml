@@ -93,7 +93,7 @@ description = "Companion Capture — screen, activity & file capture that grows 
 long-description = "A lightweight cross-platform menu-bar / system-tray applet that grows your Companion Memory by capturing screen activity and the files you edit, and streaming them to your CI-Server."
 authors = ["LifeScope Inc."]
 publisher = "LifeScope Inc."
-homepage = "https://github.com/companionintelligence/CI-Applet"
+homepage = "https://github.com/companionintelligence/CI-Capture"
 license-file = "LICENSE.md"
 icons = [
   "packaging/icons/32x32.png",

@@ -1,7 +1,7 @@
 # settings_ui.rs
 
 ## Purpose
-Provides the standalone egui settings window for CI-Applet configuration, including CI-Server URL, API-key/OIDC auth mode, manual identity overrides, and infrastructure settings. Styled with the Companion Intelligence design system via [`theme`](theme.md): a left sidebar nav (Identity / Capture / Storage / Database / Vision) + connection card, a scrollable themed content pane, and a bottom footer showing the config path with Close/Save.
+Provides the standalone egui settings window for Companion Capture configuration, including CI-Server URL, API-key/OIDC auth mode, manual identity overrides, and infrastructure settings. Styled with the Companion Intelligence design system via [`theme`](theme.md): a left sidebar nav (Identity / Capture / Storage / Database / Vision) + connection card, a scrollable themed content pane, and a bottom footer showing the config path with Close/Save.
 
 ## Components
 

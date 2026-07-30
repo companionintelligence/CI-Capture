@@ -481,7 +481,7 @@ jobs:
       - name: Upload release artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ci-applet-${{ matrix.artifact }}
+          name: companion-capture-${{ matrix.artifact }}
           path: release-artifacts/*
           if-no-files-found: error
 
@@ -504,7 +504,7 @@ jobs:
       - name: Download release artifacts
         uses: actions/download-artifact@v4
         with:
-          pattern: ci-applet-*
+          pattern: companion-capture-*
           path: artifacts
           merge-multiple: true
 
@@ -657,7 +657,7 @@ jobs:
       - name: Download release artifacts
         uses: actions/download-artifact@v4
         with:
-          pattern: ci-applet-*
+          pattern: companion-capture-*
           path: artifacts
           merge-multiple: false
 

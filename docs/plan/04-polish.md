@@ -1,6 +1,6 @@
 # Phase 4 — Polish, privacy, security
 
-**Tracks:** post-MVP polish for [#3](https://github.com/companionintelligence/CI-Applet/issues/3) and [#4](https://github.com/companionintelligence/CI-Applet/issues/4).
+**Tracks:** post-MVP polish for [#3](https://github.com/companionintelligence/CI-Capture/issues/3) and [#4](https://github.com/companionintelligence/CI-Capture/issues/4).
 **Branch:** `phase-4-polish`
 **Coordinates:**
 - **CI-Server:** short-lived signed upload URLs, device-revocation endpoint, dead-letter visibility API.
@@ -68,8 +68,8 @@ Mechanisms:
 | Token rotation | No | `POST /devices/rotate-token`, automatic on heartbeat after N days. |
 | Upload auth | Bearer on every request | Short-lived signed URL per blob upload; metadata still uses Bearer. |
 | TLS | Yes (rustls) | Pin server cert if user opts in. |
-| Local cache encryption | No | `~/.config/ci-applet/cache/` encrypted with key in OS keychain (`security-framework` / `winapi credentials` / `secret-service`). |
-| Audit logs (client-side) | No | Append-only `~/.config/ci-applet/audit.log` of every send + every config change. |
+| Local cache encryption | No | `~/.config/Companion Capture/cache/` encrypted with key in OS keychain (`security-framework` / `winapi credentials` / `secret-service`). |
+| Audit logs (client-side) | No | Append-only `~/.config/Companion Capture/audit.log` of every send + every config change. |
 | Device revocation | No | Settings shows other paired devices; revoke button calls `POST /devices/{id}/revoke` (server-owned). |
 | Per-device signing keys | No | Out of scope here — flag for a later phase if needed. |
 
@@ -80,7 +80,7 @@ Mechanisms:
 | Tray status string | "Synced ✓" / "12 pending" / "Paused" / "Sync error" | Worker emits status events; Tauri tray label binds to them. |
 | Settings → Sync health panel | events in queue, oldest pending age, last successful sync, last error | New webview tab. |
 | Settings → Dead-letter panel | files that have failed extraction or upload 3+ times | Reads from SQLite queue's `extraction_dlq` and `events` (where `attempts >= 5`). User can retry or discard. |
-| Logs | Structured JSON to `~/.config/ci-applet/logs/applet.YYYY-MM-DD.log` + rotated weekly | `tracing` + `tracing-appender`. |
+| Logs | Structured JSON to `~/.config/Companion Capture/logs/applet.YYYY-MM-DD.log` + rotated weekly | `tracing` + `tracing-appender`. |
 | Open-logs button | Settings → "Open log folder" | `tauri-plugin-opener`. |
 | Crash reports | Optional opt-in | `panic_hook` writes a redacted crash file; user can attach to a bug report. |
 
