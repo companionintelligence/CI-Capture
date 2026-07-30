@@ -7,9 +7,19 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 const APP_QUALIFIER: &str = "com.compint";
-const APP_NAME: &str = "CI-Applet";
+/// Drives the on-disk config/data directory via `directories::ProjectDirs`.
+///
+/// Renamed from `CI-Applet` in the Companion Memory App rebrand. This is a
+/// deliberate clean break: existing v0.1.x installs keep their old directory
+/// (`…/com.compint.com.compint.CI-Applet`) untouched but unread, so the app
+/// starts fresh — no credentials, no watched folders, no device id. The bundle
+/// identifier changed in the same release, which independently resets macOS
+/// TCC grants, so a partial migration would have left users half-configured
+/// and harder to diagnose than a clean first run.
+const APP_NAME: &str = "Companion Memory App";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct MinioConfig {
     pub endpoint: String,
     pub bucket: String,
@@ -33,6 +43,7 @@ impl Default for MinioConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct PostgresConfig {
     pub host: String,
     pub port: u16,
@@ -56,6 +67,7 @@ impl Default for PostgresConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct AnalysisConfig {
     pub endpoint: String,
     pub api_key: String,
@@ -79,12 +91,14 @@ impl Default for AnalysisConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(default)]
 pub struct IdentityConfig {
     pub user_id: Option<Uuid>,
     pub device_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct CaptureConfig {
     pub screenshot_interval_secs: u64,
     pub diff_threshold_percent: f32,
@@ -124,6 +138,7 @@ impl Default for CaptureConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct VizierConfig {
     pub enabled: bool,
     pub watch_path: Option<PathBuf>,
@@ -147,6 +162,7 @@ impl Default for VizierConfig {
 /// Capture is **off until `watched_paths` is non-empty** — the applet never
 /// watches anything the user didn't explicitly add.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
 pub struct FileTrackerConfig {
     pub enabled: bool,
     /// Folders to watch recursively. Empty = lane is a no-op.
@@ -177,13 +193,29 @@ impl Default for FileTrackerConfig {
     }
 }
 
+/// The persisted applet configuration.
+///
+/// Every config struct in this module — this one and each section — carries a
+/// struct-level `#[serde(default)]`. `load_or_default` propagates parse errors
+/// and `main` treats them as fatal, so *any* missing key would otherwise stop
+/// the tray from starting, leaving no UI to repair it from. Struct-level rather
+/// than field-level is deliberate: a field-level default only rescues a wholly
+/// absent section, while users are explicitly pointed at this file to hand-edit
+/// and will delete individual keys. It also means a section can be retired in a
+/// future release without bricking installs that still have it on disk.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct AppConfig {
     pub capture: CaptureConfig,
+    #[serde(default)]
     pub minio: MinioConfig,
+    #[serde(default)]
     pub postgres: PostgresConfig,
+    #[serde(default)]
     pub analysis: AnalysisConfig,
+    #[serde(default)]
     pub identity: IdentityConfig,
+    #[serde(default)]
     pub server: ServerConfig,
     #[serde(default)]
     pub vizier: VizierConfig,
@@ -203,6 +235,7 @@ pub struct AppConfig {
 /// OpenID Connect client config for portal sign-in (Authorization Code +
 /// PKCE). Discovery-driven, so only the issuer + client id usually change.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
 pub struct OidcConfig {
     /// Issuer base; the applet fetches `<issuer>/.well-known/openid-configuration`.
     pub issuer: String,
@@ -239,6 +272,7 @@ pub struct OidcSession {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
 pub struct ServerConfig {
     pub portal_url: String,
     #[serde(default)]
@@ -351,5 +385,44 @@ mod analysis_default_tests {
             AnalysisConfig::default().endpoint.is_empty(),
             "default analysis endpoint must be empty (server-side analysis)"
         );
+    }
+}
+
+#[cfg(test)]
+mod rebrand_tests {
+    use super::*;
+
+    /// A config.json missing whole sections must still load. `load_or_default`
+    /// propagates parse errors and `main` treats them as fatal, so without
+    /// `#[serde(default)]` on every section a hand-edited or forward-migrated
+    /// file would stop the tray from starting with no UI left to repair it from.
+    #[test]
+    fn config_loads_with_every_section_absent() {
+        let cfg: AppConfig = serde_json::from_str("{}").expect("empty object must load");
+        assert_eq!(cfg.capture.screenshot_interval_secs, 300);
+        assert_eq!(cfg.postgres.port, 5432);
+        assert!(cfg.server.portal_url.is_empty());
+        assert!(!cfg.onboarding_completed);
+    }
+
+    /// Retiring the minio/postgres sections must not brick existing installs.
+    #[test]
+    fn config_loads_with_infra_sections_removed() {
+        let json = r#"{
+            "server": { "portal_url": "http://core-1:8642" },
+            "file_tracker": { "enabled": true, "watched_paths": [] }
+        }"#;
+        let cfg: AppConfig = serde_json::from_str(json).expect("must load");
+        assert_eq!(cfg.server.portal_url, "http://core-1:8642");
+        assert_eq!(cfg.minio.bucket, "ci-screens");
+    }
+
+    /// Unknown keys are ignored rather than rejected, so a config written by a
+    /// newer build still loads in an older one.
+    #[test]
+    fn config_ignores_unknown_keys() {
+        let json = r#"{ "server": { "portal_url": "http://x:1" }, "future_section": { "a": 1 } }"#;
+        let cfg: AppConfig = serde_json::from_str(json).expect("must ignore unknown keys");
+        assert_eq!(cfg.server.portal_url, "http://x:1");
     }
 }
