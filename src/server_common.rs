@@ -41,12 +41,50 @@ fn error_chain(err: &reqwest::Error) -> String {
 /// web app's own route, which users reasonably paste when copying from a
 /// browser but which is not the API root.
 ///
-/// Shared by the settings form and by Portal discovery so a hand-typed address
-/// and a discovered one normalize identically; otherwise the same server arriving
-/// by both routes would look like two different servers.
+/// Supplies a scheme when the address has none: `core-1:8642` is what people
+/// actually type (it's the placeholder text minus the `http://`), and
+/// `Url::parse` reads that as scheme `core-1` with path `8642` — a URL with no
+/// host, which parses fine here and then fails in every caller with
+/// "portal URL is missing a hostname". Guessing the scheme is safe because the
+/// connection test immediately proves it: a Core is normally reached over the
+/// LAN or a tailnet, so a local-looking host gets `http`, and anything else
+/// gets `https` rather than silently sending a credential in the clear.
+///
+/// Rejecting host-less input is the point of the final check — an address that
+/// can never work must not reach `config.json`, where it becomes an opaque
+/// runtime error far from the field that caused it.
+///
+/// Shared by the settings form, the setup assistant, and Portal discovery so a
+/// hand-typed address and a discovered one normalize identically; otherwise the
+/// same server arriving by both routes would look like two different servers.
 pub fn normalize_core_url(raw: &str) -> Result<String, String> {
-    let mut url =
-        Url::parse(raw.trim()).map_err(|_| "That doesn't look like a valid address.".to_string())?;
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Err("Enter your Core's address.".to_string());
+    }
+
+    let invalid = || "That doesn't look like a valid address.".to_string();
+    let parsed = Url::parse(raw).ok().filter(|u| u.has_host());
+    let mut url = match parsed {
+        Some(url) => url,
+        // An address that already spells out a scheme and *still* didn't yield
+        // a host is just wrong (`http://`, `://core-1`); supplying another
+        // scheme would turn it into nonsense like `http://http/`.
+        None if raw.contains("://") => return Err(invalid()),
+        // No scheme (or a "scheme" that is really the hostname): re-parse with
+        // one supplied.
+        None => {
+            let scheme = if is_local_host(host_of(raw)) {
+                "http"
+            } else {
+                "https"
+            };
+            Url::parse(&format!("{scheme}://{raw}"))
+                .ok()
+                .filter(|u| u.has_host())
+                .ok_or_else(invalid)?
+        }
+    };
     url.set_query(None);
     url.set_fragment(None);
 
@@ -56,6 +94,39 @@ pub fn normalize_core_url(raw: &str) -> Result<String, String> {
     }
 
     Ok(url.to_string())
+}
+
+/// The host portion of a scheme-less address (`core-1:8642/x` → `core-1`).
+fn host_of(raw: &str) -> &str {
+    raw.split('/')
+        .next()
+        .unwrap_or(raw)
+        .rsplit('@')
+        .next()
+        .unwrap_or(raw)
+        .split(':')
+        .next()
+        .unwrap_or(raw)
+}
+
+/// Whether a host is one we'd expect to reach over plain HTTP: a bare hostname
+/// with no dots (`core-1`), mDNS/tailnet names, loopback, or a private IPv4
+/// range. Everything else is treated as public, where HTTPS is the safe guess.
+fn is_local_host(host: &str) -> bool {
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    if host.is_empty() {
+        return false;
+    }
+    if !host.contains('.') {
+        return true; // single label: `core-1`, `localhost`
+    }
+    if host.ends_with(".local") || host.ends_with(".ts.net") || host.ends_with(".internal") {
+        return true;
+    }
+    match host.parse::<std::net::Ipv4Addr>() {
+        Ok(ip) => ip.is_private() || ip.is_loopback() || ip.is_link_local(),
+        Err(_) => false,
+    }
 }
 
 pub fn server_origin(portal_url: &str) -> Result<Url> {
@@ -233,7 +304,10 @@ fn is_ci_server_api_key(token: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{AuthCredential, events_urls, graphql_urls, memory_url, upload_urls};
+    use super::{
+        AuthCredential, Url, events_urls, graphql_urls, memory_url, normalize_core_url,
+        server_origin, upload_urls,
+    };
 
     #[test]
     fn detects_ci_server_api_key_shape() {
@@ -330,5 +404,74 @@ mod tests {
     #[test]
     fn memory_url_rejects_an_unset_server() {
         assert!(memory_url("", &[]).is_err());
+    }
+
+    /// The exact thing people type: the settings placeholder reads
+    /// `http://core-1:8642`, and the `http://` is the part that gets dropped.
+    /// This used to normalize "successfully" into a URL with no host, which
+    /// saved cleanly and then failed at every call site.
+    #[test]
+    fn scheme_less_address_gets_one_instead_of_becoming_hostless() {
+        for raw in ["core-1:8642", "core-1", "my-core.tailnet.ts.net:8642"] {
+            let out = normalize_core_url(raw)
+                .unwrap_or_else(|e| panic!("{raw:?} should normalize, got {e:?}"));
+            let url = Url::parse(&out).unwrap();
+            assert!(
+                url.host_str().is_some(),
+                "{raw:?} normalized to {out:?}, which still has no host"
+            );
+            // Every consumer goes through server_origin; it must not error.
+            assert!(server_origin(&out).is_ok(), "{out:?} has no usable origin");
+        }
+    }
+
+    #[test]
+    fn local_addresses_get_http_and_public_ones_get_https() {
+        for (raw, expected) in [
+            ("core-1:8642", "http://core-1:8642/"),
+            ("localhost:8642", "http://localhost:8642/"),
+            ("my-core.tailnet.ts.net:8642", "http://my-core.tailnet.ts.net:8642/"),
+            ("mac.local:8642", "http://mac.local:8642/"),
+            ("192.168.1.9:8642", "http://192.168.1.9:8642/"),
+            ("[::1]:8642", "http://[::1]:8642/"),
+            // Public name: guessing http would put the credential on the wire
+            // in the clear, so https is the only safe default.
+            ("ci.example.com", "https://ci.example.com/"),
+            ("ci.example.com:8642", "https://ci.example.com:8642/"),
+        ] {
+            assert_eq!(normalize_core_url(raw).unwrap(), expected, "input {raw:?}");
+        }
+    }
+
+    #[test]
+    fn an_explicit_scheme_is_always_respected() {
+        // Never "upgrade" what the user actually typed.
+        assert_eq!(
+            normalize_core_url("http://ci.example.com").unwrap(),
+            "http://ci.example.com/"
+        );
+        assert_eq!(
+            normalize_core_url("https://core-1:8642").unwrap(),
+            "https://core-1:8642/"
+        );
+    }
+
+    #[test]
+    fn feed_route_and_query_are_still_stripped_without_a_scheme() {
+        assert_eq!(
+            normalize_core_url("core-1:8642/feed?cursor=abc").unwrap(),
+            "http://core-1:8642/"
+        );
+    }
+
+    #[test]
+    fn junk_is_rejected_rather_than_saved() {
+        for raw in ["", "   ", "http://", "://core-1", "not a url at all"] {
+            assert!(
+                normalize_core_url(raw).is_err(),
+                "{raw:?} should be rejected, got {:?}",
+                normalize_core_url(raw)
+            );
+        }
     }
 }

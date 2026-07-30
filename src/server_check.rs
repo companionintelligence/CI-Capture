@@ -147,7 +147,9 @@ async fn report(config: &AppConfig) -> Result<()> {
     match graphql_urls(portal) {
         Ok(urls) => {
             let mut last_err = None;
-            for gql in urls {
+            let last_index = urls.len().saturating_sub(1);
+            for (i, gql) in urls.iter().enumerate() {
+                let more_to_try = i < last_index;
                 let mut req = client
                     .post(gql.clone())
                     .json(&serde_json::json!({ "query": "query{__typename}" }));
@@ -169,8 +171,13 @@ async fn report(config: &AppConfig) -> Result<()> {
                             status.as_u16(),
                             if reachable {
                                 "✓ reachable"
-                            } else if route_miss {
+                            } else if route_miss && more_to_try {
                                 "route not found; trying next"
+                            } else if route_miss {
+                                // Don't promise a retry that isn't coming: a
+                                // portal URL carrying its own base path has a
+                                // single candidate, so this is the verdict.
+                                "✗ route not found — is this the right address?"
                             } else {
                                 "(unexpected body)"
                             }

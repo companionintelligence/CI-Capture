@@ -338,7 +338,9 @@ impl eframe::App for UploadApp {
                     } else {
                         theme::status_dot(ui, theme::AMBER, false);
                         ui.label(
-                            egui::RichText::new("Not logged in — use the tray 'Login to …' first")
+                            egui::RichText::new(
+                                "Not signed in — choose “Login to Portal” in the menu bar first",
+                            )
                                 .font(theme::body(13.0))
                                 .color(theme::AMBER),
                         );
@@ -352,7 +354,9 @@ impl eframe::App for UploadApp {
                         let upload = ui
                             .add_enabled_ui(can_upload, |ui| theme::primary_button(ui, "Upload"))
                             .inner
-                            .on_disabled_hover_text("Log in first via the tray menu 'Login to …'.");
+                            .on_disabled_hover_text(
+                                "Sign in first: menu bar → “Login to Portal”.",
+                            );
                         if upload.clicked() {
                             self.start_upload(ctx);
                         }

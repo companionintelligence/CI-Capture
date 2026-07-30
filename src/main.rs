@@ -744,17 +744,26 @@ fn parse_flag_value(flag: &str) -> Option<String> {
 
 /// Parse an optional `--portal <url>` / `--portal=<url>` override used by
 /// `--check-server` to probe an arbitrary endpoint without mutating config.
+/// The `--portal` override, canonicalized exactly as the settings form and the
+/// setup assistant canonicalize a typed address.
+///
+/// Without this, `--check-server --portal core-1:8642` reports
+/// "portal URL is missing a hostname" for an address the GUI accepts — so the
+/// self-test disagrees with the app about what a valid address is, which is
+/// precisely when someone reaches for the self-test. An address it can't make
+/// sense of is passed through untouched so the report shows what was typed.
 fn parse_portal_override() -> Option<String> {
     let args: Vec<String> = std::env::args().collect();
-    for (i, arg) in args.iter().enumerate() {
+    let raw = args.iter().enumerate().find_map(|(i, arg)| {
         if let Some(rest) = arg.strip_prefix("--portal=") {
             return Some(rest.to_string());
         }
         if arg == "--portal" {
             return args.get(i + 1).cloned();
         }
-    }
-    None
+        None
+    })?;
+    Some(server_common::normalize_core_url(&raw).unwrap_or(raw))
 }
 
 fn short_uuid(id: Option<Uuid>) -> String {
