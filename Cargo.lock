@@ -12,6 +12,7 @@ dependencies = [
  "aws-sdk-s3",
  "base64 0.21.7",
  "chrono",
+ "core-foundation 0.10.1",
  "csv",
  "deadpool-postgres",
  "directories",

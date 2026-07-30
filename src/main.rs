@@ -53,6 +53,9 @@ use upload_ui::run_upload_ui;
 enum AppEvent {
     ReloadConfig,
     OnboardingClosed,
+    /// The setup assistant asked for a relaunch (macOS applies a new Screen
+    /// Recording grant only to a freshly started process).
+    RestartRequested,
     PairingFinished { success: bool, message: String },
 }
 
@@ -236,6 +239,10 @@ impl AppController {
                     log::error!("failed to reload config after onboarding: {err:?}");
                 }
             }
+            AppEvent::RestartRequested => {
+                self.onboarding_open = false;
+                self.restart_self();
+            }
             AppEvent::PairingFinished { success, message } => {
                 self.pairing_in_progress = false;
                 if success {
@@ -306,10 +313,21 @@ impl AppController {
         match Command::new(exe).arg("--onboarding-ui").spawn() {
             Ok(mut child) => {
                 thread::spawn(move || {
-                    if let Err(err) = child.wait() {
-                        log::error!("onboarding process failed: {err:?}");
-                    }
-                    let _ = proxy.send_event(AppEvent::OnboardingClosed);
+                    // The wizard signals "restart the app" through its exit
+                    // code — it runs in a child process and can't relaunch the
+                    // tray itself.
+                    let restart = match child.wait() {
+                        Ok(status) => status.code() == Some(onboarding_ui::RESTART_EXIT_CODE),
+                        Err(err) => {
+                            log::error!("onboarding process failed: {err:?}");
+                            false
+                        }
+                    };
+                    let _ = proxy.send_event(if restart {
+                        AppEvent::RestartRequested
+                    } else {
+                        AppEvent::OnboardingClosed
+                    });
                 });
             }
             Err(err) => {
@@ -378,6 +396,32 @@ impl AppController {
         self.worker.shutdown();
         if let Some(icon) = self.tray_icon.take() {
             drop(icon);
+        }
+    }
+
+    /// Relaunch the applet and exit this process.
+    ///
+    /// macOS binds a Screen Recording grant to the running process, so a grant
+    /// made during onboarding does nothing until the app restarts. The wizard
+    /// offers the restart; this is the half that performs it. The replacement
+    /// is spawned first, so a failure to launch leaves the current instance
+    /// running rather than quitting to nothing.
+    fn restart_self(&mut self) {
+        let Ok(exe) = std::env::current_exe() else {
+            show_error("Unable to locate the executable to restart.");
+            return;
+        };
+        match Command::new(exe).spawn() {
+            Ok(_) => {
+                self.shutdown();
+                // The tray event loop has no "exit now" hook reachable from
+                // here, and the replacement already owns the menu bar.
+                std::process::exit(0);
+            }
+            Err(err) => {
+                log::error!("failed to relaunch CI-Applet: {err:?}");
+                show_error("Unable to restart CI-Applet. Quit and reopen it manually.");
+            }
         }
     }
 
@@ -528,13 +572,20 @@ impl MenuState {
         ));
         self.server_item
             .set_text(&format!("Portal URL: {}", config.server.portal_url));
+        // A fresh install has no issuer yet — "Login via " with nothing after
+        // it is the first thing a new user sees in the menu.
         let issuer_display = config
             .oidc
             .issuer
+            .trim()
             .trim_start_matches("https://")
-            .trim_start_matches("http://");
-        self.login_item
-            .set_text(&format!("Login via {}", issuer_display));
+            .trim_start_matches("http://")
+            .trim_end_matches('/');
+        self.login_item.set_text(&if issuer_display.is_empty() {
+            "Login to Portal".to_string()
+        } else {
+            format!("Login via {issuer_display}")
+        });
         self.postgres_item.set_text(&format!(
             "Postgres: {}:{} / {}",
             config.postgres.host, config.postgres.port, config.postgres.database

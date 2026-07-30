@@ -1,9 +1,11 @@
-//! Inline connection tests for the settings window.
+//! Inline connection tests for the settings window and the onboarding wizard.
 //!
 //! Each `test_*` builds a probe from the *current* (possibly unsaved) form
 //! config and reports back `Ok(detail)` on success or `Err(friendly message)`.
-//! These are read-only reachability/credential probes — they never mutate
-//! remote state, so they're safe to run repeatedly from the UI.
+//! All of them are read-only reachability/credential probes, safe to run
+//! repeatedly from the UI — **except [`test_capture`]**, which deliberately
+//! uploads one real screenshot so setup can end on *verified* rather than
+//! *configured*. It only ever runs from an explicit button press.
 
 use std::time::Duration;
 
@@ -78,6 +80,126 @@ pub async fn test_ci_server(config: &AppConfig) -> Result<String, String> {
     }
 
     Err(last_err.unwrap_or_else(|| "No CI-Server endpoint responded.".into()))
+}
+
+/// Probe a candidate OIDC issuer by fetching its discovery document.
+///
+/// This is what lets onboarding ask for one URL instead of two: the wizard
+/// derives `<server>/api/auth`, calls this, and only surfaces the manual issuer
+/// field when the probe fails. Read-only — discovery is a public GET.
+pub async fn test_oidc_issuer(issuer: &str) -> Result<String, String> {
+    let issuer = issuer.trim();
+    if issuer.is_empty() {
+        return Err("Set a portal sign-in URL first.".into());
+    }
+    let client = Client::builder()
+        .use_rustls_tls()
+        .timeout(TIMEOUT)
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    match crate::oidc::discover(&client, issuer).await {
+        Ok(disco) => {
+            let host = reqwest::Url::parse(&disco.authorization_endpoint)
+                .ok()
+                .and_then(|u| u.host_str().map(str::to_string))
+                .unwrap_or_else(|| issuer.to_string());
+            Ok(format!("Sign-in provider found at {host}"))
+        }
+        Err(err) => Err(crate::oidc::friendly_login_error(&err)),
+    }
+}
+
+/// End-to-end proof that capture actually reaches CI-Server: take one real
+/// screenshot and push it through the **production** ingest path.
+///
+/// Onboarding previously declared success from stored-credential + permission
+/// state, which cannot see the failure that matters most — a token the server
+/// stores fine but rejects at ingest (audience mismatch, revoked grant, wrong
+/// mount path). Those surfaced hours later as log warnings. Running the real
+/// upload while the user is still in the wizard turns "configured" into
+/// "verified".
+///
+/// Side effect, and it is the point: this uploads one genuine screenshot of the
+/// user's screen, exactly as normal capture would. The UI says so before it
+/// runs.
+pub async fn test_capture(config: &AppConfig) -> Result<String, String> {
+    if config.server.portal_url.trim().is_empty() {
+        return Err("Set a CI-Server URL first.".into());
+    }
+    if !crate::server_ingest::is_configured(config) {
+        return Err("Sign in or paste an API key first.".into());
+    }
+
+    let image = tokio::task::spawn_blocking(crate::capture::capture_primary)
+        .await
+        .map_err(|e| format!("capture thread failed: {e}"))?
+        .map_err(|e| format!("Couldn't capture the screen: {e}"))?;
+
+    let png = image
+        .to_png_bytes()
+        .map_err(|e| format!("Couldn't encode the screenshot: {e}"))?;
+    let kb = png.len() as f64 / 1024.0;
+
+    // A blank frame means the OS grant is missing, not that ingest is broken —
+    // uploading it would "pass" while capturing nothing. Catch it here.
+    if is_uniform(&image) {
+        return Err(
+            "The captured frame is blank — macOS Screen Recording permission is missing. \
+             Grant it on the previous step, restart the app, and try again."
+                .into(),
+        );
+    }
+
+    let filename = format!("ci-applet-setup-test-{}.png", chrono::Utc::now().format("%Y%m%dT%H%M%S"));
+    // Mirror the fresh-install production path: no local analysis, so the
+    // server runs its own description (inventory on, skip off).
+    match crate::server_ingest::ingest_capture(config, &filename, &png, true, false, None).await {
+        Ok(file_id) => Ok(format!(
+            "Test capture accepted · {kb:.0} KB · server file {file_id}"
+        )),
+        Err(err) => Err(friendly_ingest_error(&err)),
+    }
+}
+
+/// True when every pixel is identical — the signature of a permission-blocked
+/// capture (macOS hands back a uniform frame rather than failing).
+fn is_uniform(image: &crate::capture::CapturedImage) -> bool {
+    let mut chunks = image.data.chunks_exact(4);
+    let Some(first) = chunks.next() else {
+        return true;
+    };
+    chunks.all(|px| px == first)
+}
+
+/// Turn an ingest failure into the specific thing to fix. The upload lane's
+/// errors carry the HTTP status, which is the whole diagnosis here.
+fn friendly_ingest_error(err: &anyhow::Error) -> String {
+    let chain = err
+        .chain()
+        .map(|c| c.to_string())
+        .collect::<Vec<_>>()
+        .join(": ");
+    let lower = chain.to_ascii_lowercase();
+    if lower.contains("http 401") || lower.contains("http 403") {
+        "The server rejected the credential at upload. If you signed in, the token's audience \
+         may not be one CI-Server accepts — run `--login` and check `token aud` against the \
+         server's PORTAL_OIDC_AUDIENCE."
+            .to_string()
+    } else if lower.contains("http 404") || lower.contains("http 405") {
+        "Reached the server, but no upload endpoint answered — check the CI-Server URL points \
+         at the API root."
+            .to_string()
+    } else if lower.contains("http 413") {
+        "The server rejected the screenshot as too large.".to_string()
+    } else if lower.contains("certificate") {
+        "TLS certificate rejected — use a trusted CI-Server URL, or install its certificate."
+            .to_string()
+    } else if lower.contains("connection refused") || lower.contains("dns error") {
+        "Couldn't reach CI-Server — check the URL and your network.".to_string()
+    } else {
+        format!("Upload failed: {}", chain.rsplit(": ").next().unwrap_or(&chain))
+    }
 }
 
 /// Reachability probe for the vision endpoint. A `GET` on a POST-only path
@@ -167,5 +289,52 @@ pub async fn test_minio(config: &AppConfig) -> Result<String, String> {
             resp.status().as_u16()
         )),
         Err(err) => Err(friendly_error(&err)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{friendly_ingest_error, is_uniform};
+    use crate::capture::CapturedImage;
+
+    #[test]
+    fn uniform_frame_is_detected() {
+        // A permission-blocked macOS capture comes back as one flat colour.
+        let blank = CapturedImage {
+            width: 2,
+            height: 1,
+            data: vec![0, 0, 0, 255, 0, 0, 0, 255],
+        };
+        assert!(is_uniform(&blank));
+
+        let real = CapturedImage {
+            width: 2,
+            height: 1,
+            data: vec![0, 0, 0, 255, 12, 34, 56, 255],
+        };
+        assert!(!is_uniform(&real));
+    }
+
+    #[test]
+    fn empty_frame_counts_as_uniform() {
+        let empty = CapturedImage {
+            width: 0,
+            height: 0,
+            data: Vec::new(),
+        };
+        assert!(is_uniform(&empty));
+    }
+
+    #[test]
+    fn ingest_401_points_at_the_audience() {
+        let err = anyhow::anyhow!("capture upload failed with HTTP 401 Unauthorized");
+        let msg = friendly_ingest_error(&err);
+        assert!(msg.contains("PORTAL_OIDC_AUDIENCE"), "got: {msg}");
+    }
+
+    #[test]
+    fn ingest_404_points_at_the_url() {
+        let err = anyhow::anyhow!("capture upload failed with HTTP 404 Not Found");
+        assert!(friendly_ingest_error(&err).contains("CI-Server URL"));
     }
 }

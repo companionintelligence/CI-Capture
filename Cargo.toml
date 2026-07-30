@@ -55,6 +55,12 @@ html2md = { version = "0.2", optional = true }
 mail-parser = { version = "0.9", optional = true }
 epub = { version = "2", optional = true }
 
+# macOS Accessibility prompt (AXIsProcessTrustedWithOptions takes a
+# CFDictionary). Already in the tree transitively; named here so the onboarding
+# permission aids can build the options dictionary without hand-rolled CF FFI.
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.10"
+
 [features]
 default = []
 rich-extractors = ["dep:html2md", "dep:mail-parser", "dep:epub"]

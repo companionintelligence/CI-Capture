@@ -79,6 +79,11 @@ pub fn status() -> Permissions {
 
 #[cfg(target_os = "macos")]
 mod imp {
+    use core_foundation::base::TCFType;
+    use core_foundation::boolean::CFBoolean;
+    use core_foundation::dictionary::{CFDictionary, CFDictionaryRef};
+    use core_foundation::string::{CFString, CFStringRef};
+
     use super::PermissionStatus;
 
     // Framework functions. CoreGraphics gates Screen Recording; the
@@ -89,10 +94,15 @@ mod imp {
         fn CGPreflightScreenCaptureAccess() -> bool;
         fn CGRequestScreenCaptureAccess() -> bool;
     }
-    // ApplicationServices exposes the Accessibility (AX) trust check.
+    // ApplicationServices exposes the Accessibility (AX) trust check. The
+    // `WithOptions` variant is the only way to *raise* the AX prompt — passing
+    // `kAXTrustedCheckOptionPrompt: true` makes macOS show the "open System
+    // Settings" dialog instead of silently returning false.
     #[link(name = "ApplicationServices", kind = "framework")]
     unsafe extern "C" {
         fn AXIsProcessTrusted() -> bool;
+        fn AXIsProcessTrustedWithOptions(options: CFDictionaryRef) -> bool;
+        static kAXTrustedCheckOptionPrompt: CFStringRef;
     }
 
     pub fn screen_recording_status() -> PermissionStatus {
@@ -124,6 +134,31 @@ mod imp {
         }
     }
 
+    /// Ask macOS to prompt for Accessibility, returning the state right after.
+    ///
+    /// Unlike Screen Recording there is no "grant in place" path: the dialog
+    /// only offers to open System Settings, and the grant lands asynchronously
+    /// once the user flips the toggle there. So this near-always returns
+    /// `Denied` on first call — the caller is expected to keep polling
+    /// [`accessibility_status`] rather than trust this return value.
+    pub fn request_accessibility() -> PermissionStatus {
+        // SAFETY: `kAXTrustedCheckOptionPrompt` is a framework-owned CFString
+        // constant; the dictionary is built and released by core-foundation's
+        // RAII wrappers, and AXIsProcessTrustedWithOptions borrows it for the
+        // duration of the call.
+        let trusted = unsafe {
+            let key = CFString::wrap_under_get_rule(kAXTrustedCheckOptionPrompt);
+            let options =
+                CFDictionary::from_CFType_pairs(&[(key, CFBoolean::true_value().as_CFType())]);
+            AXIsProcessTrustedWithOptions(options.as_concrete_TypeRef() as CFDictionaryRef)
+        };
+        if trusted {
+            PermissionStatus::Granted
+        } else {
+            PermissionStatus::Denied
+        }
+    }
+
     // System Settings deep links (stable `x-apple.systempreferences:` scheme).
     pub const SCREEN_RECORDING_PANE: &str =
         "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture";
@@ -146,6 +181,9 @@ mod imp {
     pub fn request_screen_recording() -> PermissionStatus {
         PermissionStatus::NotRequired
     }
+    pub fn request_accessibility() -> PermissionStatus {
+        PermissionStatus::NotRequired
+    }
     pub const SCREEN_RECORDING_PANE: &str = "";
     pub const ACCESSIBILITY_PANE: &str = "";
 }
@@ -161,6 +199,13 @@ pub fn accessibility_status() -> PermissionStatus {
 /// status. No-op returning `NotRequired` off macOS.
 pub fn request_screen_recording() -> PermissionStatus {
     imp::request_screen_recording()
+}
+
+/// Ask the OS to prompt for Accessibility (macOS). The grant lands only after
+/// the user toggles it in System Settings, so poll [`status`] afterwards rather
+/// than relying on the returned value. No-op returning `NotRequired` off macOS.
+pub fn request_accessibility() -> PermissionStatus {
+    imp::request_accessibility()
 }
 
 /// The System Settings pane URL for Screen Recording (empty off macOS).

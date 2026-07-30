@@ -221,6 +221,82 @@ pub fn token_expiring(
     }
 }
 
+/// Rewrite a sign-in failure into something a first-time user can act on.
+///
+/// [`login`] fails with a context-rich `anyhow` chain that is right for logs
+/// and wrong for a setup wizard — "OIDC discovery request to
+/// https://…/.well-known/openid-configuration: error sending request for url"
+/// tells a newcomer nothing about what to change. Each arm below names the one
+/// field or action that fixes the failure. The raw chain still goes to the log.
+pub fn friendly_login_error(err: &anyhow::Error) -> String {
+    let chain = err
+        .chain()
+        .map(|c| c.to_string())
+        .collect::<Vec<_>>()
+        .join(": ");
+    let lower = chain.to_ascii_lowercase();
+
+    // Ordered most-specific first: several of these co-occur in one chain
+    // (a discovery 404 is also a "discovery" failure).
+    if lower.contains("relative url without a base") || lower.contains("empty host") {
+        "No sign-in URL configured. Enter your CI-Server URL so the portal can be found."
+            .to_string()
+    } else if lower.contains("discovery failed") && lower.contains("http 404") {
+        "That URL isn't an OIDC sign-in provider (no discovery document). Most CI-Server \
+         deployments use <your-server>/api/auth."
+            .to_string()
+    } else if lower.contains("parsing oidc discovery document") {
+        "That URL answered, but not with an OIDC discovery document — check the portal \
+         sign-in URL under Advanced."
+            .to_string()
+    } else if lower.contains("discovery") && lower.contains("http") {
+        "The sign-in provider rejected the discovery request — check the portal sign-in URL \
+         under Advanced."
+            .to_string()
+    } else if lower.contains("address already in use") || lower.contains("binding loopback") {
+        "Another sign-in is already in progress (the callback port is busy). Close the other \
+         attempt, or wait a moment and try again."
+            .to_string()
+    } else if lower.contains("timed out waiting for the browser") {
+        "Sign-in wasn't completed in the browser. Try again — the login tab opens automatically."
+            .to_string()
+    } else if lower.contains("state mismatch") {
+        "Sign-in was interrupted and could not be verified. Please try again.".to_string()
+    } else if lower.contains("access_denied") {
+        "Sign-in was declined in the browser.".to_string()
+    } else if lower.contains("authorization error") {
+        format!("The portal refused the sign-in: {}", last_segment(&chain))
+    } else if lower.contains("token exchange failed") {
+        "The portal accepted the login but refused to issue a token — the client ID or \
+         redirect URI may not match what's registered (Settings → Identity)."
+            .to_string()
+    } else if lower.contains("certificate") || lower.contains("unknownissuer") {
+        "TLS certificate rejected — use a trusted CI-Server URL, or install its certificate."
+            .to_string()
+    } else if lower.contains("dns error") || lower.contains("failed to lookup") {
+        "That hostname didn't resolve — check the CI-Server URL for a typo.".to_string()
+    } else if lower.contains("connection refused") || lower.contains("tcp connect error") {
+        "Couldn't reach the sign-in provider — check the URL and that you're on the right \
+         network or VPN."
+            .to_string()
+    } else if lower.contains("operation timed out") || lower.contains("timed out") {
+        "The sign-in provider didn't respond in time — check the URL and your network."
+            .to_string()
+    } else {
+        format!("Sign-in failed: {}", last_segment(&chain))
+    }
+}
+
+/// The innermost (most specific) message of a joined error chain.
+fn last_segment(chain: &str) -> String {
+    chain
+        .rsplit(": ")
+        .next()
+        .unwrap_or(chain)
+        .trim()
+        .to_string()
+}
+
 fn trim_body(body: &str) -> String {
     let b = body.trim();
     if b.is_empty() {
@@ -423,6 +499,52 @@ mod tests {
         assert!(token_expiring(Some(now - chrono::Duration::minutes(5)), now, skew));
         // Unknown expiry → don't churn.
         assert!(!token_expiring(None, now, skew));
+    }
+
+    #[test]
+    fn friendly_errors_name_the_field_to_fix() {
+        let cases = [
+            (
+                anyhow::anyhow!("HTTP 404")
+                    .context("OIDC discovery failed: https://x/.well-known/openid-configuration"),
+                "/api/auth",
+            ),
+            (
+                anyhow::anyhow!("Address already in use (os error 48)")
+                    .context("binding loopback 127.0.0.1:49473 for the OIDC callback"),
+                "already in progress",
+            ),
+            (
+                anyhow::anyhow!("timed out waiting for the browser sign-in to complete"),
+                "wasn't completed",
+            ),
+            (
+                anyhow::anyhow!("token exchange failed: HTTP 400 — invalid_client"),
+                "client ID or redirect URI",
+            ),
+            (
+                anyhow::anyhow!("relative URL without a base").context("OIDC discovery request"),
+                "No sign-in URL configured",
+            ),
+        ];
+        for (err, expected) in cases {
+            let msg = friendly_login_error(&err);
+            assert!(
+                msg.contains(expected),
+                "expected {expected:?} in {msg:?} (from {err:#})"
+            );
+            // Never leak the discovery URL or raw chain punctuation at users.
+            assert!(!msg.contains(".well-known"), "leaked internals: {msg}");
+        }
+    }
+
+    #[test]
+    fn friendly_error_falls_back_to_the_innermost_message() {
+        let err = anyhow::anyhow!("something specific").context("outer context");
+        assert_eq!(
+            friendly_login_error(&err),
+            "Sign-in failed: something specific"
+        );
     }
 
     #[tokio::test]

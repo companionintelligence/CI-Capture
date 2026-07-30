@@ -35,6 +35,82 @@ fn error_chain(err: &reqwest::Error) -> String {
     text
 }
 
+/// Clean a user-typed CI-Server URL into the origin form the endpoint builders
+/// expect. Shared by the settings window and the onboarding wizard so both
+/// accept exactly the same input.
+///
+/// A bare host (`ci.example.com`, `core-1:8642`) is the single most common
+/// first-run typo, so a missing scheme is filled in rather than rejected:
+/// anything that looks like a loopback/plain host:port gets `http://`,
+/// everything else `https://`. Query, fragment, and the portal's `/feed` UI
+/// path are stripped — they're navigation state, not API mount points.
+pub fn normalize_ci_server_url(raw: &str) -> Result<String, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err("CI-Server URL is required.".to_string());
+    }
+
+    let with_scheme = if trimmed.contains("://") {
+        trimmed.to_string()
+    } else {
+        format!("{}://{trimmed}", default_scheme_for(trimmed))
+    };
+
+    let mut url =
+        Url::parse(&with_scheme).map_err(|_| "CI-Server URL must be a valid URL.".to_string())?;
+    if url.host_str().is_none() {
+        return Err("CI-Server URL is missing a hostname.".to_string());
+    }
+    url.set_query(None);
+    url.set_fragment(None);
+
+    let path = url.path().trim_matches('/');
+    if path.is_empty() || path == "feed" || path.starts_with("feed/") {
+        url.set_path("");
+    }
+
+    Ok(url.to_string())
+}
+
+/// Scheme to assume for a scheme-less host. Local/LAN targets are typically
+/// plain HTTP (the dev CI-Server default), public hostnames are not.
+fn default_scheme_for(host_part: &str) -> &'static str {
+    let host = host_part
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or(host_part)
+        .split(':')
+        .next()
+        .unwrap_or(host_part);
+    let is_local = host == "localhost"
+        || host.ends_with(".local")
+        || host.ends_with(".localhost")
+        || host.parse::<std::net::IpAddr>().is_ok()
+        // Single-label hosts are LAN machine names (`core-1`), not public DNS.
+        || !host.contains('.');
+    if is_local { "http" } else { "https" }
+}
+
+/// The OIDC issuer a CI-Server deployment conventionally serves, derived from
+/// the server URL (`<origin>/api/auth`).
+///
+/// This is what lets onboarding ask one question instead of two: the wizard
+/// derives a candidate, probes its discovery document, and only falls back to
+/// asking when the probe fails. Returns `None` when the server URL isn't
+/// usable yet.
+pub fn derive_issuer_url(server_url: &str) -> Option<String> {
+    let normalized = normalize_ci_server_url(server_url).ok()?;
+    let base = Url::parse(&normalized).ok()?;
+    // Honour a mounted base path (`https://host/ci/`) the same way the
+    // endpoint builders do, rather than assuming the origin root.
+    let joined = if base.path().trim_matches('/').is_empty() {
+        base.join("/api/auth").ok()?
+    } else {
+        Url::parse(&format!("{}/api/auth", normalized.trim_end_matches('/'))).ok()?
+    };
+    Some(joined.to_string())
+}
+
 pub fn server_origin(portal_url: &str) -> Result<Url> {
     let parsed =
         Url::parse(portal_url).with_context(|| format!("parsing portal URL {portal_url}"))?;
@@ -188,7 +264,70 @@ fn is_ci_server_api_key(token: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{AuthCredential, events_urls, graphql_urls, upload_urls};
+    use super::{
+        AuthCredential, derive_issuer_url, events_urls, graphql_urls, normalize_ci_server_url,
+        upload_urls,
+    };
+
+    #[test]
+    fn normalize_fills_in_a_missing_scheme() {
+        // The most common first-run typo: a bare host. Public names get https,
+        // LAN/loopback names get http (the dev CI-Server default).
+        assert_eq!(
+            normalize_ci_server_url("ci.example.com").unwrap(),
+            "https://ci.example.com/"
+        );
+        assert_eq!(
+            normalize_ci_server_url("core-1:8642").unwrap(),
+            "http://core-1:8642/"
+        );
+        assert_eq!(
+            normalize_ci_server_url("localhost:62345").unwrap(),
+            "http://localhost:62345/"
+        );
+        assert_eq!(
+            normalize_ci_server_url("192.168.1.20:62345").unwrap(),
+            "http://192.168.1.20:62345/"
+        );
+    }
+
+    #[test]
+    fn normalize_strips_ui_path_query_and_fragment() {
+        assert_eq!(
+            normalize_ci_server_url("https://ci.example.com/feed?cursor=abc#top").unwrap(),
+            "https://ci.example.com/"
+        );
+        // A real mount path is preserved — only the portal's own UI path goes.
+        assert_eq!(
+            normalize_ci_server_url("https://ci.example.com/api").unwrap(),
+            "https://ci.example.com/api"
+        );
+    }
+
+    #[test]
+    fn normalize_rejects_unusable_input() {
+        assert!(normalize_ci_server_url("   ").is_err());
+        assert!(normalize_ci_server_url("https://").is_err());
+    }
+
+    #[test]
+    fn issuer_is_derived_from_the_server_url() {
+        assert_eq!(
+            derive_issuer_url("https://ci.example.com").unwrap(),
+            "https://ci.example.com/api/auth"
+        );
+        // Scheme-less input flows through the same normalization.
+        assert_eq!(
+            derive_issuer_url("ci.example.com/feed").unwrap(),
+            "https://ci.example.com/api/auth"
+        );
+        // A mounted base path is respected rather than replaced.
+        assert_eq!(
+            derive_issuer_url("https://host.example.com/ci/").unwrap(),
+            "https://host.example.com/ci/api/auth"
+        );
+        assert!(derive_issuer_url("").is_none());
+    }
 
     #[test]
     fn detects_ci_server_api_key_shape() {
