@@ -248,13 +248,22 @@ pub struct OidcConfig {
     pub redirect_uri: String,
 }
 
+/// Production CI-Portal sign-in URL.
+///
+/// A real default rather than a blank field, so a fresh install — including a
+/// headless `--login` with no config at all — signs in with zero typing.
+/// `hub.ci.computer` is production; `hub.companionintelligence.com`, which
+/// several repos still default to, is the dev worker per CI-Portal's
+/// `wrangler.jsonc`. Self-hosters override `oidc.issuer`.
+pub const DEFAULT_PORTAL_ISSUER: &str = "https://hub.ci.computer/api/auth";
+
 impl Default for OidcConfig {
     fn default() -> Self {
         Self {
-            issuer: String::new(),
+            issuer: DEFAULT_PORTAL_ISSUER.to_string(),
             client_id: "ci-applet".to_string(),
             scopes: "openid profile email offline_access".to_string(),
-            redirect_uri: "http://127.0.0.1:49473/callback".to_string(),
+            redirect_uri: "http://127.0.0.1:0/callback".to_string(),
         }
     }
 }
@@ -277,6 +286,27 @@ pub struct ServerConfig {
     pub portal_url: String,
     #[serde(default)]
     pub applet_auth_token: Option<String>,
+    /// How `portal_url` came to hold its current value.
+    ///
+    /// Portal discovery may replace an address it set itself, but must never
+    /// replace one the user typed — someone who deliberately pointed this
+    /// machine at a specific Core should not have it moved out from under them
+    /// on the next sign-in.
+    #[serde(default)]
+    pub url_source: ServerUrlSource,
+}
+
+/// Provenance of [`ServerConfig::portal_url`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ServerUrlSource {
+    /// Typed by the user, or inherited from a config written before this field
+    /// existed — treated as manual so an upgrade cannot silently re-point an
+    /// existing install.
+    #[default]
+    Manual,
+    /// Resolved from CI-Portal's app discovery.
+    Discovered,
 }
 
 impl Default for ServerConfig {
@@ -284,6 +314,7 @@ impl Default for ServerConfig {
         Self {
             portal_url: String::new(),
             applet_auth_token: None,
+            url_source: ServerUrlSource::Manual,
         }
     }
 }
