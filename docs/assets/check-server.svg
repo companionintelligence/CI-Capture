@@ -1,44 +1,44 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 568" width="760" height="568" role="img" aria-label="cargo run -- --check-server output">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 668" width="760" height="668" role="img" aria-label="cargo run -- --check-server output">
   <defs>
     <filter id="sh" x="-10%" y="-10%" width="120%" height="120%">
       <feDropShadow dx="0" dy="8" stdDeviation="16" flood-color="#000" flood-opacity="0.4"/>
     </filter>
   </defs>
   <g filter="url(#sh)">
-    <rect x="8" y="8" width="744" height="552" rx="11" fill="#0d1117" stroke="#30363d"/>
+    <rect x="8" y="8" width="744" height="652" rx="11" fill="#0d1117" stroke="#30363d"/>
     <rect x="8" y="8" width="744" height="36" rx="11" fill="#161b22"/>
     <rect x="8" y="32" width="744" height="12" fill="#161b22"/>
     <circle cx="30" cy="26" r="6" fill="#ff5f57"/>
     <circle cx="50" cy="26" r="6" fill="#febc2e"/>
     <circle cx="70" cy="26" r="6" fill="#28c840"/>
-    <text x="380" y="30" text-anchor="middle" font-family="-apple-system,'Helvetica Neue',sans-serif" font-size="12.5" fill="#8b949e">CI-Applet — check-server</text>
+    <text x="380" y="30" text-anchor="middle" font-family="-apple-system,'Helvetica Neue',sans-serif" font-size="12.5" fill="#8b949e">Companion Capture — check-server</text>
   </g>
 
   <g font-family="'SF Mono','Source Code Pro',Menlo,Consolas,monospace" font-size="13" xml:space="preserve">
-    <text x="24" y="72"><tspan fill="#3fb950">$</tspan><tspan fill="#c9d1d9"> cargo run -- --check-server --portal https://your-ci-server.example.com</tspan></text>
-
-    <text x="24" y="112" fill="#d2e3ff" font-weight="700">CI-Applet → CI-Server connection check</text>
-    <text x="24" y="132" fill="#444c56">======================================</text>
-
-    <text x="24" y="160" fill="#8b949e">Portal URL : <tspan fill="#56b6c2">https://your-ci-server.example.com</tspan></text>
-    <text x="24" y="180" fill="#8b949e">Origin     : <tspan fill="#56b6c2">https://your-ci-server.example.com/</tspan></text>
-    <text x="24" y="200" fill="#8b949e">GraphQL    : <tspan fill="#56b6c2">/api/graphql | /graphql</tspan></text>
-    <text x="24" y="220" fill="#8b949e">File upload: <tspan fill="#56b6c2">/api/files/upload | /files/upload</tspan></text>
-
-    <text x="24" y="252" fill="#5c8dff" font-weight="700">Local config</text>
-    <text x="24" y="272" fill="#444c56">------------</text>
-    <text x="24" y="292" fill="#8b949e">user_id    : <tspan fill="#e5534b">✗</tspan> unset</text>
-    <text x="24" y="312" fill="#8b949e">device_id  : <tspan fill="#e5534b">✗</tspan> unset</text>
-    <text x="24" y="332" fill="#8b949e">auth cred  : <tspan fill="#e5534b">✗</tspan> not configured (login or paste API key)</text>
-    <text x="24" y="352" fill="#8b949e">file lane  : idle (needs server credential and ≥1 watched folder)</text>
-
-    <text x="24" y="384" fill="#5c8dff" font-weight="700">Live probe</text>
-    <text x="24" y="404" fill="#444c56">----------</text>
-    <text x="24" y="424" fill="#8b949e">GET /health           : <tspan fill="#3fb950">HTTP 200</tspan></text>
-    <text x="24" y="444" fill="#8b949e">POST /api/graphql     : <tspan fill="#3fb950">HTTP 200 ✓ reachable</tspan></text>
-
-    <text x="24" y="488" fill="#6e7681">Note: API keys are sent as x-api-key; JWT/OIDC tokens</text>
-    <text x="24" y="508" fill="#6e7681">are sent as bearer auth.</text>
-    <text x="24" y="536"><tspan fill="#3fb950">$</tspan><tspan fill="#c9d1d9"> </tspan><tspan fill="#3fb950">▋</tspan></text>
+    <text x="24" y="72"><tspan fill="#3fb950">$</tspan><tspan fill="#c9d1d9"> cargo run -- --check-server --portal http://core-1:8642</tspan></text>
+    <text x="24" y="112"><tspan fill="#d2e3ff" font-weight="700">Companion Capture → server connection check</tspan></text>
+    <text x="24" y="132"><tspan fill="#444c56">===========================================</tspan></text>
+    <text x="24" y="164"><tspan fill="#8b949e">Portal URL :</tspan><tspan fill="#8b949e"> </tspan><tspan fill="#56b6c2">http://core-1:8642</tspan></text>
+    <text x="24" y="184"><tspan fill="#8b949e">Origin     :</tspan><tspan fill="#8b949e"> </tspan><tspan fill="#56b6c2">http://core-1:8642/</tspan></text>
+    <text x="24" y="204"><tspan fill="#8b949e">GraphQL    :</tspan><tspan fill="#8b949e"> </tspan><tspan fill="#56b6c2">http://core-1:8642/api/graphql | http://core-1:8642/graphql</tspan></text>
+    <text x="24" y="224"><tspan fill="#8b949e">File upload:</tspan><tspan fill="#8b949e"> </tspan><tspan fill="#56b6c2">http://core-1:8642/api/files/upload | http://core-1:8642/files/upload</tspan></text>
+    <text x="24" y="256"><tspan fill="#5c8dff" font-weight="700">Local config</tspan></text>
+    <text x="24" y="276"><tspan fill="#444c56">------------</tspan></text>
+    <text x="24" y="296"><tspan fill="#8b949e">user_id    :</tspan><tspan fill="#8b949e"> </tspan><tspan fill="#e5534b">✗</tspan><tspan fill="#8b949e"> unset</tspan></text>
+    <text x="24" y="316"><tspan fill="#8b949e">device_id  :</tspan><tspan fill="#8b949e"> </tspan><tspan fill="#e5534b">✗</tspan><tspan fill="#8b949e"> unset</tspan></text>
+    <text x="24" y="336"><tspan fill="#8b949e">auth cred  :</tspan><tspan fill="#8b949e"> </tspan><tspan fill="#e5534b">✗</tspan><tspan fill="#8b949e"> not configured (login or paste API key in settings)</tspan></text>
+    <text x="24" y="356"><tspan fill="#8b949e">file lane  :</tspan><tspan fill="#8b949e"> </tspan><tspan fill="#8b949e">idle (needs server credential and ≥1 watched folder)</tspan></text>
+    <text x="24" y="388"><tspan fill="#5c8dff" font-weight="700">Portal sign-in (OIDC)</tspan></text>
+    <text x="24" y="408"><tspan fill="#444c56">---------------------</tspan></text>
+    <text x="24" y="428"><tspan fill="#8b949e">issuer     :</tspan><tspan fill="#8b949e"> </tspan><tspan fill="#56b6c2">https://hub.ci.computer/api/auth</tspan></text>
+    <text x="24" y="448"><tspan fill="#8b949e">client_id  :</tspan><tspan fill="#8b949e"> </tspan><tspan fill="#56b6c2">ci-applet</tspan></text>
+    <text x="24" y="468"><tspan fill="#8b949e">redirect   :</tspan><tspan fill="#8b949e"> </tspan><tspan fill="#56b6c2">http://127.0.0.1:0/callback</tspan></text>
+    <text x="24" y="488"><tspan fill="#8b949e">signed in  :</tspan><tspan fill="#8b949e"> </tspan><tspan fill="#e5534b">✗</tspan><tspan fill="#8b949e"> not signed in (browser login not completed)</tspan></text>
+    <text x="24" y="520"><tspan fill="#5c8dff" font-weight="700">Live probe</tspan></text>
+    <text x="24" y="540"><tspan fill="#444c56">----------</tspan></text>
+    <text x="24" y="560"><tspan fill="#8b949e">GET /health           :</tspan><tspan fill="#8b949e"> </tspan><tspan fill="#8b949e"></tspan><tspan fill="#3fb950">HTTP 200</tspan><tspan fill="#8b949e"></tspan></text>
+    <text x="24" y="580"><tspan fill="#8b949e">POST GraphQL          :</tspan><tspan fill="#8b949e"> </tspan><tspan fill="#8b949e"></tspan><tspan fill="#3fb950">HTTP 200</tspan><tspan fill="#8b949e"> </tspan><tspan fill="#3fb950">✓</tspan><tspan fill="#56b6c2"> reachable (http://core-1:8642/api/graphql)</tspan></text>
+    <text x="24" y="612"><tspan fill="#8b949e">Note: browser login uses the OIDC issuer above. A pasted CI-Server</tspan></text>
+    <text x="24" y="632"><tspan fill="#8b949e">API key is sent as x-api-key; JWT/OIDC tokens are sent as bearer auth.</tspan></text>
   </g>
 </svg>
