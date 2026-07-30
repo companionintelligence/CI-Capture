@@ -3,13 +3,13 @@
 //! This is the single source of truth for the applet's look: colour tokens,
 //! fonts, global `Visuals`, and a small library of reusable widgets (themed
 //! text fields, cards, status dots/badges, capture-lane rows, toggles, buttons,
-//! sidebar nav items, file-type chips). Both the Settings and Upload windows
-//! style themselves exclusively through this module so colours and widget code
-//! live in exactly one place.
+//! sidebar nav items, file-type chips). Settings, Upload, and Onboarding style
+//! themselves exclusively through this module so colours and widget code live
+//! in exactly one place.
 //!
-//! The palette and layout are translated from the `Redesign/` mockup
-//! (`oklch(...)`/hex → `Color32`). egui has no CSS-gradient primitive for
-//! widgets, so the mockup's gradients are approximated with solid accent fills.
+//! Palette tokens track `@companionintelligence/tokens` (ci-common) dark mode
+//! (`tokens.css` / `.dark`). egui has no CSS-gradient primitive for widgets, so
+//! brand gradients are approximated with solid accent fills.
 
 use anyhow::{Context as _, Result};
 use eframe::egui::{
@@ -17,44 +17,43 @@ use eframe::egui::{
     TextureHandle, Ui, Vec2,
 };
 
-// ── Colour tokens ───────────────────────────────────────────────────────────
+// ── Colour tokens (ci-common `@companionintelligence/tokens` dark) ──────────
 
-/// App canvas (deepest blue-purple). Part of the palette for completeness;
-/// the windows are fully covered by panels so it is rarely drawn directly.
+/// App canvas — `--background` (#041620).
 #[allow(dead_code)]
-pub const BG: Color32 = Color32::from_rgb(0x12, 0x12, 0x26);
-/// Window / panel surface.
-pub const PANEL: Color32 = Color32::from_rgb(0x1b, 0x1f, 0x33);
-/// Slightly lighter surface for titlebars / sidebar.
-pub const PANEL_HI: Color32 = Color32::from_rgb(0x21, 0x25, 0x3a);
+pub const BG: Color32 = Color32::from_rgb(0x04, 0x16, 0x20);
+/// Window / panel surface — `--sidebar` / deep ground.
+pub const PANEL: Color32 = Color32::from_rgb(0x04, 0x16, 0x20);
+/// Slightly lifted surface for titlebars / sidebar — `--card`.
+pub const PANEL_HI: Color32 = Color32::from_rgb(0x0a, 0x22, 0x2e);
 /// Recessed surface behind cards / inputs.
-pub const INPUT: Color32 = Color32::from_rgb(0x14, 0x13, 0x20);
-/// Card fill (sits on top of PANEL).
-pub const CARD: Color32 = Color32::from_rgb(0x12, 0x14, 0x22);
+pub const INPUT: Color32 = Color32::from_rgb(0x07, 0x1c, 0x26);
+/// Card fill — `--card` (#0a222e).
+pub const CARD: Color32 = Color32::from_rgb(0x0a, 0x22, 0x2e);
 
-/// Hairline borders.
-pub const BORDER: Color32 = Color32::from_rgb(0x2b, 0x2f, 0x45);
-pub const BORDER_HI: Color32 = Color32::from_rgb(0x3a, 0x3f, 0x57);
+/// Hairline borders — `--border` (#2c676d).
+pub const BORDER: Color32 = Color32::from_rgb(0x2c, 0x67, 0x6d);
+pub const BORDER_HI: Color32 = Color32::from_rgb(0x40, 0x9b, 0x9b);
 
-// Accents.
-pub const TEAL: Color32 = Color32::from_rgb(0x58, 0xeb, 0xbf);
-pub const TEAL_DIM: Color32 = Color32::from_rgb(0x2d, 0xd4, 0xbf);
-pub const BLUE: Color32 = Color32::from_rgb(0x5c, 0x8d, 0xff);
-pub const PURPLE: Color32 = Color32::from_rgb(0x7c, 0x6b, 0xff);
+// Accents — `--primary` / brand teal ramp.
+pub const TEAL: Color32 = Color32::from_rgb(0xab, 0xd4, 0xd8);
+pub const TEAL_DIM: Color32 = Color32::from_rgb(0x40, 0x9b, 0x9b);
+pub const BLUE: Color32 = Color32::from_rgb(0x38, 0xbd, 0xf8);
+pub const PURPLE: Color32 = Color32::from_rgb(0x7f, 0xbc, 0xc2);
 
-// Status.
-pub const GREEN: Color32 = Color32::from_rgb(0x34, 0xd3, 0x99);
-pub const AMBER: Color32 = Color32::from_rgb(0xf5, 0x9e, 0x0b);
-pub const RED: Color32 = Color32::from_rgb(0xf4, 0x67, 0x5b);
+// Status — enriched dark tokens.
+pub const GREEN: Color32 = Color32::from_rgb(0x4a, 0xde, 0x80);
+pub const AMBER: Color32 = Color32::from_rgb(0xfb, 0xbf, 0x24);
+pub const RED: Color32 = Color32::from_rgb(0xef, 0x70, 0x70);
 
-// Text.
-pub const TEXT: Color32 = Color32::from_rgb(0xee, 0xf2, 0xf7);
-pub const MUTED: Color32 = Color32::from_rgb(0x98, 0xa2, 0xb3);
-pub const FAINT: Color32 = Color32::from_rgb(0x6b, 0x72, 0x80);
-/// Dark text drawn on top of a teal fill (primary buttons).
+// Text — `--secondary-foreground` / `--muted-foreground`.
+pub const TEXT: Color32 = Color32::from_rgb(0xf5, 0xf8, 0xfa);
+pub const MUTED: Color32 = Color32::from_rgb(0x8f, 0x98, 0xa3);
+pub const FAINT: Color32 = Color32::from_rgb(0x70, 0xa6, 0xaf);
+/// Dark text on primary teal fills — `--primary-foreground`.
 pub const ON_TEAL: Color32 = Color32::from_rgb(0x04, 0x16, 0x20);
 
-/// Capture-lane accent colours, in the mockup's order.
+/// Capture-lane accent colours.
 pub const LANE_SHOT: Color32 = BLUE;
 pub const LANE_ACTIVITY: Color32 = PURPLE;
 pub const LANE_FILE: Color32 = TEAL_DIM;
@@ -177,17 +176,18 @@ pub fn apply_visuals(ctx: &egui::Context) {
     v.widgets.open = widget(INPUT, INPUT, BORDER_HI, TEXT);
 
     style.visuals = v;
-    style.spacing.item_spacing = Vec2::new(9.0, 9.0);
-    style.spacing.button_padding = Vec2::new(13.0, 7.0);
-    style.spacing.interact_size.y = 30.0;
+    style.spacing.item_spacing = Vec2::new(10.0, 10.0);
+    style.spacing.button_padding = Vec2::new(16.0, 10.0);
+    style.spacing.interact_size.y = 36.0;
     style.spacing.window_margin = egui::Margin::same(0);
 
+    // Larger body copy for readability (portal/hub login density).
     style.text_styles = [
-        (TextStyle::Heading, light(18.0)),
-        (TextStyle::Body, body(13.0)),
-        (TextStyle::Button, body(13.0)),
-        (TextStyle::Small, body(11.0)),
-        (TextStyle::Monospace, mono(12.0)),
+        (TextStyle::Heading, light(22.0)),
+        (TextStyle::Body, body(15.0)),
+        (TextStyle::Button, body(15.0)),
+        (TextStyle::Small, body(13.0)),
+        (TextStyle::Monospace, mono(13.0)),
     ]
     .into();
 
@@ -204,15 +204,17 @@ pub fn pulse(ctx: &egui::Context) -> f32 {
 
 // ── Logo ────────────────────────────────────────────────────────────────────
 
-const CI_MARK_WHITE: &[u8] = include_bytes!("../assets/ci-mark-white.svg");
+/// Official CI logomark (teal palette) from ci-docs `public/logo.svg` — readable
+/// on both light and dark surfaces without a multiply tint.
+const CI_LOGO: &[u8] = include_bytes!("../assets/logo.svg");
 
-/// Rasterise the CI mark (white) into a texture. Tint at draw time via
-/// [`logo`]. Load once (e.g. in the eframe creation closure) and reuse.
+/// Rasterise the CI mark into a texture. Draw with [`logo`] (no tint) so the
+/// brand teal fills stay intact. Load once per window and reuse.
 pub fn load_logo(ctx: &egui::Context) -> TextureHandle {
-    let image = rasterize_svg(CI_MARK_WHITE, 128).unwrap_or_else(|_| {
+    let image = rasterize_svg(CI_LOGO, 128).unwrap_or_else(|_| {
         egui::ColorImage::from_rgba_unmultiplied([1, 1], &[0, 0, 0, 0])
     });
-    ctx.load_texture("ci-mark", image, egui::TextureOptions::LINEAR)
+    ctx.load_texture("ci-logo", image, egui::TextureOptions::LINEAR)
 }
 
 fn rasterize_svg(data: &[u8], size: u32) -> Result<egui::ColorImage> {
@@ -237,7 +239,8 @@ fn rasterize_svg(data: &[u8], size: u32) -> Result<egui::ColorImage> {
     ))
 }
 
-/// Draw the CI mark at `size`, tinted to `color`.
+/// Draw the CI mark at `size`. Pass [`Color32::WHITE`] to keep brand colours;
+/// any other colour multiply-tints the glyph (useful for monochrome variants).
 pub fn logo(ui: &mut Ui, tex: &TextureHandle, size: f32, color: Color32) {
     let sized = egui::load::SizedTexture::new(tex.id(), Vec2::splat(size));
     ui.add(egui::Image::new(sized).tint(color));
@@ -247,31 +250,31 @@ pub fn logo(ui: &mut Ui, tex: &TextureHandle, size: f32, color: Color32) {
 
 /// Big light heading (page title).
 pub fn heading(ui: &mut Ui, text: &str) {
-    ui.label(egui::RichText::new(text).font(light(19.0)).color(TEXT));
+    ui.label(egui::RichText::new(text).font(light(24.0)).color(TEXT));
 }
 
 /// Muted descriptive subtitle under a heading.
 pub fn subtitle(ui: &mut Ui, text: &str) {
-    ui.label(egui::RichText::new(text).font(body(12.5)).color(MUTED));
+    ui.label(egui::RichText::new(text).font(body(15.0)).color(MUTED));
 }
 
 /// Uppercase, slightly bold field/section label.
 pub fn field_label(ui: &mut Ui, text: &str) {
     ui.label(
         egui::RichText::new(text.to_uppercase())
-            .font(semibold(10.5))
+            .font(semibold(12.0))
             .color(MUTED),
     );
 }
 
 /// Small faint caption / helper text.
 pub fn caption(ui: &mut Ui, text: &str) {
-    ui.label(egui::RichText::new(text).font(body(11.0)).color(FAINT));
+    ui.label(egui::RichText::new(text).font(body(13.0)).color(FAINT));
 }
 
 /// Monospace value (config paths, IDs, tags).
 pub fn mono_label(ui: &mut Ui, text: &str, color: Color32) {
-    ui.label(egui::RichText::new(text).font(mono(11.0)).color(color));
+    ui.label(egui::RichText::new(text).font(mono(12.5)).color(color));
 }
 
 // ── Inputs ────────────────────────────────────────────────────────────────--
@@ -294,12 +297,12 @@ impl FieldOpts {
 
 /// A consistently styled single-line text field. Returns whether it changed.
 pub fn text_field(ui: &mut Ui, value: &mut String, hint: &str, opts: FieldOpts) -> bool {
-    let font = if opts.monospace { mono(13.0) } else { body(13.0) };
+    let font = if opts.monospace { mono(14.0) } else { body(15.0) };
     let edit = egui::TextEdit::singleline(value)
         .hint_text(egui::RichText::new(hint).color(FAINT))
         .password(opts.password)
         .font(egui::FontSelection::FontId(font))
-        .margin(egui::Margin::symmetric(12, 9))
+        .margin(egui::Margin::symmetric(14, 11))
         .desired_width(f32::INFINITY);
     ui.add(edit).changed()
 }
@@ -423,22 +426,31 @@ pub fn toggle_row(ui: &mut Ui, on: &mut bool, title: &str, subtitle: &str) -> bo
 
 // ── Buttons ───────────────────────────────────────────────────────────────--
 
-/// Solid teal primary button with dark text (approximates the mockup gradient).
+/// Solid teal primary button with dark text (ci-common `--primary`).
 pub fn primary_button(ui: &mut Ui, text: &str) -> Response {
-    let btn = egui::Button::new(egui::RichText::new(text).font(semibold(13.0)).color(ON_TEAL))
+    let btn = egui::Button::new(egui::RichText::new(text).font(semibold(15.0)).color(ON_TEAL))
         .fill(TEAL)
         .corner_radius(CornerRadius::same(10))
-        .min_size(Vec2::new(0.0, 32.0));
+        .min_size(Vec2::new(0.0, 40.0));
+    ui.add(btn)
+}
+
+/// Full-width primary button (portal / hub login CTAs).
+pub fn primary_button_wide(ui: &mut Ui, text: &str) -> Response {
+    let btn = egui::Button::new(egui::RichText::new(text).font(semibold(15.0)).color(ON_TEAL))
+        .fill(TEAL)
+        .corner_radius(CornerRadius::same(10))
+        .min_size(Vec2::new(ui.available_width(), 44.0));
     ui.add(btn)
 }
 
 /// Outlined "ghost" button.
 pub fn ghost_button(ui: &mut Ui, text: &str) -> Response {
-    let btn = egui::Button::new(egui::RichText::new(text).font(body(13.0)).color(TEXT))
+    let btn = egui::Button::new(egui::RichText::new(text).font(body(15.0)).color(TEXT))
         .fill(Color32::TRANSPARENT)
         .stroke(Stroke::new(1.0, BORDER_HI))
         .corner_radius(CornerRadius::same(10))
-        .min_size(Vec2::new(0.0, 32.0));
+        .min_size(Vec2::new(0.0, 40.0));
     ui.add(btn)
 }
 

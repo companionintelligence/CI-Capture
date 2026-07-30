@@ -535,7 +535,7 @@ impl SettingsApp {
                 // Header: logo + product name.
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 10.0;
-                    theme::logo(ui, &self.logo, 26.0, theme::TEAL);
+                    theme::logo(ui, &self.logo, 28.0, egui::Color32::WHITE);
                     ui.vertical(|ui| {
                         ui.spacing_mut().item_spacing.y = 1.0;
                         ui.label(

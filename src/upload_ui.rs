@@ -291,7 +291,7 @@ impl eframe::App for UploadApp {
                 // Header: logo + title.
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 10.0;
-                    theme::logo(ui, &self.logo, 24.0, theme::TEAL);
+                    theme::logo(ui, &self.logo, 28.0, egui::Color32::WHITE);
                     ui.label(
                         egui::RichText::new("Upload Documents")
                             .font(theme::light(18.0))

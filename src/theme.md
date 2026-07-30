@@ -2,13 +2,14 @@
 
 ## Purpose
 Single source of truth for the Companion Intelligence visual system used by the
-applet's egui windows (Settings, Upload). Holds colour tokens, font
+applet's egui windows (Settings, Upload, Onboarding). Holds colour tokens, font
 installation, the global `Visuals`/`Style`, and a library of reusable themed
-widgets. Both windows style themselves exclusively through this module so
-colours and widget code live in exactly one place (DRY).
+widgets. Windows style themselves exclusively through this module so colours
+and widget code live in exactly one place (DRY).
 
-Translated from the `Redesign/` mockup. egui has no CSS-gradient primitive for
-widgets, so the mockup's gradients are approximated with solid accent fills.
+Palette tracks `@companionintelligence/tokens` (ci-common) dark mode. egui has
+no CSS-gradient primitive for widgets, so brand gradients are approximated with
+solid accent fills.
 
 ## Components
 
@@ -22,7 +23,7 @@ widgets, so the mockup's gradients are approximated with solid accent fills.
 - **Rationale**: Light/Regular/SemiBold Montserrat weights are exposed as named font families (`light`, `body`, `semibold`, `mono` `FontId` helpers).
 
 ### `load_logo(ctx)` / `logo(ui, tex, size, color)`
-- **Does**: Rasterise `assets/ci-mark-white.svg` to a texture (reusing resvg/usvg/tiny-skia like `svg_icon.rs`); draw it tinted to any accent.
+- **Does**: Rasterise `assets/logo.svg` (ci-docs brand mark) to a texture; draw with `Color32::WHITE` to keep teal fills, or tint for monochrome.
 
 ### Widget helpers
 - **`text_field`, `card`, `status_dot`, `status_badge`, `lane_row`, `toggle`/`toggle_row`, `primary_button`/`ghost_button`, `segment`, `nav_item`, `file_badge`** — themed building blocks. `pulse(ctx)` drives the breathing status dot.
@@ -31,8 +32,8 @@ widgets, so the mockup's gradients are approximated with solid accent fills.
 
 | Dependent | Expects | Breaking changes |
 |-----------|---------|------------------|
-| `settings_ui.rs`, `upload_ui.rs` | These helpers + tokens exist and apply the dark theme | Renaming/removing helpers or tokens |
-| Build | `assets/fonts/*.ttf` and `assets/ci-mark-white.svg` present (compiled in via `include_bytes!`) | Moving/removing those asset files |
+| `settings_ui.rs`, `upload_ui.rs`, `onboarding_ui.rs` | These helpers + tokens exist and apply the dark theme | Renaming/removing helpers or tokens |
+| Build | `assets/fonts/*.ttf` and `assets/logo.svg` present (compiled in via `include_bytes!`) | Moving/removing those asset files |
 
 ## Notes
 - Fonts and the logo are embedded in the binary, so installers need no extra
