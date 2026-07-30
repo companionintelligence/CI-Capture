@@ -6,6 +6,6 @@
   <key>LSUIElement</key>
   <true/>
   <key>NSAppleEventsUsageDescription</key>
-  <string>CI-Applet opens your pairing URL and reads window/activity context to grow your Companion Memory.</string>
+  <string>Companion Memory opens your sign-in URL and reads window/activity context to grow your Companion Memory.</string>
 </dict>
 </plist>

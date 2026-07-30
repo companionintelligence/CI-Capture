@@ -1,6 +1,11 @@
 # Keep the build context small. The build needs src/, vizier/, Cargo.*,
-# build.rs (none yet), packaging/icons/icon.png (embedded tray icon),
-# and not much else.
+# build.rs (none yet), assets/ (fonts + SVG marks are `include_bytes!`d), and
+# not much else.
+#
+# Anything reached by `include_bytes!` MUST survive this file or the build
+# fails at *compile* time inside the container while working fine locally —
+# that is exactly what commit 6ef0902 had to fix after the tray icon moved.
+# assets/ is deliberately not excluded; keep it that way.
 target
 **/target
 .git
@@ -17,4 +22,4 @@ node_modules
 !packaging/icons/icon.png
 *.zip
 *.tar.gz
-CI-Applet.app
+Companion Memory App.app
