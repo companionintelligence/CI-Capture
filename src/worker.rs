@@ -323,7 +323,7 @@ async fn ingest_capture_to_server(
     // pass over the full-resolution original running an "identify objects and
     // estimate their USD value" prompt, writing ci.inventory rows. On screen
     // captures that is meaningless output bought with roughly double the GPU
-    // time on the user's Core.
+    // time on the user's Companion Memory server.
     let file_id = match server_ingest::ingest_capture(
         config,
         filename,

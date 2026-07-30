@@ -763,7 +763,7 @@ fn parse_portal_override() -> Option<String> {
         }
         None
     })?;
-    Some(server_common::normalize_core_url(&raw).unwrap_or(raw))
+    Some(server_common::normalize_server_url(&raw).unwrap_or(raw))
 }
 
 fn short_uuid(id: Option<Uuid>) -> String {
