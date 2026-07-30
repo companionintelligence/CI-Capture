@@ -1,39 +1,39 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 300" width="1200" height="300" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" role="img" aria-label="CI-Applet — Companion Desktop Applet">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 300" width="1200" height="300" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" role="img" aria-label="Companion Capture — Companion Intelligence capture layer">
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#0a0e1a"/>
-      <stop offset="0.55" stop-color="#0f1626"/>
-      <stop offset="1" stop-color="#141d33"/>
+      <stop offset="0" stop-color="#041620"/>
+      <stop offset="0.55" stop-color="#0a222e"/>
+      <stop offset="1" stop-color="#0e4a52"/>
     </linearGradient>
     <radialGradient id="glow" cx="0.82" cy="0.18" r="0.7">
-      <stop offset="0" stop-color="#5c8dff" stop-opacity="0.34"/>
-      <stop offset="0.5" stop-color="#5c8dff" stop-opacity="0.06"/>
-      <stop offset="1" stop-color="#5c8dff" stop-opacity="0"/>
+      <stop offset="0" stop-color="#58ebbf" stop-opacity="0.26"/>
+      <stop offset="0.5" stop-color="#58ebbf" stop-opacity="0.05"/>
+      <stop offset="1" stop-color="#58ebbf" stop-opacity="0"/>
     </radialGradient>
     <radialGradient id="glow2" cx="0.14" cy="0.92" r="0.6">
-      <stop offset="0" stop-color="#2dd4bf" stop-opacity="0.20"/>
-      <stop offset="1" stop-color="#2dd4bf" stop-opacity="0"/>
+      <stop offset="0" stop-color="#00a9a7" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#00a9a7" stop-opacity="0"/>
     </radialGradient>
     <linearGradient id="markGrad" x1="0" y1="0" x2="0.4" y2="1">
       <stop offset="0" stop-color="#ffffff"/>
-      <stop offset="1" stop-color="#cfe0ff"/>
+      <stop offset="1" stop-color="#d3e9ec"/>
     </linearGradient>
     <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0" stop-color="#5c8dff"/>
-      <stop offset="0.6" stop-color="#7c6bff"/>
-      <stop offset="1" stop-color="#2dd4bf"/>
+      <stop offset="0" stop-color="#0f717a"/>
+      <stop offset="0.6" stop-color="#00a9a7"/>
+      <stop offset="1" stop-color="#58ebbf"/>
     </linearGradient>
     <style>
       .cls-3{fill:url(#markGrad);}
-      .cls-2{fill:#6e97ff;}
-      .cls-1{fill:#a9c0ff;}
+      .cls-2{fill:#4c9aa3;}
+      .cls-1{fill:#7fbcc2;}
     </style>
   </defs>
 
   <rect width="1200" height="300" rx="22" fill="url(#bg)"/>
   <rect width="1200" height="300" rx="22" fill="url(#glow)"/>
   <rect width="1200" height="300" rx="22" fill="url(#glow2)"/>
-  <rect x="1" y="1" width="1198" height="298" rx="21" fill="none" stroke="#2b3a5e" stroke-opacity="0.5"/>
+  <rect x="1" y="1" width="1198" height="298" rx="21" fill="none" stroke="#2c676d" stroke-opacity="0.6"/>
 
   <!-- Official CI mark, recolored on-brand -->
   <g transform="translate(74,40) scale(0.505)">
@@ -58,26 +58,26 @@
   </g>
 
   <!-- Wordmark + tagline -->
-  <text x="346" y="128" font-size="78" font-weight="700" fill="#f5f8ff" letter-spacing="-1.5">CI<tspan fill="#5c8dff">-</tspan>Applet</text>
-  <text x="350" y="168" font-size="25" font-weight="600" fill="#9fb3d9" letter-spacing="0.5">Companion Desktop Applet · Capture layer</text>
-  <text x="350" y="201" font-size="19" fill="#6e84ae">Grow your Companion Memory — screens, activity &amp; the files you edit.</text>
+  <text x="346" y="124" font-size="68" font-weight="700" fill="#f5f8fa" letter-spacing="-1.5">Companion <tspan fill="#abd4d8">Capture</tspan></text>
+  <text x="350" y="166" font-size="25" font-weight="600" fill="#7fbcc2" letter-spacing="0.5">Companion Intelligence · Capture layer</text>
+  <text x="350" y="199" font-size="19" fill="#8f98a3">Grow your Companion Memory — screens, activity &amp; the files you edit.</text>
 
-  <!-- Lane chips -->
+  <!-- Lane chips (colors mirror theme.rs lane_shot / lane_activity / lane_file) -->
   <g font-size="16" font-weight="600">
     <g transform="translate(350,228)">
-      <rect width="146" height="34" rx="17" fill="#5c8dff" fill-opacity="0.12" stroke="#5c8dff" stroke-opacity="0.45"/>
-      <circle cx="22" cy="17" r="5" fill="#5c8dff"/>
-      <text x="38" y="22" fill="#cdd9f5">Screenshots</text>
+      <rect width="146" height="34" rx="17" fill="#70a6af" fill-opacity="0.14" stroke="#70a6af" stroke-opacity="0.5"/>
+      <circle cx="22" cy="17" r="5" fill="#70a6af"/>
+      <text x="38" y="22" fill="#d3e9ec">Screenshots</text>
     </g>
     <g transform="translate(506,228)">
-      <rect width="120" height="34" rx="17" fill="#7c6bff" fill-opacity="0.12" stroke="#7c6bff" stroke-opacity="0.45"/>
-      <circle cx="22" cy="17" r="5" fill="#7c6bff"/>
-      <text x="38" y="22" fill="#cdd9f5">Activity</text>
+      <rect width="120" height="34" rx="17" fill="#409b9b" fill-opacity="0.14" stroke="#409b9b" stroke-opacity="0.5"/>
+      <circle cx="22" cy="17" r="5" fill="#409b9b"/>
+      <text x="38" y="22" fill="#d3e9ec">Activity</text>
     </g>
     <g transform="translate(636,228)">
-      <rect width="148" height="34" rx="17" fill="#2dd4bf" fill-opacity="0.12" stroke="#2dd4bf" stroke-opacity="0.5"/>
-      <circle cx="22" cy="17" r="5" fill="#2dd4bf"/>
-      <text x="38" y="22" fill="#cdd9f5">File tracking</text>
+      <rect width="148" height="34" rx="17" fill="#58ebbf" fill-opacity="0.14" stroke="#58ebbf" stroke-opacity="0.55"/>
+      <circle cx="22" cy="17" r="5" fill="#58ebbf"/>
+      <text x="38" y="22" fill="#d3e9ec">File tracking</text>
     </g>
   </g>
 

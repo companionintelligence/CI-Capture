@@ -1,10 +1,10 @@
 <p align="center">
-  <img src="icon.svg" alt="CI-Applet icon" width="96" height="96">
+  <img src="icon.svg" alt="Companion Capture icon" width="96" height="96">
 </p>
 
-# CI-Applet — Brand & assets
+# Companion Capture — Brand & assets
 
-Visual identity for the CI-Applet repo. Part of the **Companion Intelligence**
+Visual identity for the CI-Capture repo. Part of the **Companion Intelligence**
 family; defer to CI-Marketing's master brand for anything beyond this repo.
 
 ## Logo
@@ -15,7 +15,7 @@ at the repo root. It ships as the macOS tray icon (rendered as a monochrome
 
 | Asset | Use |
 |-------|-----|
-| [`icon.svg`](icon.svg) | App / product icon — white mark on a blue→violet squircle. Favicons, store tiles, social. |
+| [`icon.svg`](icon.svg) | App / product icon — white mark on a teal squircle. Favicons, store tiles, social. |
 | [`banner.svg`](banner.svg) | README hero — mark + wordmark + tagline + lane chips. |
 | `/2024 CI Logo Mark.svg` | Source mark (monochrome). The tray icon and the recolored marks above derive from it. |
 
@@ -24,26 +24,60 @@ white on dark surfaces and keep clear space ≈ 25% of its height around it.
 
 ## Palette
 
-| Token | Hex | Role |
-|-------|-----|------|
-| CI Blue | `#5C8DFF` | Primary accent · **Screenshots** lane |
-| Violet | `#7C6BFF` | Gradient partner · **Activity** lane |
-| Teal | `#2DD4BF` | Secondary accent · **File-tracking** lane |
-| Amber | `#F59E0B` | Highlight / warning |
-| Ink | `#1A1A1A` | Logo / dark text |
-| Surface (dark) | `#0D1117` / `#161B22` | Panels, terminals |
-| Text muted | `#8B949E` | Secondary copy on dark |
+The app renders the **CI-Common canonical tokens** (`@companionintelligence/tokens`
+v0.2.1), transcribed in [`src/tokens.rs`](../../src/tokens.rs) and given semantic
+names in [`src/theme.rs`](../../src/theme.rs). Both modes are live and follow the
+OS appearance — there is no pinned mode.
 
-The three capture lanes each own a color — blue / violet / teal — used
-consistently across the banner, diagrams, and the tray mockup.
+> Treat `src/tokens.rs` as the source of truth. The table below is a reading aid;
+> if the two disagree, the Rust is right. Don't introduce a hex here that isn't a
+> token — see CI-Common's `UI-STYLE-GUIDE.md`: prefer a ramp step over a magic hex.
 
-Signature gradient: `#5C8DFF → #7C6BFF → #2DD4BF` (left→right).
+### Surfaces & text
+
+| Role | Dark | Light |
+|------|------|-------|
+| Canvas | `#041620` | `#f3f3f3` |
+| Panel | `#0a222e` | `#f7f7f9` |
+| Border | `#2c676d` | `#e2e8f0` |
+| Primary (teal) | `#abd4d8` | `#0f717a` |
+| Body text | `#f5f8fa` | `#010f16` |
+| Muted text | `#8f98a3` | `#62748e` |
+
+### Capture lanes
+
+Each of the three capture lanes owns a color, used consistently across the
+banner, diagrams, and the in-app flow animation.
+
+| Lane | Dark | Light |
+|------|------|-------|
+| **Screenshots** | `#70a6af` | `#ffb900` |
+| **Activity** | `#409b9b` | `#009689` |
+| **File edits** | `#58ebbf` | `#f54900` |
+
+### Status
+
+| Role | Dark | Light |
+|------|------|-------|
+| Success / connected | `#35a05c` | `#138b3f` |
+| Warning | `#fbbf24` | `#d97706` |
+| Error | `#ef7070` | `#ee3533` |
+
+The greens are the one deliberate departure from the raw tokens: CI-Common's
+`success` (`#4ade80` / `#16a34a`) reads as neon against these teal surfaces, so
+`theme.rs` darkens both (`GREEN_DARK` / `GREEN_LIGHT`). Keep them in sync there,
+not here.
+
+Brand teal ramp (`T50`–`T950`) and the accent hues (aqua, mint) are mode-independent;
+see `tokens::teal` and `tokens::accent`.
 
 ## Typography
 
 - **Display / wordmark:** Abel (CI master brand). Falls back to a tight
   `Helvetica Neue` in SVGs so they render anywhere.
 - **Mono / code / terminals:** Source Code Pro → `SF Mono`, Menlo, Consolas.
+- In-app scale lives in `tokens::text` (display 30 → min 12pt); nothing renders
+  below `text::MIN`.
 - Aesthetic: clean, technical authority — generous spacing, restrained color,
   one accent gradient.
 
@@ -69,7 +103,7 @@ will state whatever it said the day it was drawn, long after the UI moved on.
 | [`screenshot-first-run.png`](screenshot-first-run.png) | **Capture** — the setup assistant. |
 | [`screenshot-settings-connection.png`](screenshot-settings-connection.png) | **Capture** — Settings → Connection. |
 | [`check-server.svg`](check-server.svg) | **Render of real output** — a terminal card drawn from verbatim `--check-server` stdout. |
-| [`tray-menu.svg`](tray-menu.svg) | **Illustration — stale.** Says "Quit CI-Applet" and "Login via configured issuer"; the real menu has six more items. Replace with a capture. |
+| [`tray-menu.svg`](tray-menu.svg) | **Illustration.** Redrawn from `main.rs`'s `append_items` — all 16 items in build order, with the labels `set_text` actually produces. Re-check it when the menu changes; it can't be captured (see below). |
 
 ### Taking a window capture
 
@@ -99,6 +133,13 @@ Two things to check before committing a shot:
 - **Nothing configured is on screen.** Capture from an install with no
   credential: the windows then show placeholder state, and no portal URL,
   token, or device id can end up in the repo.
+
+### Capture both modes
+
+Light and dark are both shipping modes, and the app follows the OS. Flip the
+system appearance between shots rather than forcing a mode in code — the
+`ThemePreference::System` path is what users actually get, and a forced-mode
+capture can hide a token that only resolves wrong under the real one.
 
 ### The tray menu
 
