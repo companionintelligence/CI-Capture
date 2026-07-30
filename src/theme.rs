@@ -249,7 +249,7 @@ pub fn pulse(ctx: &egui::Context) -> f32 {
 // ── Explainer animation ─────────────────────────────────────────────────────
 
 /// An animated "what this app does" diagram: this computer on the left, three
-/// capture lanes flowing right into your Core.
+/// capture lanes flowing right into your Companion Memory.
 ///
 /// Drawn procedurally with [`egui::Painter`] rather than shipped as a video or
 /// GIF. That is a deliberate trade: it adds no dependency (the crate graph has
@@ -309,7 +309,7 @@ pub fn capture_flow(ui: &mut Ui, height: f32) -> egui::Rect {
         MUTED,
     );
 
-    // Your Core: concentric ring + dot, echoing the tray glyph so the two read
+    // Your Memory: concentric ring + dot, echoing the tray glyph so the two read
     // as the same product.
     let breathe = 0.85 + 0.15 * (t * 1.1).sin();
     p.circle_filled(core_c, core_r * breathe, tint(TEAL, 26));
@@ -318,7 +318,7 @@ pub fn capture_flow(ui: &mut Ui, height: f32) -> egui::Rect {
     p.text(
         egui::pos2(core_c.x, core_c.y + core_r + 10.0),
         Align2::CENTER_TOP,
-        "Your Core",
+        "Your Memory",
         body(tokens::text::SMALL),
         MUTED,
     );

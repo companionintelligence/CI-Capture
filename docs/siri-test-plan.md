@@ -2,7 +2,7 @@
 
 > **Private & Confidential — Property of Lifescope Inc. Do not distribute.**
 
-**Scope.** What it would take for Companion Memory App to be addressable by Siri
+**Scope.** What it would take for Companion Capture to be addressable by Siri
 on macOS, what is reachable today, and how each stage is tested. Written against
 the WWDC26 App Intents surface.
 
@@ -75,7 +75,7 @@ accumulating shell hacks.
 | Entitlements | ✗ none |
 | App Intents | ✗ none |
 | **CLI entry points** | ✓ `--search <q>`, `--open-memory`, `--login`, `--check-server` |
-| **URL scheme** | ✓ `companionmemory://` registered in `packaging/macos/Info.plist` |
+| **URL scheme** | ✓ `companioncapture://` registered in `packaging/macos/Info.plist` |
 | Developer ID signing + notarization | ✓ working (`.github/workflows/release.yml`) — but Developer ID alone does **not** unlock SiriKit |
 | Search backend | ✓ CI-Server GraphQL `search(input:)`, guarded by `JwtOrApiKeyAuthGuard`, which this app's credential already satisfies |
 
@@ -90,12 +90,12 @@ you a spoken trigger with no Apple-native code at all.
 "Hey Siri, search my memory"
    → Shortcut "Search my memory"
      → Run Shell Script:
-       "/Applications/Companion Memory App.app/Contents/MacOS/companion-memory-app" --search "$1"
+       "/Applications/Companion Capture.app/Contents/MacOS/companion-capture" --search "$1"
 ```
 
 **Test T0.1 — search opens the right URL**
 ```bash
-"/Applications/Companion Memory App.app/Contents/MacOS/companion-memory-app" --search "budget & forecast"
+"/Applications/Companion Capture.app/Contents/MacOS/companion-capture" --search "budget & forecast"
 ```
 *Pass:* browser opens `…/memory?search=budget+%26+forecast&view=list`; the same
 URL is echoed on stdout. The `&` must survive — it is the exact case that was
@@ -122,14 +122,14 @@ distinctive phrase.
 
 ## Stage 1 — URL scheme *(shipped in this PR)*
 
-`companionmemory://` is registered so Shortcuts, Spotlight and other apps can
+`companioncapture://` is registered so Shortcuts, Spotlight and other apps can
 address the app without hardcoding a binary path that differs between an
 installed `.app` and a local build.
 
 **Test T1.1 — scheme is registered after install**
 ```bash
-mdls -name kMDItemCFBundleIdentifier "/Applications/Companion Memory App.app"
-open "companionmemory://memory"
+mdls -name kMDItemCFBundleIdentifier "/Applications/Companion Capture.app"
+open "companioncapture://memory"
 ```
 *Pass:* Launch Services resolves the scheme to this bundle.
 *Fail if:* "no application set to open the URL" — usually means the app has not
@@ -160,7 +160,7 @@ CompanionMemoryIntents (Swift, Xcode)
   ├── MemoryEntity: AppEntity, IndexedEntity   → Spotlight semantic index
   ├── SearchMemoryIntent: AppIntent            → query CI-Server search
   ├── OpenMemoryIntent: AppIntent
-  └── talks to → companion-memory-app (Rust)
+  └── talks to → companion-capture (Rust)
 ```
 
 ### What has to be decided first
