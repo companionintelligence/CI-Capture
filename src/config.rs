@@ -9,14 +9,14 @@ use uuid::Uuid;
 const APP_QUALIFIER: &str = "com.compint";
 /// Drives the on-disk config/data directory via `directories::ProjectDirs`.
 ///
-/// Renamed from `CI-Applet` in the Companion Memory App rebrand. This is a
+/// Renamed from `CI-Applet` in the Companion Capture rebrand. This is a
 /// deliberate clean break: existing v0.1.x installs keep their old directory
 /// (`…/com.compint.com.compint.CI-Applet`) untouched but unread, so the app
 /// starts fresh — no credentials, no watched folders, no device id. The bundle
 /// identifier changed in the same release, which independently resets macOS
 /// TCC grants, so a partial migration would have left users half-configured
 /// and harder to diagnose than a clean first run.
-const APP_NAME: &str = "Companion Memory App";
+const APP_NAME: &str = "Companion Capture";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -290,7 +290,7 @@ pub struct ServerConfig {
     ///
     /// Portal discovery may replace an address it set itself, but must never
     /// replace one the user typed — someone who deliberately pointed this
-    /// machine at a specific Core should not have it moved out from under them
+    /// machine at a specific server should not have it moved out from under them
     /// on the next sign-in.
     #[serde(default)]
     pub url_source: ServerUrlSource,

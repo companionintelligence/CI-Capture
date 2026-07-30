@@ -5,9 +5,9 @@
   <!-- Menu-bar accessory app: no Dock icon, no main window. -->
   <key>LSUIElement</key>
   <true/>
-  <!-- Deep-link scheme: companionmemory://search?q=…  and  companionmemory://memory
+  <!-- Deep-link scheme: companioncapture://search?q=…  and  companioncapture://memory
        Registered so macOS Shortcuts, Spotlight and other apps can address
-       Companion Memory by URL instead of shelling out to a binary path that
+       Companion Capture by URL instead of shelling out to a binary path that
        differs between an installed .app and a local build.
 
        NOT usable as an OIDC redirect target: CI-Portal's ALLOWED_SCHEMES permits
@@ -17,17 +17,17 @@
   <array>
     <dict>
       <key>CFBundleURLName</key>
-      <string>com.compint.CompanionMemory</string>
+      <string>com.compint.CompanionCapture</string>
       <key>CFBundleTypeRole</key>
       <string>Viewer</string>
       <key>CFBundleURLSchemes</key>
       <array>
-        <string>companionmemory</string>
+        <string>companioncapture</string>
       </array>
     </dict>
   </array>
 
   <key>NSAppleEventsUsageDescription</key>
-  <string>Companion Memory opens your sign-in URL and reads window/activity context to grow your Companion Memory.</string>
+  <string>Companion Capture opens your sign-in URL and reads window/activity context to record into your Companion Memory.</string>
 </dict>
 </plist>

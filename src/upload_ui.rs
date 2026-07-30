@@ -19,12 +19,12 @@ pub fn run_upload_ui() -> Result<()> {
     let mut native_options = NativeOptions::default();
     native_options.centered = true;
     native_options.viewport = egui::ViewportBuilder::default()
-        .with_title("Upload Documents — Companion Memory")
+        .with_title("Upload Documents — Companion Capture")
         .with_inner_size([700.0, 600.0])
         .with_min_inner_size([560.0, 440.0]);
 
     eframe::run_native(
-        "Upload Documents — Companion Memory",
+        "Upload Documents — Companion Capture",
         native_options,
         Box::new(move |cc| {
             crate::theme::install_fonts(&cc.egui_ctx);

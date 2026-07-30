@@ -38,12 +38,12 @@ pub fn run_settings_ui() -> Result<()> {
     let mut native_options = NativeOptions::default();
     native_options.centered = true;
     native_options.viewport = egui::ViewportBuilder::default()
-        .with_title("Companion Memory Settings")
+        .with_title("Companion Capture Settings")
         .with_inner_size([1000.0, 700.0])
         .with_min_inner_size([820.0, 600.0]);
 
     eframe::run_native(
-        "Companion Memory Settings",
+        "Companion Capture Settings",
         native_options,
         Box::new(move |cc| {
             crate::theme::install_fonts(&cc.egui_ctx);
@@ -167,8 +167,8 @@ pub enum AuthMode {
 
 /// The settings sections.
 ///
-/// Deliberately short. A laptop running Companion Memory holds no infrastructure
-/// of its own: storage and inference live on the user's Core, reached over LAN or
+/// Deliberately short. A laptop running Companion Capture holds no infrastructure
+/// of its own: storage and inference live on the Companion Memory server, over LAN or
 /// Tailscale. So there is nothing here to configure for either — the old Storage
 /// (MinIO) and Database (Postgres) tabs are compiled out entirely unless their
 /// legacy feature is enabled, rather than hidden behind a runtime toggle. Hiding
@@ -201,7 +201,7 @@ impl SettingsTab {
     /// Short descriptor shown under the nav label.
     fn subtitle(&self) -> &'static str {
         match self {
-            SettingsTab::Connection => "Your Core & sign-in",
+            SettingsTab::Connection => "Your Memory & sign-in",
             SettingsTab::Capture => "What gets captured",
             SettingsTab::Advanced => "Rarely needed",
             #[cfg(feature = "legacy-minio")]
@@ -578,7 +578,7 @@ impl SettingsApp {
                     ui.vertical(|ui| {
                         ui.spacing_mut().item_spacing.y = 1.0;
                         ui.label(
-                            egui::RichText::new("Companion Memory")
+                            egui::RichText::new("Companion Capture")
                                 .font(theme::light(18.0))
                                 .color(theme::TEXT),
                         );
