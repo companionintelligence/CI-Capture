@@ -12,6 +12,7 @@ mod minio;
 mod oidc;
 mod onboarding_ui;
 mod permissions;
+mod portal_discover;
 mod queue;
 mod server_check;
 mod server_common;
