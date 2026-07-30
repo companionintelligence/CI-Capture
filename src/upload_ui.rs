@@ -303,6 +303,7 @@ impl UploadApp {
 
 impl eframe::App for UploadApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        theme::sync(ctx);
         theme::center_once(ctx, &mut self.centered);
         self.drain_updates();
 
@@ -310,18 +311,18 @@ impl eframe::App for UploadApp {
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::new()
-                    .fill(theme::PANEL)
+                    .fill(theme::PANEL())
                     .inner_margin(egui::Margin::symmetric(22, 20)),
             )
             .show(ctx, |ui| {
                 // Header: logo + title.
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 10.0;
-                    theme::logo(ui, &self.logo, 24.0, theme::TEAL);
+                    theme::logo(ui, &self.logo, 24.0, theme::TEAL());
                     ui.label(
                         egui::RichText::new("Upload Documents")
                             .font(theme::light(20.0))
-                            .color(theme::TEXT),
+                            .color(theme::TEXT()),
                     );
                 });
                 ui.add_space(16.0);
@@ -329,20 +330,20 @@ impl eframe::App for UploadApp {
                 // Auth status + action buttons.
                 ui.horizontal(|ui| {
                     if authed {
-                        theme::status_dot(ui, theme::GREEN, false);
+                        theme::status_dot(ui, theme::GREEN(), false);
                         ui.label(
                             egui::RichText::new("Signed in")
                                 .font(theme::body(13.0))
-                                .color(theme::MUTED),
+                                .color(theme::MUTED()),
                         );
                     } else {
-                        theme::status_dot(ui, theme::AMBER, false);
+                        theme::status_dot(ui, theme::AMBER(), false);
                         ui.label(
                             egui::RichText::new(
                                 "Not signed in — choose “Login to Portal” in the menu bar first",
                             )
                                 .font(theme::body(13.0))
-                                .color(theme::AMBER),
+                                .color(theme::AMBER()),
                         );
                     }
 
@@ -371,7 +372,7 @@ impl eframe::App for UploadApp {
                     ui.label(
                         egui::RichText::new(err)
                             .font(theme::body(13.0))
-                            .color(theme::RED),
+                            .color(theme::RED()),
                     );
                 }
 
@@ -441,7 +442,7 @@ fn dropzone(ui: &mut egui::Ui) {
         egui::Align2::CENTER_CENTER,
         "Drop documents to upload",
         theme::body(15.0),
-        theme::MUTED,
+        theme::MUTED(),
     );
     let exts = supported_extensions()
         .iter()
@@ -453,7 +454,7 @@ fn dropzone(ui: &mut egui::Ui) {
         egui::Align2::CENTER_CENTER,
         exts,
         theme::mono(12.0),
-        theme::FAINT,
+        theme::FAINT(),
     );
 }
 
@@ -461,7 +462,7 @@ fn dropzone(ui: &mut egui::Ui) {
 fn file_row(ui: &mut egui::Ui, entry: &FileEntry) {
     egui::Frame::new()
         .fill(theme::tint(egui::Color32::BLACK, 40))
-        .stroke(egui::Stroke::new(1.0, theme::BORDER))
+        .stroke(egui::Stroke::new(1.0, theme::BORDER()))
         .corner_radius(egui::CornerRadius::same(11))
         .inner_margin(egui::Margin::symmetric(14, 11))
         .show(ui, |ui| {
@@ -471,7 +472,7 @@ fn file_row(ui: &mut egui::Ui, entry: &FileEntry) {
                 ui.label(
                     egui::RichText::new(&entry.filename)
                         .font(theme::body(15.0))
-                        .color(theme::TEXT),
+                        .color(theme::TEXT()),
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     render_phase(ui, &entry.phase);
@@ -483,38 +484,38 @@ fn file_row(ui: &mut egui::Ui, entry: &FileEntry) {
 fn render_phase(ui: &mut egui::Ui, phase: &Phase) {
     match phase {
         Phase::Queued => {
-            theme::status_badge(ui, "Queued", theme::MUTED);
+            theme::status_badge(ui, "Queued", theme::MUTED());
         }
         Phase::Uploading => {
-            theme::status_badge(ui, "Uploading", theme::AMBER);
+            theme::status_badge(ui, "Uploading", theme::AMBER());
         }
         Phase::Polling { .. } | Phase::AlreadyUploaded { .. } => {
-            theme::status_badge(ui, "Processing", theme::AMBER);
+            theme::status_badge(ui, "Processing", theme::AMBER());
         }
         Phase::Done(state) => match state.status {
             ParseStatusValue::Completed => {
-                theme::status_badge(ui, "Ready", theme::GREEN);
+                theme::status_badge(ui, "Ready", theme::GREEN());
             }
             ParseStatusValue::Failed => {
-                let resp = theme::status_badge(ui, "Parse failed", theme::RED);
+                let resp = theme::status_badge(ui, "Parse failed", theme::RED());
                 if let Some(err) = &state.error {
                     resp.on_hover_text(err);
                 }
             }
             ParseStatusValue::Skipped => {
                 if state.was_duplicate {
-                    theme::status_badge(ui, "Already uploaded", theme::MUTED).on_hover_text(
+                    theme::status_badge(ui, "Already uploaded", theme::MUTED()).on_hover_text(
                         "This file already exists on the server. Parsing may take a few minutes for larger documents.",
                     );
                 } else {
-                    theme::status_badge(ui, "Uploaded · not parsed", theme::MUTED).on_hover_text(
+                    theme::status_badge(ui, "Uploaded · not parsed", theme::MUTED()).on_hover_text(
                         "File type is not parsed, but the file was uploaded successfully.",
                     );
                 }
             }
         },
         Phase::UploadFailed(err) => {
-            theme::status_badge(ui, "Upload failed", theme::RED).on_hover_text(err);
+            theme::status_badge(ui, "Upload failed", theme::RED()).on_hover_text(err);
         }
     }
 }

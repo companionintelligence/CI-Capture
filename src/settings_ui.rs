@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use crate::config::{AppConfig, ConfigManager, MinioConfig, PostgresConfig};
 use crate::connection_test;
-use crate::server_common::normalize_core_url;
+use crate::server_common::normalize_server_url;
 use crate::theme;
 use crate::tokens;
 
@@ -214,13 +214,13 @@ impl SettingsTab {
     /// Accent colour for the nav chip.
     fn accent(&self) -> egui::Color32 {
         match self {
-            SettingsTab::Connection => theme::TEAL,
-            SettingsTab::Capture => theme::LANE_ACTIVITY,
-            SettingsTab::Advanced => theme::MUTED,
+            SettingsTab::Connection => theme::TEAL(),
+            SettingsTab::Capture => theme::LANE_ACTIVITY(),
+            SettingsTab::Advanced => theme::MUTED(),
             #[cfg(feature = "legacy-minio")]
-            SettingsTab::Minio => theme::AMBER,
+            SettingsTab::Minio => theme::AMBER(),
             #[cfg(feature = "legacy-postgres")]
-            SettingsTab::Postgres => theme::AMBER,
+            SettingsTab::Postgres => theme::AMBER(),
         }
     }
 
@@ -300,11 +300,11 @@ impl SettingsApp {
         // only reached by the connection test probing a half-typed field —
         // keep the raw text in that case so the test reports what the user is
         // actually looking at.
-        let typed = normalize_core_url(self.form.portal_url.trim())
+        let typed = normalize_server_url(self.form.portal_url.trim())
             .unwrap_or_else(|_| self.form.portal_url.trim().to_string());
         // Saving from this form is an explicit choice, so mark the address
         // manual: Portal discovery may replace one it set itself, but must
-        // never move a Core the user picked.
+        // never move a server the user picked.
         if typed != c.server.portal_url {
             c.server.url_source = crate::config::ServerUrlSource::Manual;
         }
@@ -404,11 +404,11 @@ impl SettingsApp {
             AuthMode::Oidc => !self.form.oidc_issuer.trim().is_empty(),
         };
         if has_url && has_cred {
-            ("Connected", "Sending to your Core", theme::GREEN)
+            ("Connected", "Sending to your Companion Memory", theme::GREEN())
         } else if has_url {
-            ("Almost there", "Sign in to start sending", theme::AMBER)
+            ("Almost there", "Sign in to start sending", theme::AMBER())
         } else {
-            ("Not set up", "Add your Core's address", theme::RED)
+            ("Not set up", "Add your Companion Memory server", theme::RED())
         }
     }
 
@@ -463,10 +463,10 @@ impl SettingsApp {
         let has_oidc_issuer = self.form.auth_mode == AuthMode::Oidc;
 
         if self.form.portal_url.trim().is_empty() && (has_server_credential || has_oidc_issuer) {
-            return Err("Your Core's address is required.".into());
+            return Err("Your Companion Memory server address is required.".into());
         }
         if !self.form.portal_url.trim().is_empty() {
-            normalize_core_url(self.form.portal_url.trim())?;
+            normalize_server_url(self.form.portal_url.trim())?;
         }
         if self.form.auth_mode == AuthMode::ApiKey
             && !self.form.portal_url.trim().is_empty()
@@ -506,7 +506,7 @@ impl SettingsApp {
         }
         // Deliberately no Postgres port check. The default build never opens a
         // database connection, so a stale `postgres.port: 0` in an old
-        // config.json must not block saving a perfectly valid Core URL with an
+        // config.json must not block saving a perfectly valid server URL with an
         // error about infrastructure this machine doesn't use.
         Ok(())
     }
@@ -514,6 +514,7 @@ impl SettingsApp {
 
 impl eframe::App for SettingsApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        theme::sync(ctx);
         theme::center_once(ctx, &mut self.centered);
         self.drain_tests();
         self.render_sidebar(ctx);
@@ -522,7 +523,7 @@ impl eframe::App for SettingsApp {
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::new()
-                    .fill(theme::PANEL)
+                    .fill(theme::PANEL())
                     .inner_margin(egui::Margin::symmetric(30, 26)),
             )
             .show(ctx, |ui| {
@@ -571,25 +572,25 @@ impl SettingsApp {
             .resizable(false)
             .frame(
                 egui::Frame::new()
-                    .fill(theme::PANEL_HI)
+                    .fill(theme::PANEL_HI())
                     .inner_margin(egui::Margin::same(14)),
             )
             .show(ctx, |ui| {
                 // Header: logo + product name.
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 10.0;
-                    theme::logo(ui, &self.logo, 26.0, theme::TEAL);
+                    theme::logo(ui, &self.logo, 26.0, theme::TEAL());
                     ui.vertical(|ui| {
                         ui.spacing_mut().item_spacing.y = 1.0;
                         ui.label(
                             egui::RichText::new("Companion Capture")
                                 .font(theme::light(18.0))
-                                .color(theme::TEXT),
+                                .color(theme::TEXT()),
                         );
                         ui.label(
                             egui::RichText::new("Settings")
                                 .font(theme::body(13.0))
-                                .color(theme::MUTED),
+                                .color(theme::MUTED()),
                         );
                     });
                 });
@@ -617,7 +618,7 @@ impl SettingsApp {
                             ui.label(
                                 egui::RichText::new(text)
                                     .font(theme::semibold(14.0))
-                                    .color(theme::TEXT),
+                                    .color(theme::TEXT()),
                             );
                         });
                         ui.add_space(5.0);
@@ -625,7 +626,7 @@ impl SettingsApp {
                         ui.add_space(10.0);
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 6.0;
-                            for c in [theme::LANE_SHOT, theme::LANE_ACTIVITY, theme::LANE_FILE] {
+                            for c in [theme::LANE_SHOT(), theme::LANE_ACTIVITY(), theme::LANE_FILE()] {
                                 let (r, _) = ui.allocate_exact_size(
                                     egui::Vec2::splat(7.0),
                                     egui::Sense::hover(),
@@ -634,7 +635,7 @@ impl SettingsApp {
                             }
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| theme::mono_label(ui, "3 lanes", theme::FAINT),
+                                |ui| theme::mono_label(ui, "3 lanes", theme::FAINT()),
                             );
                         });
                     });
@@ -647,7 +648,7 @@ impl SettingsApp {
         egui::TopBottomPanel::bottom("footer")
             .frame(
                 egui::Frame::new()
-                    .fill(theme::PANEL_HI)
+                    .fill(theme::PANEL_HI())
                     .inner_margin(egui::Margin::symmetric(22, 14)),
             )
             .show(ctx, |ui| {
@@ -666,11 +667,11 @@ impl SettingsApp {
                     ui.add_space(12.0);
                     ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                         if let Some(error) = self.error.clone() {
-                            theme::status_dot(ui, theme::RED, false);
+                            theme::status_dot(ui, theme::RED(), false);
                             ui.label(
                                 egui::RichText::new(error)
                                     .font(theme::body(tokens::text::SMALL))
-                                    .color(theme::RED),
+                                    .color(theme::RED()),
                             );
                         } else {
                             // `truncate` is load-bearing: an egui label does not
@@ -680,7 +681,7 @@ impl SettingsApp {
                                 egui::Label::new(
                                     egui::RichText::new(&config_path)
                                         .font(theme::mono(tokens::text::MIN))
-                                        .color(theme::FAINT),
+                                        .color(theme::FAINT()),
                                 )
                                 .truncate(),
                             )
@@ -716,25 +717,25 @@ fn render_test_row(ui: &mut egui::Ui, state: Option<&TestState>) -> bool {
         clicked = theme::ghost_button(ui, "Test connection").clicked();
         match state {
             Some(TestState::Running) => {
-                ui.add(egui::Spinner::new().size(16.0).color(theme::AMBER));
+                ui.add(egui::Spinner::new().size(16.0).color(theme::AMBER()));
                 ui.label(
                     egui::RichText::new("Testing…")
                         .font(theme::body(13.0))
-                        .color(theme::AMBER),
+                        .color(theme::AMBER()),
                 );
             }
             Some(TestState::Ok(_)) => {
-                theme::status_badge(ui, "Connected", theme::GREEN);
+                theme::status_badge(ui, "Connected", theme::GREEN());
             }
             Some(TestState::Err(_)) => {
-                theme::status_badge(ui, "Failed", theme::RED);
+                theme::status_badge(ui, "Failed", theme::RED());
             }
             None => {}
         }
     });
     if let Some(TestState::Ok(detail) | TestState::Err(detail)) = state {
         ui.add_space(7.0);
-        theme::mono_label(ui, detail, theme::MUTED);
+        theme::mono_label(ui, detail, theme::MUTED());
     }
     clicked
 }
@@ -752,12 +753,12 @@ fn render_connection_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> boo
     page_header(
         ui,
         "Connection",
-        "Where your Core is, and how this computer signs in to it.",
+        "Where your Companion Memory server is, and how this computer signs in to it.",
     );
 
     changed |= field(
         ui,
-        "Your Core's address",
+        "Your Companion Memory server",
         &mut form.portal_url,
         "http://core-1:8642 or http://my-core.tailnet.ts.net:8642",
         theme::FieldOpts::monospace(),
@@ -770,7 +771,7 @@ fn render_connection_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> boo
     ui.add_space(6.0);
 
     // A plain-http origin that isn't loopback means captures cross the network
-    // in the clear. Not a blocker — a LAN Core has no cert — but never silent.
+    // in the clear. Not a blocker — a LAN server has no cert — but never silent.
     let target = form.portal_url.trim();
     if target.starts_with("http://")
         && !target.contains("//localhost")
@@ -783,7 +784,7 @@ fn render_connection_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> boo
                      clear. Fine on a trusted LAN; on Tailscale, use the https:// name instead.",
                 )
                 .font(theme::body(tokens::text::SMALL))
-                .color(theme::AMBER),
+                .color(theme::AMBER()),
             );
         });
         ui.add_space(10.0);
@@ -792,8 +793,8 @@ fn render_connection_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> boo
     theme::field_label(ui, "Authentication");
     ui.add_space(6.0);
     egui::Frame::new()
-        .fill(theme::INPUT)
-        .stroke(egui::Stroke::new(1.0, theme::BORDER))
+        .fill(theme::INPUT())
+        .stroke(egui::Stroke::new(1.0, theme::BORDER()))
         .corner_radius(egui::CornerRadius::same(10))
         .inner_margin(egui::Margin::same(3))
         .show(ui, |ui| {
@@ -817,7 +818,7 @@ fn render_connection_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> boo
                 ui,
                 "API Key",
                 &mut form.applet_auth_token,
-                "Paste an access key for your Core",
+                "Paste an access key for your Companion Memory server",
                 theme::FieldOpts::password(),
             );
             theme::caption(
@@ -840,7 +841,7 @@ fn render_connection_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> boo
             egui::CollapsingHeader::new(
                 egui::RichText::new("Sign-in details")
                     .font(theme::body(tokens::text::SMALL))
-                    .color(theme::MUTED),
+                    .color(theme::MUTED()),
             )
             .id_salt("settings_oidc_details")
             .show(ui, |ui| {
@@ -888,17 +889,17 @@ fn render_connection_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> boo
             theme::caption(&mut cols[0], "User");
             cols[0].add_space(4.0);
             if form.user_id.is_empty() {
-                theme::mono_label(&mut cols[0], "set on sign-in", theme::FAINT);
+                theme::mono_label(&mut cols[0], "set on sign-in", theme::FAINT());
             } else {
-                theme::mono_label(&mut cols[0], &form.user_id, theme::MUTED);
+                theme::mono_label(&mut cols[0], &form.user_id, theme::MUTED());
             }
 
             theme::caption(&mut cols[1], "Device");
             cols[1].add_space(4.0);
             if form.device_id.is_empty() {
-                theme::mono_label(&mut cols[1], "registered on sign-in", theme::FAINT);
+                theme::mono_label(&mut cols[1], "registered on sign-in", theme::FAINT());
             } else {
-                theme::mono_label(&mut cols[1], &form.device_id, theme::MUTED);
+                theme::mono_label(&mut cols[1], &form.device_id, theme::MUTED());
             }
         });
     });
@@ -906,7 +907,7 @@ fn render_connection_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> boo
 }
 
 /// Settings that exist for people with an unusual setup. Everything here has a
-/// working default and an empty state that means "let my Core handle it".
+/// working default and an empty state that means "let my Companion Memory server handle it".
 fn render_advanced_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bool {
     let mut changed = false;
     page_header(
@@ -922,7 +923,7 @@ fn render_advanced_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bool 
     theme::card(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.horizontal(|ui| {
-            theme::status_dot(ui, if local { theme::AMBER } else { theme::GREEN }, false);
+            theme::status_dot(ui, if local { theme::AMBER() } else { theme::GREEN() }, false);
             ui.add_space(8.0);
             ui.vertical(|ui| {
                 ui.spacing_mut().item_spacing.y = 3.0;
@@ -930,18 +931,18 @@ fn render_advanced_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bool 
                     egui::RichText::new(if local {
                         "This computer describes them"
                     } else {
-                        "Your Core describes them"
+                        "Your Companion Memory server describes them"
                     })
                     .font(theme::semibold(tokens::text::BODY))
-                    .color(theme::TEXT),
+                    .color(theme::TEXT()),
                 );
                 theme::caption(
                     ui,
                     if local {
                         "Screenshots are sent to the endpoint below for analysis, and your \
-                         Core is told to skip its own."
+                         Companion Memory server is told to skip its own."
                     } else {
-                        "The default. Your Core runs the vision model, so this computer \
+                        "The default. Your Companion Memory server runs the vision model, so this computer \
                          doesn't need one and nothing extra leaves it."
                     },
                 );
@@ -962,7 +963,7 @@ fn render_advanced_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bool 
                      send your screen contents to a third party.",
                 )
                 .font(theme::body(tokens::text::SMALL))
-                .color(theme::AMBER),
+                .color(theme::AMBER()),
             );
         });
         ui.add_space(10.0);
@@ -971,7 +972,7 @@ fn render_advanced_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bool 
     egui::CollapsingHeader::new(
         egui::RichText::new("Use a vision model on this computer instead")
             .font(theme::body(tokens::text::SMALL))
-            .color(theme::MUTED),
+            .color(theme::MUTED()),
     )
     .id_salt("settings_local_vision")
     .default_open(local)
@@ -983,7 +984,7 @@ fn render_advanced_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bool 
             ui,
             "Endpoint",
             &mut form.analysis_endpoint,
-            "http://localhost:1234/v1  (leave blank to use your Core)",
+            "http://localhost:1234/v1  (leave blank to use your Companion Memory server)",
             theme::FieldOpts::monospace(),
         );
         changed |= field(
@@ -1009,7 +1010,7 @@ fn render_advanced_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bool 
 #[cfg(test)]
 mod tests {
     use super::{AuthMode, SettingsFormState};
-    use crate::server_common::normalize_core_url;
+    use crate::server_common::normalize_server_url;
     use crate::config::{AppConfig, OidcSession};
 
     #[test]
@@ -1043,11 +1044,11 @@ mod tests {
     #[test]
     fn feed_page_url_normalizes_to_origin() {
         assert_eq!(
-            normalize_core_url("https://ci-server.localhost/feed").unwrap(),
+            normalize_server_url("https://ci-server.localhost/feed").unwrap(),
             "https://ci-server.localhost/"
         );
         assert_eq!(
-            normalize_core_url("https://ci.example.com/feed?cursor=abc").unwrap(),
+            normalize_server_url("https://ci.example.com/feed?cursor=abc").unwrap(),
             "https://ci.example.com/"
         );
     }
@@ -1055,7 +1056,7 @@ mod tests {
     #[test]
     fn api_base_path_is_preserved() {
         assert_eq!(
-            normalize_core_url("https://ci.example.com/api").unwrap(),
+            normalize_server_url("https://ci.example.com/api").unwrap(),
             "https://ci.example.com/api"
         );
     }
@@ -1089,12 +1090,12 @@ fn render_capture_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bool {
                             ui.label(
                                 egui::RichText::new(form.screenshot_interval_secs.to_string())
                                     .font(theme::light(34.0))
-                                    .color(theme::TEXT),
+                                    .color(theme::TEXT()),
                             );
                             ui.label(
                                 egui::RichText::new("s")
                                     .font(theme::body(16.0))
-                                    .color(theme::MUTED),
+                                    .color(theme::MUTED()),
                             );
                         });
                     },
@@ -1118,12 +1119,12 @@ fn render_capture_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bool {
                     ui.label(
                         egui::RichText::new("%")
                             .font(theme::body(15.0))
-                            .color(theme::TEAL),
+                            .color(theme::TEAL()),
                     );
                     ui.label(
                         egui::RichText::new(format!("{:.0}", form.diff_threshold_percent))
                             .font(theme::light(26.0))
-                            .color(theme::TEAL),
+                            .color(theme::TEAL()),
                     );
                 });
             });
@@ -1147,7 +1148,7 @@ fn render_capture_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bool {
     // told a first-time reader nothing.
     theme::lane_row(
         ui,
-        theme::LANE_SHOT,
+        theme::LANE_SHOT(),
         "Screens",
         "Your main display, skipping frames that barely changed. Paused while locked.",
         "on",
@@ -1155,7 +1156,7 @@ fn render_capture_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bool {
     ui.add_space(10.0);
     theme::lane_row(
         ui,
-        theme::LANE_ACTIVITY,
+        theme::LANE_ACTIVITY(),
         "Activity",
         "Which app and window you're in, so your memory has context.",
         "on",
@@ -1163,7 +1164,7 @@ fn render_capture_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bool {
     ui.add_space(10.0);
     theme::lane_row(
         ui,
-        theme::LANE_FILE,
+        theme::LANE_FILE(),
         "Files",
         "Documents you edit in the folders below, saved as readable text.",
         if form.watched_paths.is_empty() {
@@ -1246,7 +1247,7 @@ fn render_watched_folders(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bo
                 ui.set_width(ui.available_width());
                 ui.horizontal(|ui| {
                     let exists = path.is_dir();
-                    theme::status_dot(ui, if exists { theme::GREEN } else { theme::AMBER }, false);
+                    theme::status_dot(ui, if exists { theme::GREEN() } else { theme::AMBER() }, false);
                     ui.add_space(8.0);
                     ui.vertical(|ui| {
                         ui.spacing_mut().item_spacing.y = 2.0;
@@ -1257,12 +1258,12 @@ fn render_watched_folders(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bo
                                     .unwrap_or_else(|| path.to_string_lossy().to_string()),
                             )
                             .font(theme::body(tokens::text::BODY))
-                            .color(theme::TEXT),
+                            .color(theme::TEXT()),
                         );
                         theme::mono_label(
                             ui,
                             &path.to_string_lossy(),
-                            if exists { theme::MUTED } else { theme::AMBER },
+                            if exists { theme::MUTED() } else { theme::AMBER() },
                         );
                         if !exists {
                             theme::caption(ui, "This folder is missing — it will be skipped.");
@@ -1299,17 +1300,17 @@ fn stepper_button(ui: &mut egui::Ui, glyph: &str) -> bool {
     let btn = egui::Button::new(
         egui::RichText::new(glyph)
             .font(theme::body(20.0))
-            .color(theme::TEXT),
+            .color(theme::TEXT()),
     )
-    .fill(theme::INPUT)
-    .stroke(egui::Stroke::new(1.0, theme::BORDER_HI))
+    .fill(theme::INPUT())
+    .stroke(egui::Stroke::new(1.0, theme::BORDER_HI()))
     .corner_radius(egui::CornerRadius::same(9))
     .min_size(egui::Vec2::splat(34.0));
     ui.add(btn).clicked()
 }
 
 /// Legacy: writes screenshot bytes straight to a MinIO/S3 bucket, bypassing the
-/// Core. Compiled out of a default build.
+/// Companion Memory server. Compiled out of a default build.
 #[cfg(feature = "legacy-minio")]
 fn render_minio_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bool {
     let mut changed = false;
