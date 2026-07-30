@@ -2,10 +2,18 @@
 //!
 //! The applet's capture lanes silently produce nothing without the right OS
 //! grants — on macOS a missing **Screen Recording** grant yields wallpaper-only
-//! frames and a missing **Accessibility** grant blanks the activity lane. This
-//! module surfaces the live grant state and provides one-click aids: trigger
-//! the system prompt where the OS allows it, and deep-link to the exact
-//! System Settings pane otherwise.
+//! frames. This module surfaces the live grant state and provides one-click
+//! aids: trigger the system prompt where the OS allows it, and deep-link to the
+//! exact System Settings pane otherwise.
+//!
+//! **Screen Recording is the only grant that gates anything.** Accessibility is
+//! reported for diagnostics but deliberately does not affect [`Permissions::all_ok`]
+//! or [`Permissions::needs_attention`]: nothing in the applet or in `vizier`
+//! reads a single Accessibility API. Window titles and focus come from
+//! `CGWindowListCopyWindowInfo` (`vizier/src/observer/macos.rs`), which TCC gates
+//! behind Screen Recording, and idle detection uses `CGEventSource`, which needs
+//! no grant at all. Treating a missing AX grant as a problem previously pinned
+//! the tray to "⚠︎ Permissions needed" forever on a perfectly working install.
 //!
 //! Only macOS gates screen/AX capture behind TCC; on Windows and Linux these
 //! report [`PermissionStatus::NotRequired`] so the wizard can skip the step.
@@ -50,20 +58,21 @@ impl fmt::Display for PermissionStatus {
 pub struct Permissions {
     /// Screen Recording — required for the screenshot lane.
     pub screen_recording: PermissionStatus,
-    /// Accessibility — required for the richest vizier activity signal.
+    /// Accessibility — reported for diagnostics only. Nothing reads AX data;
+    /// see the module docs before wiring this into any gate.
     pub accessibility: PermissionStatus,
 }
 
 impl Permissions {
-    /// True when nothing is blocking capture (all required grants present).
+    /// True when nothing is blocking capture.
+    #[allow(dead_code)] // Part of the type's API; exercised by the tests below.
     pub fn all_ok(self) -> bool {
-        self.screen_recording.is_ok() && self.accessibility.is_ok()
+        self.screen_recording.is_ok()
     }
 
-    /// True when at least one required grant is missing.
+    /// True when a grant capture actually depends on is missing.
     pub fn needs_attention(self) -> bool {
         self.screen_recording == PermissionStatus::Denied
-            || self.accessibility == PermissionStatus::Denied
     }
 }
 
@@ -127,8 +136,6 @@ mod imp {
     // System Settings deep links (stable `x-apple.systempreferences:` scheme).
     pub const SCREEN_RECORDING_PANE: &str =
         "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture";
-    pub const ACCESSIBILITY_PANE: &str =
-        "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility";
 }
 
 // ── non-macOS: nothing gates screen/AX capture behind a grant ───────────────
@@ -147,7 +154,6 @@ mod imp {
         PermissionStatus::NotRequired
     }
     pub const SCREEN_RECORDING_PANE: &str = "";
-    pub const ACCESSIBILITY_PANE: &str = "";
 }
 
 pub fn screen_recording_status() -> PermissionStatus {
@@ -168,11 +174,6 @@ pub fn screen_recording_settings_url() -> &'static str {
     imp::SCREEN_RECORDING_PANE
 }
 
-/// The System Settings pane URL for Accessibility (empty off macOS).
-pub fn accessibility_settings_url() -> &'static str {
-    imp::ACCESSIBILITY_PANE
-}
-
 /// Whether this OS gates capture behind permissions at all (drives whether the
 /// onboarding wizard shows the permissions step).
 pub fn permissions_relevant() -> bool {
@@ -188,9 +189,34 @@ mod tests {
         // The real point: calling into the framework FFI (macOS) or the stubs
         // (elsewhere) is safe and returns a coherent struct.
         let p = status();
-        assert_eq!(p.screen_recording.is_ok(), p.screen_recording != PermissionStatus::Denied);
+        assert_eq!(
+            p.screen_recording.is_ok(),
+            p.screen_recording != PermissionStatus::Denied
+        );
         // all_ok and needs_attention are never both true.
         assert!(!(p.all_ok() && p.needs_attention()));
+    }
+
+    /// Regression guard: a declined Accessibility grant must not make a working
+    /// install report a problem, because no code path consumes AX data.
+    #[test]
+    fn accessibility_does_not_gate_capture_readiness() {
+        let p = Permissions {
+            screen_recording: PermissionStatus::Granted,
+            accessibility: PermissionStatus::Denied,
+        };
+        assert!(p.all_ok());
+        assert!(!p.needs_attention());
+    }
+
+    #[test]
+    fn missing_screen_recording_is_still_a_problem() {
+        let p = Permissions {
+            screen_recording: PermissionStatus::Denied,
+            accessibility: PermissionStatus::Granted,
+        };
+        assert!(!p.all_ok());
+        assert!(p.needs_attention());
     }
 
     #[test]
@@ -218,7 +244,6 @@ mod tests {
     fn macos_gates_capture_and_has_settings_links() {
         assert!(permissions_relevant());
         assert!(screen_recording_settings_url().starts_with("x-apple.systempreferences:"));
-        assert!(accessibility_settings_url().contains("Privacy_Accessibility"));
         // Status resolves to a definite Granted/Denied (never NotRequired) on macOS.
         assert_ne!(accessibility_status(), PermissionStatus::NotRequired);
         assert_ne!(screen_recording_status(), PermissionStatus::NotRequired);
