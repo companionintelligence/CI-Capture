@@ -230,6 +230,11 @@ pub struct AppConfig {
     /// Drives whether the wizard auto-opens on launch.
     #[serde(default)]
     pub onboarding_completed: bool,
+    /// Language for the UI chrome. Defaults to [`Language::System`], which
+    /// resolves against the host; an explicit choice is honoured from then on.
+    /// See `crate::locale`.
+    #[serde(default)]
+    pub ui_language: crate::locale::Language,
 }
 
 /// OpenID Connect client config for portal sign-in (Authorization Code +

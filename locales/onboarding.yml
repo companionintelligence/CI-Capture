@@ -1,0 +1,319 @@
+_version: 2
+
+# First-run setup assistant (src/onboarding_ui.rs). Keys are namespaced by the
+# step that renders them, so a string's home is obvious from its id alone.
+#
+# House style for Spanish:
+#   - Address the user as "tú" (informal), matching the English copy's tone.
+#   - "Companion Capture", "Companion Memory", "Companion Hub" and "Portal" are
+#     product names — never translated. "servidor de Companion Memory" is the
+#     accepted form.
+#   - Prefer the infinitive for button labels ("Guardar", not "Guarda").
+#   - Arrows and check glyphs (←, →, ✓) stay in the code, not in these values,
+#     so a translator never has to reproduce them.
+
+# ── window ────────────────────────────────────────────────────────────────
+
+onboarding.window.title:
+  en: Welcome to Companion Capture
+  # "Bienvenido" would assume a male reader; the gender-neutral form is the
+  # house standard for anything addressed to the user.
+  es: Te damos la bienvenida a Companion Capture
+
+# ── step chips (the named progress row) ───────────────────────────────────
+
+onboarding.step.welcome:
+  en: What it does
+  es: Qué hace
+
+onboarding.step.connect:
+  en: Connect
+  es: Conectar
+
+onboarding.step.permissions:
+  en: Permission
+  es: Permiso
+
+onboarding.step.finish:
+  en: Done
+  es: Listo
+
+# ── step titles ───────────────────────────────────────────────────────────
+# The Welcome title is the bare product name "Companion Capture" and stays a
+# literal in the source; there is nothing to translate.
+
+onboarding.title.connect:
+  en: Connect your Companion Memory
+  es: Conecta tu Companion Memory
+
+onboarding.title.permissions:
+  en: One permission
+  es: Un permiso
+
+onboarding.title.finish:
+  en: You're set
+  es: Todo listo
+
+# ── "no server yet?" hint (wraps the Companion Hub link) ──────────────────
+
+onboarding.no_server.prefix:
+  en: Don't have a Companion Memory server yet? Install
+  es: "¿Aún no tienes un servidor de Companion Memory? Instala"
+
+onboarding.no_server.suffix:
+  en: to run one on your own hardware.
+  # "ejecutar uno" = run a *server*; "ejecutarlo" would point at Companion Hub,
+  # the nearest antecedent. Matches the wording already used in tray.yml.
+  es: para ejecutar uno en tu propio hardware.
+
+# ── status messages ───────────────────────────────────────────────────────
+
+onboarding.status.save_failed:
+  en: "Could not save: %{error}"
+  es: "No se pudo guardar: %{error}"
+
+onboarding.status.issuer_required:
+  en: Enter your portal sign-in URL (OIDC issuer) first, or paste an API key below.
+  es: Escribe primero la URL de inicio de sesión del Portal (emisor OIDC) o pega una clave de API abajo.
+
+onboarding.status.opening_browser:
+  en: Opening your browser to sign in…
+  es: Abriendo tu navegador para iniciar sesión…
+
+onboarding.status.api_key_required:
+  en: Paste an API key first.
+  es: Pega primero una clave de API.
+
+onboarding.status.api_key_saved:
+  en: API key saved. Testing the connection…
+  es: Clave de API guardada. Probando la conexión…
+
+onboarding.status.runtime_failed:
+  en: "Could not start the connection test: %{error}"
+  es: "No se pudo iniciar la prueba de conexión: %{error}"
+
+# ── step 1: what it does ──────────────────────────────────────────────────
+
+onboarding.welcome.subtitle:
+  en: Companion Capture records what you see and edit on this computer into your Companion Memory — saved on your own Companion Memory server, not in anyone else's cloud.
+  # "…en este equipo en tu Companion Memory" stacked two "en" complements, and
+  # the participle "guardado" had no noun to agree with.
+  es: Companion Capture registra en tu Companion Memory lo que ves y editas en este equipo, y todo se guarda en tu propio servidor de Companion Memory, no en la nube de nadie más.
+
+onboarding.welcome.lane.screens.title:
+  en: Screens
+  es: Pantallas
+
+onboarding.welcome.lane.screens.body:
+  en: A picture of your screen now and then. Near-identical frames are skipped.
+  es: Una imagen de tu pantalla de vez en cuando. Se omiten los fotogramas casi idénticos.
+
+onboarding.welcome.lane.activity.title:
+  en: Activity
+  es: Actividad
+
+onboarding.welcome.lane.activity.body:
+  en: Which app and window you're in, so your memory has context.
+  es: En qué app y ventana estás, para que tu memoria tenga contexto.
+
+onboarding.welcome.lane.files.title:
+  en: Files
+  es: Archivos
+
+onboarding.welcome.lane.files.body:
+  en: Documents you edit in folders you choose. Off until you pick one.
+  es: Los documentos que editas en las carpetas que elijas. Desactivado hasta que elijas una.
+
+# Endpoint labels inside the animated explainer (theme::capture_flow). The lane
+# labels in that diagram reuse the three lane titles above, so the picture and
+# the list below it never disagree.
+
+onboarding.welcome.flow.this_computer:
+  en: This computer
+  es: Este equipo
+
+onboarding.welcome.flow.your_memory:
+  en: Your Memory
+  es: Tu memoria
+
+onboarding.welcome.exclusions:
+  en: Passwords, SSH keys, .env files and keychains are never read — that exclusion can't be turned off.
+  es: Nunca se leen contraseñas, claves SSH, archivos .env ni llaveros, y esa exclusión no se puede desactivar.
+
+# ── step 2: connect ───────────────────────────────────────────────────────
+
+onboarding.connect.subtitle:
+  en: Sign in and we'll find your Companion Memory server for you. Nothing to type.
+  es: Inicia sesión y buscaremos tu servidor de Companion Memory por ti. No hay nada que escribir.
+
+onboarding.connect.signed_in:
+  en: Signed in
+  es: Sesión iniciada
+
+onboarding.connect.signed_in_with_key:
+  en: Signed in with an access key
+  es: Sesión iniciada con una clave de acceso
+
+onboarding.connect.discovering:
+  en: Looking for your Companion Memory server…
+  es: Buscando tu servidor de Companion Memory…
+
+onboarding.connect.portal_button:
+  en: Continue with Portal
+  es: Continuar con Portal
+
+onboarding.connect.portal_help:
+  en: Opens your browser to sign in. We never see your password.
+  # "Abre tu navegador…" reads as an order to the user; this describes what the
+  # button will do, which is what the English says.
+  es: Se abrirá tu navegador para iniciar sesión. Nunca vemos tu contraseña.
+
+onboarding.connect.working:
+  en: Working…
+  es: Trabajando…
+
+onboarding.connect.manual_header:
+  en: Set things up manually
+  es: Configurar manualmente
+
+onboarding.connect.server_label:
+  en: Your Companion Memory server
+  es: Tu servidor de Companion Memory
+
+onboarding.connect.server_hint:
+  en: "http://core-1:8642 or http://my-core.tailnet.ts.net:8642"
+  es: "http://core-1:8642 o http://my-core.tailnet.ts.net:8642"
+
+onboarding.connect.server_help:
+  en: A LAN hostname or a Tailscale address — wherever your Companion Memory server runs.
+  es: Un nombre de host de tu red local o una dirección de Tailscale, esté donde esté tu servidor de Companion Memory.
+
+onboarding.connect.issuer_label:
+  en: Portal sign-in URL
+  es: URL de inicio de sesión del Portal
+
+onboarding.connect.api_key_label:
+  en: "…or paste an access key"
+  es: "…o pega una clave de acceso"
+
+onboarding.connect.api_key_hint:
+  en: Access key for your Companion Memory server
+  es: Clave de acceso de tu servidor de Companion Memory
+
+onboarding.connect.save_button:
+  en: Save
+  es: Guardar
+
+onboarding.connect.test_button:
+  en: Test the connection
+  es: Probar la conexión
+
+# ── step 3: macOS Screen Recording ────────────────────────────────────────
+
+onboarding.permissions.subtitle:
+  en: macOS needs your permission before anything can see the screen.
+  es: macOS necesita tu permiso antes de que algo pueda ver la pantalla.
+
+onboarding.permissions.screen_recording:
+  en: Screen Recording
+  es: Grabación de pantalla
+
+onboarding.permissions.granted_detail:
+  en: Granted — screens and activity will be captured.
+  es: Concedido, se capturarán pantallas y actividad.
+
+onboarding.permissions.missing_detail:
+  en: Without this, captures come out blank.
+  es: Sin esto, las capturas salen en blanco.
+
+onboarding.permissions.allow_button:
+  en: "Allow…"
+  es: "Permitir…"
+
+onboarding.permissions.granted_badge:
+  en: Granted
+  es: Concedido
+
+onboarding.permissions.all_set:
+  en: Nothing else to do.
+  es: No hay nada más que hacer.
+
+onboarding.permissions.how_to:
+  en: Flip the switch next to Companion Capture in System Settings — this page notices on its own, no need to come back and click anything.
+  es: Activa el interruptor junto a Companion Capture en Ajustes del Sistema. Esta página se dará cuenta sola, no hace falta volver ni hacer clic en nada.
+
+# ── step 4: done ──────────────────────────────────────────────────────────
+
+onboarding.finish.subtitle:
+  en: Capture is running. Here's where things stand.
+  es: La captura está en marcha. Este es el estado actual.
+
+onboarding.finish.connected_title:
+  en: Connected to your Companion Memory
+  es: Conectado a tu Companion Memory
+
+onboarding.finish.not_connected:
+  en: Not signed in — captures will wait on this machine until you are.
+  es: Sin sesión iniciada. Las capturas esperarán en este equipo hasta que la inicies.
+
+onboarding.finish.screen_recording_title:
+  en: Screen Recording allowed
+  es: Grabación de pantalla permitida
+
+onboarding.finish.screen_recording_ok:
+  en: Screens and activity are being captured.
+  es: Se están capturando pantallas y actividad.
+
+onboarding.finish.screen_recording_missing:
+  en: Captures will be blank until you allow it in System Settings.
+  es: Las capturas saldrán en blanco hasta que lo permitas en Ajustes del Sistema.
+
+onboarding.finish.folders_title:
+  en: Watching folders for file edits
+  es: Vigilando carpetas por si editas archivos
+
+onboarding.finish.folders_none:
+  en: Off. Add a folder in Settings whenever you want it.
+  es: Desactivado. Añade una carpeta en Ajustes cuando quieras.
+
+onboarding.finish.folders_one:
+  en: 1 folder.
+  es: 1 carpeta.
+
+onboarding.finish.folders_many:
+  en: "%{count} folders."
+  es: "%{count} carpetas."
+
+onboarding.finish.where_label:
+  en: Where to find things
+  es: Dónde encontrar las cosas
+
+onboarding.finish.where_body:
+  en: Companion Capture lives in your menu bar. Click it to pause capture, open your memory in a browser, add folders, or sign in again.
+  es: Companion Capture vive en tu barra de menús. Haz clic para pausar la captura, abrir tu memoria en el navegador, añadir carpetas o volver a iniciar sesión.
+
+# ── navigation bar ────────────────────────────────────────────────────────
+
+onboarding.nav.back:
+  en: Back
+  es: Atrás
+
+onboarding.nav.get_started:
+  en: Get started
+  es: Empezar
+
+onboarding.nav.continue:
+  en: Continue
+  es: Continuar
+
+onboarding.nav.skip:
+  en: Skip for now
+  es: Omitir por ahora
+
+onboarding.nav.start_capturing:
+  en: Start capturing
+  es: Empezar a capturar
+
+onboarding.nav.sign_in_later:
+  en: You can sign in later from the menu bar.
+  es: Puedes iniciar sesión más tarde desde la barra de menús.

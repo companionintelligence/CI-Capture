@@ -7,6 +7,7 @@ mod conversion;
 mod db;
 mod extractors;
 mod file_tracker;
+mod locale;
 #[cfg(feature = "legacy-minio")]
 mod minio;
 mod oidc;
@@ -27,6 +28,11 @@ mod upload_ui;
 mod watcher;
 mod worker;
 
+// Loads every `locales/*.yml` at compile time and makes `t!` available crate-wide.
+// `fallback` guarantees a missing Spanish key renders English rather than the raw
+// message id — a half-translated build stays usable.
+rust_i18n::i18n!("locales", fallback = "en");
+
 use std::process::Command;
 use std::sync::Arc;
 use std::thread;
@@ -37,6 +43,7 @@ use chrono::Utc;
 use config::{AppConfig, ConfigManager};
 use env_logger::Env;
 use parking_lot::Mutex;
+use rust_i18n::t;
 use tao::event::Event;
 use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy, EventLoopWindowTarget};
 use tinyfiledialogs::{self as dialogs, MessageBoxIcon};
@@ -61,6 +68,9 @@ enum AppEvent {
 fn main() -> Result<()> {
     let env = Env::default().default_filter_or("info");
     env_logger::Builder::from_env(env).init();
+
+    // Before the dispatch, not after it — see the doc comment.
+    apply_saved_language();
 
     if std::env::args().any(|arg| arg == "--settings-ui") {
         run_settings_ui()?;
@@ -108,7 +118,12 @@ fn main() -> Result<()> {
                 return Ok(());
             }
             Err(err) => {
-                eprintln!("Portal sign-in failed: {err:#}");
+                // The success line is translated (`tray.login.signed_in`);
+                // its failure counterpart has to be, too.
+                eprintln!(
+                    "{}",
+                    t!("tray.cli.login_failed", error = format!("{err:#}"))
+                );
                 std::process::exit(1);
             }
         }
@@ -190,6 +205,25 @@ fn main() -> Result<()> {
     });
 }
 
+/// Apply the saved UI language to this process.
+///
+/// Runs before `main`'s argument dispatch because *every* branch past that
+/// dispatch renders catalogue strings: the tray, the three child windows —
+/// each of which is its own process, with its own `rust_i18n` locale global —
+/// and the scriptable `--login` / `--search` commands. Choosing the language
+/// after the dispatch would leave everything except the tray speaking English.
+///
+/// Best-effort by design: a missing or unreadable config must not stop the app
+/// from starting, and [`locale::Language::System`] — the default — is exactly
+/// the right thing to fall back to when no stored choice can be read.
+fn apply_saved_language() {
+    let language = ConfigManager::new()
+        .and_then(|manager| manager.load_or_default())
+        .map(|config| config.ui_language)
+        .unwrap_or_default();
+    locale::apply(language);
+}
+
 struct AppController {
     shared_config: Arc<Mutex<AppConfig>>,
     manager: ConfigManager,
@@ -252,7 +286,7 @@ impl AppController {
                 self.settings_open = false;
                 if let Err(err) = self.reload_config_from_disk() {
                     log::error!("failed to reload config: {err:?}");
-                    show_error("Unable to reload configuration; see logs for details.");
+                    show_error(&t!("tray.error.reload_config"));
                 }
             }
             AppEvent::OnboardingClosed => {
@@ -266,7 +300,7 @@ impl AppController {
                 if success {
                     if let Err(err) = self.reload_config_from_disk() {
                         log::error!("failed to reload config after pairing: {err:?}");
-                        show_error("Linked account, but failed to reload configuration.");
+                        show_error(&t!("tray.error.reload_after_pairing"));
                         return;
                     }
                     dialogs::message_box_ok("Companion Capture", &message, MessageBoxIcon::Info);
@@ -282,7 +316,7 @@ impl AppController {
             return;
         }
         let Ok(exe) = std::env::current_exe() else {
-            show_error("Unable to locate executable for settings window.");
+            show_error(&t!("tray.error.exe_settings"));
             return;
         };
         self.settings_open = true;
@@ -299,19 +333,19 @@ impl AppController {
             Err(err) => {
                 self.settings_open = false;
                 log::error!("failed to launch settings window: {err:?}");
-                show_error("Unable to launch settings window. Check logs for details.");
+                show_error(&t!("tray.error.launch_settings"));
             }
         }
     }
 
     fn open_upload_window(&self) {
         let Ok(exe) = std::env::current_exe() else {
-            show_error("Unable to locate executable for upload window.");
+            show_error(&t!("tray.error.exe_upload"));
             return;
         };
         if let Err(err) = Command::new(exe).arg("--upload-ui").spawn() {
             log::error!("failed to launch upload window: {err:?}");
-            show_error("Unable to launch upload window. Check logs for details.");
+            show_error(&t!("tray.error.launch_upload"));
         }
     }
 
@@ -323,7 +357,7 @@ impl AppController {
             return;
         }
         let Ok(exe) = std::env::current_exe() else {
-            show_error("Unable to locate executable for the setup assistant.");
+            show_error(&t!("tray.error.exe_setup"));
             return;
         };
         self.onboarding_open = true;
@@ -340,7 +374,7 @@ impl AppController {
             Err(err) => {
                 self.onboarding_open = false;
                 log::error!("failed to launch onboarding window: {err:?}");
-                show_error("Unable to launch the setup assistant. Check logs for details.");
+                show_error(&t!("tray.error.launch_setup"));
             }
         }
     }
@@ -358,7 +392,7 @@ impl AppController {
 
     fn launch_portal_login(&mut self) {
         if self.pairing_in_progress {
-            show_error("Portal login is already in progress.");
+            show_error(&t!("tray.error.login_in_progress"));
             return;
         }
 
@@ -366,7 +400,7 @@ impl AppController {
         let issuer = snapshot.oidc.issuer.trim().to_string();
         let client_id = snapshot.oidc.client_id.clone();
         if issuer.is_empty() {
-            show_error("OIDC issuer is not configured (config.json → oidc.issuer).");
+            show_error(&t!("tray.error.oidc_issuer_missing"));
             return;
         }
 
@@ -384,9 +418,13 @@ impl AppController {
                     log::error!("portal sign-in failed: {err:?}");
                     AppEvent::PairingFinished {
                         success: false,
-                        message: format!(
-                            "Unable to sign in to {issuer}: {err}.\n\nCheck that the portal is reachable and that the applet's OIDC client \"{client_id}\" is registered with the loopback redirect (config.json → oidc)."
-                        ),
+                        message: t!(
+                            "tray.error.login_failed",
+                            issuer = issuer,
+                            error = err,
+                            client_id = client_id
+                        )
+                        .to_string(),
                     }
                 }
             };
@@ -396,7 +434,11 @@ impl AppController {
 
     fn show_config_path(&self) {
         let path = self.manager.path().display().to_string();
-        dialogs::message_box_ok("Config Path", &path, MessageBoxIcon::Info);
+        dialogs::message_box_ok(
+            &t!("tray.dialog.config_path_title"),
+            &path,
+            MessageBoxIcon::Info,
+        );
     }
 
     /// Open the Companion Memory web app in the user's browser, optionally
@@ -406,14 +448,12 @@ impl AppController {
         let url = match server_common::memory_url(&config.server.portal_url, query) {
             Ok(url) => url,
             Err(err) => {
-                show_error(&format!(
-                    "Can't work out your Companion Memory server address: {err:#}\n\nSet it in Settings first."
-                ));
+                show_error(&t!("tray.error.memory_address", error = format!("{err:#}")));
                 return;
             }
         };
         if let Err(err) = open_url(url.as_str()) {
-            show_error(&format!("Couldn't open {url}: {err}"));
+            show_error(&t!("tray.error.open_url", url = url, error = err));
         }
     }
 
@@ -438,6 +478,11 @@ impl AppController {
             *guard = new_config.clone();
         }
         self.worker.update_config(new_config.clone());
+        // The Settings window can change the UI language. This process holds
+        // its own locale global, so apply the new choice before relabelling —
+        // otherwise the menu bar keeps the old language until the next
+        // relaunch, which is exactly the setting the user just changed.
+        locale::apply(new_config.ui_language);
         self.menu_state
             .refresh_labels(&new_config, self.worker.is_running());
         Ok(())
@@ -471,27 +516,31 @@ struct MenuState {
 impl MenuState {
     fn new(config: &AppConfig) -> Result<Self> {
         let menu = tray_icon::menu::Menu::new();
-        let status_item = MenuItem::new("Status: Starting", false, None);
+        let status_item = MenuItem::new(
+            &*t!("tray.status", state = t!("tray.state_starting")),
+            false,
+            None,
+        );
         status_item.set_enabled(false);
-        let toggle_item = MenuItem::new("Pause Captures", true, None);
-        let capture_now_item = MenuItem::new("Capture Now", true, None);
-        let upload_item = MenuItem::new("Upload Document…", true, None);
-        let open_memory_item = MenuItem::new("Open Companion Memory", true, None);
-        let today_item = MenuItem::new("Today's Activity", true, None);
-        let interval_item = MenuItem::new("Screenshot Interval", true, None);
-        let threshold_item = MenuItem::new("Diff Threshold", true, None);
-        let identity_item = MenuItem::new("Set Identity IDs", true, None);
-        let server_item = MenuItem::new("Portal URL", true, None);
-        let login_item = MenuItem::new("Login to Portal", true, None);
-        let setup_item = MenuItem::new("Setup Assistant…", true, None);
-        let settings_item = MenuItem::new("Open Settings…", true, None);
+        let toggle_item = MenuItem::new(&*t!("tray.pause_captures"), true, None);
+        let capture_now_item = MenuItem::new(&*t!("tray.capture_now"), true, None);
+        let upload_item = MenuItem::new(&*t!("tray.upload_document"), true, None);
+        let open_memory_item = MenuItem::new(&*t!("tray.open_memory"), true, None);
+        let today_item = MenuItem::new(&*t!("tray.today_activity"), true, None);
+        let interval_item = MenuItem::new(&*t!("tray.interval"), true, None);
+        let threshold_item = MenuItem::new(&*t!("tray.threshold"), true, None);
+        let identity_item = MenuItem::new(&*t!("tray.identity"), true, None);
+        let server_item = MenuItem::new(&*t!("tray.portal_url"), true, None);
+        let login_item = MenuItem::new(&*t!("tray.login"), true, None);
+        let setup_item = MenuItem::new(&*t!("tray.setup_assistant"), true, None);
+        let settings_item = MenuItem::new(&*t!("tray.open_settings"), true, None);
         #[cfg(feature = "legacy-postgres")]
-        let postgres_item = MenuItem::new("Configure Postgres", true, None);
+        let postgres_item = MenuItem::new(&*t!("tray.configure_postgres"), true, None);
         #[cfg(feature = "legacy-minio")]
-        let minio_item = MenuItem::new("Configure MinIO", true, None);
-        let analysis_item = MenuItem::new("Configure Vision Endpoint", true, None);
-        let show_config_item = MenuItem::new("Show Config Location", true, None);
-        let quit_item = MenuItem::new("Quit Companion Capture", true, None);
+        let minio_item = MenuItem::new(&*t!("tray.configure_minio"), true, None);
+        let analysis_item = MenuItem::new(&*t!("tray.configure_vision"), true, None);
+        let show_config_item = MenuItem::new(&*t!("tray.show_config"), true, None);
+        let quit_item = MenuItem::new(&*t!("tray.quit"), true, None);
 
         interval_item.set_enabled(false);
         threshold_item.set_enabled(false);
@@ -561,61 +610,79 @@ impl MenuState {
         // Truthful status: an unconfigured or permission-blocked applet must
         // not read as "Monitoring".
         let status = if !server_ingest::is_configured(config) {
-            "⚠︎ Setup needed"
+            t!("tray.state_setup_needed")
         } else if permissions::permissions_relevant() && permissions::status().needs_attention() {
-            "⚠︎ Permissions needed"
+            t!("tray.state_permissions_needed")
         } else if running {
-            "Monitoring"
+            t!("tray.state_monitoring")
         } else {
-            "Paused"
+            t!("tray.state_paused")
         };
-        self.status_item.set_text(&format!("Status: {status}"));
-        self.toggle_item.set_text(if running {
-            "Pause Captures"
+        self.status_item
+            .set_text(&*t!("tray.status", state = status));
+        self.toggle_item.set_text(&*if running {
+            t!("tray.pause_captures")
         } else {
-            "Resume Captures"
+            t!("tray.resume_captures")
         });
-        self.interval_item.set_text(&format!(
-            "Screenshot Interval: {}s",
-            config.capture.screenshot_interval_secs
+        self.interval_item.set_text(&*t!(
+            "tray.interval_value",
+            secs = config.capture.screenshot_interval_secs
         ));
-        self.threshold_item.set_text(&format!(
-            "Diff Threshold: {:.1}%",
-            config.capture.diff_threshold_percent
+        self.threshold_item.set_text(&*t!(
+            "tray.threshold_value",
+            percent = format!("{:.1}", config.capture.diff_threshold_percent)
         ));
-        self.identity_item.set_text(&format!(
-            "Identity: user {} / device {}",
-            short_uuid(config.identity.user_id),
-            short_uuid(config.identity.device_id)
+        self.identity_item.set_text(&*t!(
+            "tray.identity_value",
+            user = short_uuid(config.identity.user_id),
+            device = short_uuid(config.identity.device_id)
         ));
-        self.server_item
-            .set_text(&format!("Portal URL: {}", config.server.portal_url));
+        self.server_item.set_text(&*t!(
+            "tray.portal_url_value",
+            url = config.server.portal_url
+        ));
         let issuer_display = config
             .oidc
             .issuer
             .trim_start_matches("https://")
             .trim_start_matches("http://");
         self.login_item
-            .set_text(&format!("Login via {}", issuer_display));
+            .set_text(&*t!("tray.login_via", issuer = issuer_display));
         #[cfg(feature = "legacy-postgres")]
-        self.postgres_item.set_text(&format!(
-            "Postgres: {}:{} / {}",
-            config.postgres.host, config.postgres.port, config.postgres.database
+        self.postgres_item.set_text(&*t!(
+            "tray.postgres_value",
+            host = config.postgres.host,
+            port = config.postgres.port,
+            database = config.postgres.database
         ));
         #[cfg(feature = "legacy-minio")]
-        self.minio_item.set_text(&format!(
-            "MinIO: {} @ {}",
-            config.minio.bucket, config.minio.endpoint
+        self.minio_item.set_text(&*t!(
+            "tray.minio_value",
+            bucket = config.minio.bucket,
+            endpoint = config.minio.endpoint
         ));
         // Empty endpoint is the default and means the server describes captures;
         // naming a local model the app isn't using reads as configuration the
         // user has to attend to.
         self.analysis_item
-            .set_text(&if config.analysis.endpoint.trim().is_empty() {
-                "Vision: handled by your Companion Memory server".to_string()
+            .set_text(&*if config.analysis.endpoint.trim().is_empty() {
+                t!("tray.vision_server")
             } else {
-                format!("Vision: this computer · {}", config.analysis.model)
+                t!("tray.vision_local", model = config.analysis.model)
             });
+
+        // Items whose text doesn't depend on config still have to be re-set:
+        // this runs after a language change too, and a menu half in Spanish
+        // and half in English is worse than either.
+        self.capture_now_item.set_text(&*t!("tray.capture_now"));
+        self.upload_item.set_text(&*t!("tray.upload_document"));
+        self.open_memory_item.set_text(&*t!("tray.open_memory"));
+        self.today_item.set_text(&*t!("tray.today_activity"));
+        self.setup_item.set_text(&*t!("tray.setup_assistant"));
+        self.settings_item.set_text(&*t!("tray.open_settings"));
+        self.show_config_item.set_text(&*t!("tray.show_config"));
+        self.quit_item.set_text(&*t!("tray.quit"));
 
         // Nothing to open until a server URL is set — greying these out is
         // honest, where a click that pops an error dialog is not.
@@ -712,13 +779,19 @@ fn open_memory_search(query: &str) -> Result<()> {
         vec![("search", query), ("view", "list")]
     };
 
+    // These two reach the user: `main` prints the returned error, and a
+    // Shortcut surfaces it verbatim. `--login` is a CLI flag, not prose, so it
+    // stays literal inside the sentence.
     if config.server.portal_url.trim().is_empty() {
-        bail!("No Companion Memory server configured. Set one in Settings, or run --login.");
+        bail!("{}", t!("tray.cli.no_server"));
     }
     let url = server_common::memory_url(&config.server.portal_url, &params).map_err(|_| {
         anyhow!(
-            "\"{}\" isn't a usable Companion Memory server address. Fix it in Settings.",
-            config.server.portal_url.trim()
+            "{}",
+            t!(
+                "tray.cli.bad_server_url",
+                url = config.server.portal_url.trim()
+            )
         )
     })?;
 
@@ -774,7 +847,7 @@ fn short_uuid(id: Option<Uuid>) -> String {
             .next()
             .unwrap_or("?")
             .to_string(),
-        None => "unset".to_string(),
+        None => t!("tray.identity_unset").to_string(),
     }
 }
 
@@ -874,8 +947,8 @@ fn login_with_portal() -> Result<String> {
         .name
         .or(outcome.claims.email)
         .or(outcome.claims.sub)
-        .unwrap_or_else(|| "your account".to_string());
-    Ok(format!("Signed in as {who}. {discovery_note}"))
+        .unwrap_or_else(|| t!("tray.login.your_account").to_string());
+    Ok(t!("tray.login.signed_in", who = who, note = discovery_note).to_string())
 }
 
 /// Resolve the Companion Memory server address from CI-Portal after sign-in,
@@ -894,10 +967,15 @@ fn resolve_core_url(runtime: &Runtime, config: &mut AppConfig, access_token: &st
     if config.server.url_source == config::ServerUrlSource::Manual
         && !config.server.portal_url.trim().is_empty()
     {
-        return "Captures will now be attributed to that account.".into();
+        return t!("tray.discovery.attributed").into_owned();
     }
 
-    let portal = config.oidc.issuer.trim().trim_end_matches("/api/auth").to_string();
+    let portal = config
+        .oidc
+        .issuer
+        .trim()
+        .trim_end_matches("/api/auth")
+        .to_string();
     let found = runtime.block_on(async {
         portal_apps::fetch_portal_apps(&portal, access_token, portal_apps::MEMORY_APP_SLUG).await
     });
@@ -906,43 +984,37 @@ fn resolve_core_url(runtime: &Runtime, config: &mut AppConfig, access_token: &st
         Discovery::Ok(apps) => {
             let candidates = portal_apps::memory_candidates(&apps);
             match candidates.len() {
-                0 => "No Companion Memory server is registered to your account yet. Install \
-                      Companion Hub from ci.computer/download to run one, then add its address \
-                      in Settings."
-                    .into(),
+                0 => t!("tray.discovery.none").into_owned(),
                 1 => {
                     let core = &candidates[0];
                     config.server.portal_url = core.url.clone();
                     config.server.url_source = config::ServerUrlSource::Discovered;
                     log::info!("discovered Companion Memory at {}", core.url);
                     match &core.device_name {
-                        Some(name) => format!("Saving to your Companion Memory server on {name}."),
-                        None => format!("Connected to {}.", core.url),
+                        Some(name) => t!("tray.discovery.saving_to", device = name).into_owned(),
+                        None => t!("tray.discovery.connected", url = core.url).into_owned(),
                     }
                 }
                 // Several servers: picking one would silently stream this
                 // machine's captures to the wrong box. Make the user choose.
-                n => format!(
-                    "You have Companion Memory on {n} machines — pick which one this computer                      should record to in Settings."
-                ),
+                n => t!("tray.discovery.multiple", count = n).into_owned(),
             }
         }
         // A Portal that predates /api/users/me/apps. Say nothing about it; the
         // user simply types the address as before.
         Discovery::Unsupported => {
             log::info!("portal has no app-discovery endpoint; server address stays manual");
-            "Captures will now be attributed to that account.".into()
+            t!("tray.discovery.attributed").into_owned()
         }
         Discovery::Unauthorized => {
             // Almost always means this client is not registered in the Portal's
             // PUBLIC_CLIENTS, which is an operator problem, not a user one.
             log::warn!("portal refused the access token for app discovery");
-            "Signed in, but your portal wouldn't share your server address — add it in Settings."
-                .into()
+            t!("tray.discovery.unauthorized").into_owned()
         }
         Discovery::Error(err) => {
             log::warn!("Companion Memory discovery failed: {err}");
-            "Signed in. Add your Companion Memory server in Settings.".into()
+            t!("tray.discovery.error").into_owned()
         }
     }
 }

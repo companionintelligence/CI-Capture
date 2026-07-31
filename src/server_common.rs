@@ -11,14 +11,13 @@ pub fn friendly_error(err: &reqwest::Error) -> String {
     let chain = error_chain(err);
     let lower = chain.to_ascii_lowercase();
     if lower.contains("certificate") || lower.contains("unknownissuer") {
-        "TLS certificate rejected; use a trusted CI-Server URL or install the server certificate"
-            .to_string()
+        rust_i18n::t!("status.error.tls_certificate").to_string()
     } else if lower.contains("tls") || lower.contains("ssl") || lower.contains("alert") {
-        "TLS handshake failed; check the URL and certificate".to_string()
+        rust_i18n::t!("status.error.tls_handshake").to_string()
     } else if err.is_connect() {
-        "connection refused / host unreachable".to_string()
+        rust_i18n::t!("status.error.connect_refused").to_string()
     } else if err.is_timeout() {
-        "timed out".to_string()
+        rust_i18n::t!("status.error.timed_out").to_string()
     } else {
         err.to_string()
     }
@@ -60,10 +59,10 @@ fn error_chain(err: &reqwest::Error) -> String {
 pub fn normalize_server_url(raw: &str) -> Result<String, String> {
     let raw = raw.trim();
     if raw.is_empty() {
-        return Err("Enter your Companion Memory server address.".to_string());
+        return Err(rust_i18n::t!("status.address.empty").to_string());
     }
 
-    let invalid = || "That doesn't look like a valid address.".to_string();
+    let invalid = || rust_i18n::t!("status.address.invalid").to_string();
     let parsed = Url::parse(raw).ok().filter(|u| u.has_host());
     let mut url = match parsed {
         Some(url) => url,
@@ -430,7 +429,10 @@ mod tests {
         for (raw, expected) in [
             ("core-1:8642", "http://core-1:8642/"),
             ("localhost:8642", "http://localhost:8642/"),
-            ("my-core.tailnet.ts.net:8642", "http://my-core.tailnet.ts.net:8642/"),
+            (
+                "my-core.tailnet.ts.net:8642",
+                "http://my-core.tailnet.ts.net:8642/",
+            ),
             ("mac.local:8642", "http://mac.local:8642/"),
             ("192.168.1.9:8642", "http://192.168.1.9:8642/"),
             ("[::1]:8642", "http://[::1]:8642/"),
@@ -439,7 +441,11 @@ mod tests {
             ("ci.example.com", "https://ci.example.com/"),
             ("ci.example.com:8642", "https://ci.example.com:8642/"),
         ] {
-            assert_eq!(normalize_server_url(raw).unwrap(), expected, "input {raw:?}");
+            assert_eq!(
+                normalize_server_url(raw).unwrap(),
+                expected,
+                "input {raw:?}"
+            );
         }
     }
 

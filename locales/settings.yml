@@ -1,0 +1,497 @@
+_version: 2
+
+# Settings window. Keys are namespaced by the surface that renders them so a
+# string's home is obvious from its id alone.
+#
+# House style for Spanish:
+#   - Address the user as "tú" (informal), matching the English copy's tone.
+#   - "Companion Memory" and "Companion Capture" are product names — never
+#     translated. "servidor de Companion Memory" is the accepted form.
+#   - Prefer the infinitive for button labels ("Guardar", not "Guarda").
+
+settings.language.system:
+  en: Match my system
+  es: Igual que mi sistema
+
+settings.language.label:
+  en: Language
+  es: Idioma
+
+settings.language.help:
+  en: Save to apply this everywhere, including the menu bar.
+  es: Guarda para aplicarlo en todas partes, incluida la barra de menús.
+
+# ── Window chrome ─────────────────────────────────────────────────────────
+
+settings.window_title:
+  en: Companion Capture Settings
+  es: Configuración de Companion Capture
+
+settings.sidebar.subtitle:
+  en: Settings
+  es: Configuración
+
+settings.sidebar.lanes:
+  en: 3 lanes
+  es: 3 canales
+
+settings.footer.save:
+  en: Save
+  es: Guardar
+
+settings.footer.close:
+  en: Close
+  es: Cerrar
+
+# ── Navigation tabs ───────────────────────────────────────────────────────
+# Each label doubles as the page heading, so it is defined once.
+
+settings.tab.connection:
+  en: Connection
+  es: Conexión
+
+settings.tab.connection.subtitle:
+  en: Your Memory & sign-in
+  es: Tu Memory y tu acceso
+
+settings.tab.capture:
+  en: Capture
+  es: Captura
+
+settings.tab.capture.subtitle:
+  en: What gets captured
+  es: Qué se captura
+
+settings.tab.advanced:
+  en: Advanced
+  es: Avanzado
+
+settings.tab.advanced.subtitle:
+  en: Rarely needed
+  es: Casi nunca hace falta
+
+settings.tab.storage:
+  en: Storage
+  es: Almacenamiento
+
+settings.tab.storage.subtitle:
+  en: Legacy MinIO
+  es: MinIO heredado
+
+settings.tab.database:
+  en: Database
+  es: Base de datos
+
+settings.tab.database.subtitle:
+  en: Legacy Postgres
+  es: Postgres heredado
+
+# ── Sidebar connection card ───────────────────────────────────────────────
+
+settings.status.connected.title:
+  en: Connected
+  es: Conectado
+
+settings.status.connected.detail:
+  en: Sending to your Companion Memory
+  es: Enviando a tu Companion Memory
+
+settings.status.almost.title:
+  en: Almost there
+  es: Casi listo
+
+settings.status.almost.detail:
+  en: Sign in to start sending
+  es: Inicia sesión para empezar a enviar
+
+settings.status.unset.title:
+  en: Not set up
+  es: Sin configurar
+
+settings.status.unset.detail:
+  en: Add your Companion Memory server
+  es: Añade tu servidor de Companion Memory
+
+# ── Inline connection test ────────────────────────────────────────────────
+
+settings.test.button:
+  en: Test connection
+  es: Probar conexión
+
+settings.test.running:
+  en: Testing…
+  es: Probando…
+
+settings.test.ok:
+  en: Connected
+  es: Conectado
+
+settings.test.failed:
+  en: Failed
+  es: Falló
+
+# ── Validation and save errors (rendered in the footer) ───────────────────
+
+settings.error.save_failed:
+  en: "Failed to save config: %{error}"
+  es: "No se pudo guardar la configuración: %{error}"
+
+settings.error.user_id_uuid:
+  en: User ID must be a valid UUID.
+  es: El ID de usuario debe ser un UUID válido.
+
+settings.error.server_required:
+  en: Your Companion Memory server address is required.
+  es: La dirección de tu servidor de Companion Memory es obligatoria.
+
+settings.error.api_key_required:
+  en: API key is required in API key mode.
+  es: La clave de API es obligatoria en el modo de clave de API.
+
+settings.error.oidc_issuer_required:
+  en: OIDC issuer is required in OIDC mode.
+  es: El emisor OIDC es obligatorio en el modo OIDC.
+
+settings.error.oidc_issuer_url:
+  en: OIDC issuer must be a valid URL.
+  es: El emisor OIDC debe ser una URL válida.
+
+settings.error.oidc_client_id_required:
+  en: OIDC client ID cannot be empty.
+  es: El ID de cliente OIDC no puede estar vacío.
+
+settings.error.oidc_scopes_required:
+  en: OIDC scopes cannot be empty.
+  es: Los ámbitos OIDC no pueden estar vacíos.
+
+settings.error.oidc_redirect_url:
+  en: OIDC redirect URI must be a valid URL.
+  es: El URI de redirección OIDC debe ser una URL válida.
+
+settings.error.oidc_redirect_loopback:
+  en: "OIDC redirect URI must be an http://127.0.0.1:<port>/... loopback URL."
+  es: "El URI de redirección OIDC debe ser una URL de bucle local http://127.0.0.1:<puerto>/..."
+
+settings.error.interval_zero:
+  en: Screenshot interval must be greater than zero.
+  es: El intervalo de capturas debe ser mayor que cero.
+
+settings.error.diff_range:
+  en: Diff threshold must be between 0 and 100.
+  es: El umbral de diferencia debe estar entre 0 y 100.
+
+# ── Connection tab ────────────────────────────────────────────────────────
+
+settings.connection.subtitle:
+  en: Where your Companion Memory server is, and how this computer signs in to it.
+  es: Dónde está tu servidor de Companion Memory y cómo inicia sesión este equipo.
+
+settings.connection.server.label:
+  en: Your Companion Memory server
+  es: Tu servidor de Companion Memory
+
+settings.connection.server.hint:
+  en: "http://core-1:8642 or http://my-core.tailnet.ts.net:8642"
+  es: "http://core-1:8642 o http://my-core.tailnet.ts.net:8642"
+
+settings.connection.server.help:
+  en: A machine on your LAN or Tailscale network. Everything captured on this computer is sent there and nowhere else.
+  es: Un equipo de tu red local o de tu red Tailscale. Todo lo que se captura en este equipo se envía allí y a ningún otro sitio.
+
+settings.connection.insecure_warning:
+  en: "⚠  This address isn't encrypted, so captures cross your network in the clear. Fine on a trusted LAN; on Tailscale, use the https:// name instead."
+  es: "⚠  Esta dirección no está cifrada, así que las capturas viajan por tu red sin protección. No pasa nada en una red local de confianza; en Tailscale, usa el nombre https:// en su lugar."
+
+settings.connection.auth.label:
+  en: Authentication
+  es: Autenticación
+
+settings.connection.auth.api_key:
+  en: API key
+  es: Clave de API
+
+settings.connection.auth.oidc:
+  en: OIDC browser login
+  es: OIDC en el navegador
+
+settings.connection.api_key.label:
+  en: API Key
+  es: Clave de API
+
+settings.connection.api_key.hint:
+  en: Paste an access key for your Companion Memory server
+  es: Pega una clave de acceso de tu servidor de Companion Memory
+
+settings.connection.api_key.help:
+  en: Sent as x-api-key. Pasting a key clears any OIDC session.
+  es: Se envía como x-api-key. Pegar una clave borra cualquier sesión OIDC.
+
+settings.connection.oidc.help:
+  en: Sign in from the menu bar — it opens your browser and fills the rest in.
+  es: Inicia sesión desde la barra de menús — abre tu navegador y rellena el resto.
+
+settings.connection.oidc.details:
+  en: Sign-in details
+  es: Detalles de inicio de sesión
+
+settings.connection.oidc.issuer.label:
+  en: Portal sign-in URL
+  es: URL de inicio de sesión del Portal
+
+settings.connection.oidc.client_id.label:
+  en: Client ID
+  es: ID de cliente
+
+settings.connection.oidc.scopes.label:
+  en: Scopes
+  es: Ámbitos
+
+settings.connection.oidc.redirect.label:
+  en: Redirect URI
+  es: URI de redirección
+
+settings.connection.device.label:
+  en: This device
+  es: Este dispositivo
+
+settings.connection.device.user:
+  en: User
+  es: Usuario
+
+settings.connection.device.user_placeholder:
+  en: set on sign-in
+  es: se define al iniciar sesión
+
+settings.connection.device.device:
+  en: Device
+  es: Dispositivo
+
+settings.connection.device.device_placeholder:
+  en: registered on sign-in
+  es: se registra al iniciar sesión
+
+# ── Capture tab ───────────────────────────────────────────────────────────
+
+settings.capture.subtitle:
+  en: What gets recorded from this computer, and how often.
+  es: Qué se registra de este equipo y con qué frecuencia.
+
+settings.capture.interval.label:
+  en: Screenshot interval
+  es: Intervalo de capturas
+
+settings.capture.interval.help:
+  en: Floored to 30s · default 300s
+  es: Mínimo 30 s · predeterminado 300 s
+
+settings.capture.diff.label:
+  en: Diff threshold
+  es: Umbral de diferencia
+
+settings.capture.diff.help:
+  en: Frames changing less than this are skipped.
+  es: Los fotogramas que cambian menos que esto se omiten.
+
+settings.capture.lanes.label:
+  en: Capture lanes
+  es: Canales de captura
+
+settings.capture.lane.on:
+  en: "on"
+  es: activo
+
+settings.capture.lane.off:
+  en: "off"
+  es: inactivo
+
+settings.capture.lane.screens.title:
+  en: Screens
+  es: Pantallas
+
+settings.capture.lane.screens.detail:
+  en: Your main display, skipping frames that barely changed. Paused while locked.
+  es: Tu pantalla principal, omitiendo los fotogramas que apenas cambian. En pausa mientras está bloqueada.
+
+settings.capture.lane.activity.title:
+  en: Activity
+  es: Actividad
+
+settings.capture.lane.activity.detail:
+  en: Which app and window you're in, so your memory has context.
+  es: En qué app y ventana estás, para que tu memoria tenga contexto.
+
+settings.capture.lane.files.title:
+  en: Files
+  es: Archivos
+
+settings.capture.lane.files.detail:
+  en: Documents you edit in the folders below, saved as readable text.
+  es: Los documentos que editas en las carpetas de abajo, guardados como texto legible.
+
+# ── Watched folders ───────────────────────────────────────────────────────
+
+settings.folders.label:
+  en: Watched folders
+  es: Carpetas vigiladas
+
+settings.folders.add:
+  en: Add folder…
+  es: Añadir carpeta…
+
+settings.folders.picker_title:
+  en: Watch a folder
+  es: Vigilar una carpeta
+
+settings.folders.empty:
+  en: No folders watched yet — file tracking is off. Add a folder and the files you edit inside it become part of your Companion Memory.
+  es: Aún no hay carpetas vigiladas — el seguimiento de archivos está desactivado. Añade una carpeta y los archivos que edites dentro pasarán a formar parte de tu Companion Memory.
+
+settings.folders.missing:
+  en: This folder is missing — it will be skipped.
+  es: Esta carpeta no existe — se omitirá.
+
+settings.folders.remove:
+  en: Remove
+  es: Quitar
+
+settings.folders.toggle.title:
+  en: File tracking enabled
+  es: Seguimiento de archivos activado
+
+settings.folders.toggle.detail:
+  en: Turn off to stop watching without losing the folder list.
+  es: Desactívalo para dejar de vigilar sin perder la lista de carpetas.
+
+# ── Advanced tab ──────────────────────────────────────────────────────────
+
+settings.advanced.subtitle:
+  en: You shouldn't need anything on this page. It's here for unusual setups.
+  es: No deberías necesitar nada de esta página. Está aquí para configuraciones poco habituales.
+
+settings.advanced.vision.label:
+  en: Describing your screenshots
+  es: Describir tus capturas de pantalla
+
+settings.advanced.vision.local_title:
+  en: This computer describes them
+  es: Las describe este equipo
+
+settings.advanced.vision.remote_title:
+  en: Your Companion Memory server describes them
+  es: Las describe tu servidor de Companion Memory
+
+settings.advanced.vision.local_help:
+  en: Screenshots are sent to the endpoint below for analysis, and your Companion Memory server is told to skip its own.
+  es: Las capturas se envían al endpoint de abajo para analizarlas y se le indica a tu servidor de Companion Memory que omita el suyo.
+
+settings.advanced.vision.remote_help:
+  en: The default. Your Companion Memory server runs the vision model, so this computer doesn't need one and nothing extra leaves it.
+  es: La opción predeterminada. Tu servidor de Companion Memory ejecuta el modelo de visión, así que este equipo no necesita ninguno y no sale nada más de él.
+
+settings.advanced.vision.warning:
+  en: "⚠  Full screenshots are POSTed to this address. Point it at something on your own machine or your own network — a public API endpoint here would send your screen contents to a third party."
+  es: "⚠  Las capturas completas se envían por POST a esta dirección. Apúntala a algo de tu propio equipo o de tu propia red — un endpoint de API pública aquí enviaría el contenido de tu pantalla a un tercero."
+
+settings.advanced.vision.toggle:
+  en: Use a vision model on this computer instead
+  es: Usar en su lugar un modelo de visión en este equipo
+
+settings.advanced.endpoint.label:
+  en: Endpoint
+  es: Endpoint
+
+settings.advanced.endpoint.hint:
+  en: "http://localhost:1234/v1  (leave blank to use your Companion Memory server)"
+  es: "http://localhost:1234/v1  (déjalo vacío para usar tu servidor de Companion Memory)"
+
+settings.advanced.api_key.label:
+  en: API key
+  es: Clave de API
+
+settings.advanced.api_key.hint:
+  en: lm-studio (local endpoints often ignore this)
+  es: lm-studio (los endpoints locales suelen ignorarla)
+
+settings.advanced.model.label:
+  en: Model
+  es: Modelo
+
+# ── Legacy Storage tab (feature "legacy-minio") ───────────────────────────
+
+settings.storage.subtitle:
+  en: MinIO / S3-compatible object store for captured artifacts.
+  es: Almacén de objetos MinIO / compatible con S3 para los artefactos capturados.
+
+settings.storage.endpoint.label:
+  en: Endpoint
+  es: Endpoint
+
+settings.storage.bucket.label:
+  en: Bucket
+  es: Bucket
+
+settings.storage.region.label:
+  en: Region
+  es: Región
+
+settings.storage.access_key.label:
+  en: Access Key
+  es: Clave de acceso
+
+settings.storage.access_key.hint:
+  en: Access key
+  es: Clave de acceso
+
+settings.storage.secret_key.label:
+  en: Secret Key
+  es: Clave secreta
+
+settings.storage.secret_key.hint:
+  en: Secret key
+  es: Clave secreta
+
+settings.storage.ssl.title:
+  en: Use SSL
+  es: Usar SSL
+
+settings.storage.ssl.detail:
+  en: Encrypt the connection to the object store.
+  es: Cifrar la conexión con el almacén de objetos.
+
+# ── Legacy Database tab (feature "legacy-postgres") ───────────────────────
+
+settings.database.subtitle:
+  en: Postgres connection for capture metadata.
+  es: Conexión de Postgres para los metadatos de captura.
+
+settings.database.host.label:
+  en: Host
+  es: Host
+
+settings.database.port.label:
+  en: Port
+  es: Puerto
+
+settings.database.name.label:
+  en: Database
+  es: Base de datos
+
+settings.database.user.label:
+  en: User
+  es: Usuario
+
+settings.database.password.label:
+  en: Password
+  es: Contraseña
+
+settings.database.password.hint:
+  en: Password
+  es: Contraseña
+
+settings.database.ssl.title:
+  en: Require SSL
+  es: Requerir SSL
+
+settings.database.ssl.detail:
+  en: Refuse unencrypted database connections.
+  es: Rechazar conexiones de base de datos sin cifrar.

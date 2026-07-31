@@ -27,6 +27,13 @@ pub fn run_settings_ui() -> Result<()> {
     let manager = ConfigManager::new().context("building config manager")?;
     let config = manager.load_or_default().context("loading configuration")?;
 
+    // This window is its own process (`--settings-ui`), and `main` applies the
+    // language only on the tray path — the `--settings-ui` branch returns long
+    // before it. Without this call every string below renders in rust-i18n's
+    // default locale, so the whole catalogue would be dead weight here. Must
+    // precede the first `t!`, which is the window title on the next line.
+    crate::locale::apply(config.ui_language);
+
     let manager = Arc::new(manager);
     let shared_saved = Arc::new(Mutex::new(false));
     let base_config = Arc::new(Mutex::new(config.clone()));
@@ -38,11 +45,14 @@ pub fn run_settings_ui() -> Result<()> {
     let mut native_options = NativeOptions::default();
     native_options.centered = true;
     native_options.viewport = egui::ViewportBuilder::default()
-        .with_title("Companion Capture Settings")
+        .with_title(rust_i18n::t!("settings.window_title").to_string())
         .with_inner_size([1000.0, 700.0])
         .with_min_inner_size([820.0, 600.0]);
 
     eframe::run_native(
+        // Not the visible title (`with_title` above owns that) — eframe uses
+        // this as the app id, and it names the persistence directory. Keep it
+        // stable and untranslated.
         "Companion Capture Settings",
         native_options,
         Box::new(move |cc| {
@@ -94,6 +104,9 @@ pub struct SettingsFormState {
     pub analysis_endpoint: String,
     pub analysis_api_key: String,
     pub analysis_model: String,
+    /// UI language. Read on the next window launch, not applied live — see the
+    /// picker in [`render_advanced_tab`] and `crate::locale`.
+    pub ui_language: crate::locale::Language,
     auth_mode: AuthMode,
 }
 
@@ -154,6 +167,7 @@ impl From<&AppConfig> for SettingsFormState {
             analysis_endpoint: config.analysis.endpoint.clone(),
             analysis_api_key: config.analysis.api_key.clone(),
             analysis_model: config.analysis.model.clone(),
+            ui_language: config.ui_language,
             auth_mode,
         }
     }
@@ -186,29 +200,33 @@ enum SettingsTab {
 }
 
 impl SettingsTab {
-    fn label(&self) -> &'static str {
+    /// Localised, so this is a `String` rather than the `&'static str` a plain
+    /// match would give. Doubles as the page heading for each tab.
+    fn label(&self) -> String {
         match self {
-            SettingsTab::Connection => "Connection",
-            SettingsTab::Capture => "Capture",
-            SettingsTab::Advanced => "Advanced",
+            SettingsTab::Connection => rust_i18n::t!("settings.tab.connection"),
+            SettingsTab::Capture => rust_i18n::t!("settings.tab.capture"),
+            SettingsTab::Advanced => rust_i18n::t!("settings.tab.advanced"),
             #[cfg(feature = "legacy-minio")]
-            SettingsTab::Minio => "Storage",
+            SettingsTab::Minio => rust_i18n::t!("settings.tab.storage"),
             #[cfg(feature = "legacy-postgres")]
-            SettingsTab::Postgres => "Database",
+            SettingsTab::Postgres => rust_i18n::t!("settings.tab.database"),
         }
+        .to_string()
     }
 
     /// Short descriptor shown under the nav label.
-    fn subtitle(&self) -> &'static str {
+    fn subtitle(&self) -> String {
         match self {
-            SettingsTab::Connection => "Your Memory & sign-in",
-            SettingsTab::Capture => "What gets captured",
-            SettingsTab::Advanced => "Rarely needed",
+            SettingsTab::Connection => rust_i18n::t!("settings.tab.connection.subtitle"),
+            SettingsTab::Capture => rust_i18n::t!("settings.tab.capture.subtitle"),
+            SettingsTab::Advanced => rust_i18n::t!("settings.tab.advanced.subtitle"),
             #[cfg(feature = "legacy-minio")]
-            SettingsTab::Minio => "Legacy MinIO",
+            SettingsTab::Minio => rust_i18n::t!("settings.tab.storage.subtitle"),
             #[cfg(feature = "legacy-postgres")]
-            SettingsTab::Postgres => "Legacy Postgres",
+            SettingsTab::Postgres => rust_i18n::t!("settings.tab.database.subtitle"),
         }
+        .to_string()
     }
 
     /// Accent colour for the nav chip.
@@ -357,6 +375,7 @@ impl SettingsApp {
         c.analysis.endpoint = self.form.analysis_endpoint.clone();
         c.analysis.api_key = self.form.analysis_api_key.clone();
         c.analysis.model = self.form.analysis_model.clone();
+        c.ui_language = self.form.ui_language;
         if let Ok(uid) = Uuid::parse_str(self.form.user_id.trim()) {
             c.identity.user_id = Some(uid);
         }
@@ -397,19 +416,32 @@ impl SettingsApp {
 
     /// Derive a coarse connection descriptor from config presence (no network
     /// call is made here — this is a visual hint, not a live probe).
-    fn connection_status(&self) -> (&'static str, &'static str, egui::Color32) {
+    fn connection_status(&self) -> (String, String, egui::Color32) {
         let has_url = !self.form.portal_url.trim().is_empty();
         let has_cred = match self.form.auth_mode {
             AuthMode::ApiKey => !self.form.applet_auth_token.trim().is_empty(),
             AuthMode::Oidc => !self.form.oidc_issuer.trim().is_empty(),
         };
-        if has_url && has_cred {
-            ("Connected", "Sending to your Companion Memory", theme::GREEN())
+        let (title, detail, color) = if has_url && has_cred {
+            (
+                rust_i18n::t!("settings.status.connected.title"),
+                rust_i18n::t!("settings.status.connected.detail"),
+                theme::GREEN(),
+            )
         } else if has_url {
-            ("Almost there", "Sign in to start sending", theme::AMBER())
+            (
+                rust_i18n::t!("settings.status.almost.title"),
+                rust_i18n::t!("settings.status.almost.detail"),
+                theme::AMBER(),
+            )
         } else {
-            ("Not set up", "Add your Companion Memory server", theme::RED())
-        }
+            (
+                rust_i18n::t!("settings.status.unset.title"),
+                rust_i18n::t!("settings.status.unset.detail"),
+                theme::RED(),
+            )
+        };
+        (title.to_string(), detail.to_string(), color)
     }
 
     fn save(&mut self, ctx: &egui::Context) {
@@ -444,7 +476,9 @@ impl SettingsApp {
         }
 
         if let Err(err) = self.manager.save(&updated) {
-            self.error = Some(format!("Failed to save config: {err}"));
+            self.error = Some(
+                rust_i18n::t!("settings.error.save_failed", error = err.to_string()).to_string(),
+            );
             return;
         }
 
@@ -456,14 +490,14 @@ impl SettingsApp {
     fn validate(&self) -> Result<(), String> {
         if !self.form.user_id.trim().is_empty() {
             Uuid::parse_str(self.form.user_id.trim())
-                .map_err(|_| "User ID must be a valid UUID.".to_string())?;
+                .map_err(|_| rust_i18n::t!("settings.error.user_id_uuid").to_string())?;
         }
         let has_server_credential = self.form.auth_mode == AuthMode::ApiKey
             && !self.form.applet_auth_token.trim().is_empty();
         let has_oidc_issuer = self.form.auth_mode == AuthMode::Oidc;
 
         if self.form.portal_url.trim().is_empty() && (has_server_credential || has_oidc_issuer) {
-            return Err("Your Companion Memory server address is required.".into());
+            return Err(rust_i18n::t!("settings.error.server_required").to_string());
         }
         if !self.form.portal_url.trim().is_empty() {
             normalize_server_url(self.form.portal_url.trim())?;
@@ -472,37 +506,34 @@ impl SettingsApp {
             && !self.form.portal_url.trim().is_empty()
             && self.form.applet_auth_token.trim().is_empty()
         {
-            return Err("API key is required in API key mode.".into());
+            return Err(rust_i18n::t!("settings.error.api_key_required").to_string());
         }
         if has_oidc_issuer {
             if self.form.oidc_issuer.trim().is_empty() {
-                return Err("OIDC issuer is required in OIDC mode.".into());
+                return Err(rust_i18n::t!("settings.error.oidc_issuer_required").to_string());
             }
             Url::parse(self.form.oidc_issuer.trim())
-                .map_err(|_| "OIDC issuer must be a valid URL.".to_string())?;
+                .map_err(|_| rust_i18n::t!("settings.error.oidc_issuer_url").to_string())?;
             if self.form.oidc_client_id.trim().is_empty() {
-                return Err("OIDC client ID cannot be empty.".into());
+                return Err(rust_i18n::t!("settings.error.oidc_client_id_required").to_string());
             }
             if self.form.oidc_scopes.trim().is_empty() {
-                return Err("OIDC scopes cannot be empty.".into());
+                return Err(rust_i18n::t!("settings.error.oidc_scopes_required").to_string());
             }
             let redirect = Url::parse(self.form.oidc_redirect_uri.trim())
-                .map_err(|_| "OIDC redirect URI must be a valid URL.".to_string())?;
+                .map_err(|_| rust_i18n::t!("settings.error.oidc_redirect_url").to_string())?;
             if redirect.scheme() != "http"
                 || redirect.host_str() != Some("127.0.0.1")
                 || redirect.port().is_none()
             {
-                return Err(
-                    "OIDC redirect URI must be an http://127.0.0.1:<port>/... loopback URL."
-                        .to_string(),
-                );
+                return Err(rust_i18n::t!("settings.error.oidc_redirect_loopback").to_string());
             }
         }
         if self.form.screenshot_interval_secs == 0 {
-            return Err("Screenshot interval must be greater than zero.".into());
+            return Err(rust_i18n::t!("settings.error.interval_zero").to_string());
         }
         if !(0.0..=100.0).contains(&self.form.diff_threshold_percent) {
-            return Err("Diff threshold must be between 0 and 100.".into());
+            return Err(rust_i18n::t!("settings.error.diff_range").to_string());
         }
         // Deliberately no Postgres port check. The default build never opens a
         // database connection, so a stale `postgres.port: 0` in an old
@@ -588,9 +619,11 @@ impl SettingsApp {
                                 .color(theme::TEXT()),
                         );
                         ui.label(
-                            egui::RichText::new("Settings")
-                                .font(theme::body(13.0))
-                                .color(theme::MUTED()),
+                            egui::RichText::new(
+                                rust_i18n::t!("settings.sidebar.subtitle").to_string(),
+                            )
+                            .font(theme::body(13.0))
+                            .color(theme::MUTED()),
                         );
                     });
                 });
@@ -601,7 +634,7 @@ impl SettingsApp {
                 // there is nothing left to reveal at runtime.
                 for tab in SettingsTab::all() {
                     let selected = self.current_tab == tab;
-                    if theme::nav_item(ui, tab.accent(), tab.label(), tab.subtitle(), selected) {
+                    if theme::nav_item(ui, tab.accent(), &tab.label(), &tab.subtitle(), selected) {
                         self.current_tab = tab;
                     }
                     ui.add_space(3.0);
@@ -609,6 +642,7 @@ impl SettingsApp {
 
                 // Push the connection card to the bottom.
                 let (text, sub, color) = self.connection_status();
+                let lanes = rust_i18n::t!("settings.sidebar.lanes").to_string();
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
                     theme::card(ui, |ui| {
                         ui.set_width(ui.available_width());
@@ -622,11 +656,15 @@ impl SettingsApp {
                             );
                         });
                         ui.add_space(5.0);
-                        theme::caption(ui, sub);
+                        theme::caption(ui, &sub);
                         ui.add_space(10.0);
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 6.0;
-                            for c in [theme::LANE_SHOT(), theme::LANE_ACTIVITY(), theme::LANE_FILE()] {
+                            for c in [
+                                theme::LANE_SHOT(),
+                                theme::LANE_ACTIVITY(),
+                                theme::LANE_FILE(),
+                            ] {
                                 let (r, _) = ui.allocate_exact_size(
                                     egui::Vec2::splat(7.0),
                                     egui::Sense::hover(),
@@ -635,7 +673,7 @@ impl SettingsApp {
                             }
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| theme::mono_label(ui, "3 lanes", theme::FAINT()),
+                                |ui| theme::mono_label(ui, &lanes, theme::FAINT()),
                             );
                         });
                     });
@@ -658,10 +696,10 @@ impl SettingsApp {
                 // underneath Close/Save.
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.spacing_mut().item_spacing.x = 10.0;
-                    if theme::primary_button(ui, "Save").clicked() {
+                    if theme::primary_button(ui, &rust_i18n::t!("settings.footer.save")).clicked() {
                         self.save(ctx);
                     }
-                    if theme::ghost_button(ui, "Close").clicked() {
+                    if theme::ghost_button(ui, &rust_i18n::t!("settings.footer.close")).clicked() {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     }
                     ui.add_space(12.0);
@@ -714,21 +752,21 @@ fn render_test_row(ui: &mut egui::Ui, state: Option<&TestState>) -> bool {
     let mut clicked = false;
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 10.0;
-        clicked = theme::ghost_button(ui, "Test connection").clicked();
+        clicked = theme::ghost_button(ui, &rust_i18n::t!("settings.test.button")).clicked();
         match state {
             Some(TestState::Running) => {
                 ui.add(egui::Spinner::new().size(16.0).color(theme::AMBER()));
                 ui.label(
-                    egui::RichText::new("Testing…")
+                    egui::RichText::new(rust_i18n::t!("settings.test.running").to_string())
                         .font(theme::body(13.0))
                         .color(theme::AMBER()),
                 );
             }
             Some(TestState::Ok(_)) => {
-                theme::status_badge(ui, "Connected", theme::GREEN());
+                theme::status_badge(ui, &rust_i18n::t!("settings.test.ok"), theme::GREEN());
             }
             Some(TestState::Err(_)) => {
-                theme::status_badge(ui, "Failed", theme::RED());
+                theme::status_badge(ui, &rust_i18n::t!("settings.test.failed"), theme::RED());
             }
             None => {}
         }
@@ -752,22 +790,18 @@ fn render_connection_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> boo
     let mut changed = false;
     page_header(
         ui,
-        "Connection",
-        "Where your Companion Memory server is, and how this computer signs in to it.",
+        &SettingsTab::Connection.label(),
+        &rust_i18n::t!("settings.connection.subtitle"),
     );
 
     changed |= field(
         ui,
-        "Your Companion Memory server",
+        &rust_i18n::t!("settings.connection.server.label"),
         &mut form.portal_url,
-        "http://core-1:8642 or http://my-core.tailnet.ts.net:8642",
+        &rust_i18n::t!("settings.connection.server.hint"),
         theme::FieldOpts::monospace(),
     );
-    theme::caption(
-        ui,
-        "A machine on your LAN or Tailscale network. Everything captured on this \
-         computer is sent there and nowhere else.",
-    );
+    theme::caption(ui, &rust_i18n::t!("settings.connection.server.help"));
     ui.add_space(6.0);
 
     // A plain-http origin that isn't loopback means captures cross the network
@@ -780,8 +814,7 @@ fn render_connection_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> boo
         ui.horizontal_wrapped(|ui| {
             ui.label(
                 egui::RichText::new(
-                    "⚠  This address isn't encrypted, so captures cross your network in the \
-                     clear. Fine on a trusted LAN; on Tailscale, use the https:// name instead.",
+                    rust_i18n::t!("settings.connection.insecure_warning").to_string(),
                 )
                 .font(theme::body(tokens::text::SMALL))
                 .color(theme::AMBER()),
@@ -790,7 +823,7 @@ fn render_connection_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> boo
         ui.add_space(10.0);
     }
 
-    theme::field_label(ui, "Authentication");
+    theme::field_label(ui, &rust_i18n::t!("settings.connection.auth.label"));
     ui.add_space(6.0);
     egui::Frame::new()
         .fill(theme::INPUT())
@@ -800,11 +833,19 @@ fn render_connection_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> boo
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 3.0;
-                if theme::segment(ui, "API key", form.auth_mode == AuthMode::ApiKey) {
+                if theme::segment(
+                    ui,
+                    &rust_i18n::t!("settings.connection.auth.api_key"),
+                    form.auth_mode == AuthMode::ApiKey,
+                ) {
                     form.auth_mode = AuthMode::ApiKey;
                     changed = true;
                 }
-                if theme::segment(ui, "OIDC browser login", form.auth_mode == AuthMode::Oidc) {
+                if theme::segment(
+                    ui,
+                    &rust_i18n::t!("settings.connection.auth.oidc"),
+                    form.auth_mode == AuthMode::Oidc,
+                ) {
                     form.auth_mode = AuthMode::Oidc;
                     changed = true;
                 }
@@ -816,22 +857,16 @@ fn render_connection_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> boo
         AuthMode::ApiKey => {
             changed |= field(
                 ui,
-                "API Key",
+                &rust_i18n::t!("settings.connection.api_key.label"),
                 &mut form.applet_auth_token,
-                "Paste an access key for your Companion Memory server",
+                &rust_i18n::t!("settings.connection.api_key.hint"),
                 theme::FieldOpts::password(),
             );
-            theme::caption(
-                ui,
-                "Sent as x-api-key. Pasting a key clears any OIDC session.",
-            );
+            theme::caption(ui, &rust_i18n::t!("settings.connection.api_key.help"));
             ui.add_space(15.0);
         }
         AuthMode::Oidc => {
-            theme::caption(
-                ui,
-                "Sign in from the menu bar — it opens your browser and fills the rest in.",
-            );
+            theme::caption(ui, &rust_i18n::t!("settings.connection.oidc.help"));
             ui.add_space(10.0);
 
             // OIDC wiring. Correct out of the box for the production Portal, so
@@ -839,16 +874,19 @@ fn render_connection_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> boo
             // and four monospace URLs on the main pane read as "you must
             // configure this" when you must not.
             egui::CollapsingHeader::new(
-                egui::RichText::new("Sign-in details")
+                egui::RichText::new(rust_i18n::t!("settings.connection.oidc.details").to_string())
                     .font(theme::body(tokens::text::SMALL))
                     .color(theme::MUTED()),
             )
             .id_salt("settings_oidc_details")
             .show(ui, |ui| {
                 ui.add_space(6.0);
+                // The hints below are literal protocol values (a URL, the
+                // frozen `ci-applet` client id, OIDC scope tokens) — not prose,
+                // and not translatable.
                 changed |= field(
                     ui,
-                    "Portal sign-in URL",
+                    &rust_i18n::t!("settings.connection.oidc.issuer.label"),
                     &mut form.oidc_issuer,
                     "https://hub.ci.computer/api/auth",
                     theme::FieldOpts::monospace(),
@@ -856,14 +894,14 @@ fn render_connection_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> boo
                 ui.columns(2, |cols| {
                     changed |= field(
                         &mut cols[0],
-                        "Client ID",
+                        &rust_i18n::t!("settings.connection.oidc.client_id.label"),
                         &mut form.oidc_client_id,
                         "ci-applet",
                         theme::FieldOpts::monospace(),
                     );
                     changed |= field(
                         &mut cols[1],
-                        "Scopes",
+                        &rust_i18n::t!("settings.connection.oidc.scopes.label"),
                         &mut form.oidc_scopes,
                         "openid profile email",
                         theme::FieldOpts::monospace(),
@@ -871,7 +909,7 @@ fn render_connection_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> boo
                 });
                 changed |= field(
                     ui,
-                    "Redirect URI",
+                    &rust_i18n::t!("settings.connection.oidc.redirect.label"),
                     &mut form.oidc_redirect_uri,
                     "http://127.0.0.1:0/callback",
                     theme::FieldOpts::monospace(),
@@ -881,23 +919,37 @@ fn render_connection_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> boo
     }
 
     ui.add_space(14.0);
-    theme::field_label(ui, "This device");
+    theme::field_label(ui, &rust_i18n::t!("settings.connection.device.label"));
     ui.add_space(8.0);
     theme::card(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.columns(2, |cols| {
-            theme::caption(&mut cols[0], "User");
+            theme::caption(
+                &mut cols[0],
+                &rust_i18n::t!("settings.connection.device.user"),
+            );
             cols[0].add_space(4.0);
             if form.user_id.is_empty() {
-                theme::mono_label(&mut cols[0], "set on sign-in", theme::FAINT());
+                theme::mono_label(
+                    &mut cols[0],
+                    &rust_i18n::t!("settings.connection.device.user_placeholder"),
+                    theme::FAINT(),
+                );
             } else {
                 theme::mono_label(&mut cols[0], &form.user_id, theme::MUTED());
             }
 
-            theme::caption(&mut cols[1], "Device");
+            theme::caption(
+                &mut cols[1],
+                &rust_i18n::t!("settings.connection.device.device"),
+            );
             cols[1].add_space(4.0);
             if form.device_id.is_empty() {
-                theme::mono_label(&mut cols[1], "registered on sign-in", theme::FAINT());
+                theme::mono_label(
+                    &mut cols[1],
+                    &rust_i18n::t!("settings.connection.device.device_placeholder"),
+                    theme::FAINT(),
+                );
             } else {
                 theme::mono_label(&mut cols[1], &form.device_id, theme::MUTED());
             }
@@ -912,38 +964,47 @@ fn render_advanced_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bool 
     let mut changed = false;
     page_header(
         ui,
-        "Advanced",
-        "You shouldn't need anything on this page. It's here for unusual setups.",
+        &SettingsTab::Advanced.label(),
+        &rust_i18n::t!("settings.advanced.subtitle"),
     );
 
-    theme::field_label(ui, "Describing your screenshots");
+    theme::field_label(ui, &rust_i18n::t!("settings.advanced.vision.label"));
     ui.add_space(8.0);
 
     let local = !form.analysis_endpoint.trim().is_empty();
     theme::card(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.horizontal(|ui| {
-            theme::status_dot(ui, if local { theme::AMBER() } else { theme::GREEN() }, false);
+            theme::status_dot(
+                ui,
+                if local {
+                    theme::AMBER()
+                } else {
+                    theme::GREEN()
+                },
+                false,
+            );
             ui.add_space(8.0);
             ui.vertical(|ui| {
                 ui.spacing_mut().item_spacing.y = 3.0;
                 ui.label(
-                    egui::RichText::new(if local {
-                        "This computer describes them"
-                    } else {
-                        "Your Companion Memory server describes them"
-                    })
+                    egui::RichText::new(
+                        if local {
+                            rust_i18n::t!("settings.advanced.vision.local_title")
+                        } else {
+                            rust_i18n::t!("settings.advanced.vision.remote_title")
+                        }
+                        .to_string(),
+                    )
                     .font(theme::semibold(tokens::text::BODY))
                     .color(theme::TEXT()),
                 );
                 theme::caption(
                     ui,
-                    if local {
-                        "Screenshots are sent to the endpoint below for analysis, and your \
-                         Companion Memory server is told to skip its own."
+                    &if local {
+                        rust_i18n::t!("settings.advanced.vision.local_help")
                     } else {
-                        "The default. Your Companion Memory server runs the vision model, so this computer \
-                         doesn't need one and nothing extra leaves it."
+                        rust_i18n::t!("settings.advanced.vision.remote_help")
                     },
                 );
             });
@@ -957,20 +1018,16 @@ fn render_advanced_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bool 
     if local {
         ui.horizontal_wrapped(|ui| {
             ui.label(
-                egui::RichText::new(
-                    "⚠  Full screenshots are POSTed to this address. Point it at something on \
-                     your own machine or your own network — a public API endpoint here would \
-                     send your screen contents to a third party.",
-                )
-                .font(theme::body(tokens::text::SMALL))
-                .color(theme::AMBER()),
+                egui::RichText::new(rust_i18n::t!("settings.advanced.vision.warning").to_string())
+                    .font(theme::body(tokens::text::SMALL))
+                    .color(theme::AMBER()),
             );
         });
         ui.add_space(10.0);
     }
 
     egui::CollapsingHeader::new(
-        egui::RichText::new("Use a vision model on this computer instead")
+        egui::RichText::new(rust_i18n::t!("settings.advanced.vision.toggle").to_string())
             .font(theme::body(tokens::text::SMALL))
             .color(theme::MUTED()),
     )
@@ -982,36 +1039,75 @@ fn render_advanced_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bool 
         // protocol), so this is a base URL — NOT an Anthropic /messages URL.
         changed |= field(
             ui,
-            "Endpoint",
+            &rust_i18n::t!("settings.advanced.endpoint.label"),
             &mut form.analysis_endpoint,
-            "http://localhost:1234/v1  (leave blank to use your Companion Memory server)",
+            &rust_i18n::t!("settings.advanced.endpoint.hint"),
             theme::FieldOpts::monospace(),
         );
         changed |= field(
             ui,
-            "API key",
+            &rust_i18n::t!("settings.advanced.api_key.label"),
             &mut form.analysis_api_key,
-            "lm-studio (local endpoints often ignore this)",
+            &rust_i18n::t!("settings.advanced.api_key.hint"),
             theme::FieldOpts::password(),
         );
         changed |= field(
             ui,
-            "Model",
+            &rust_i18n::t!("settings.advanced.model.label"),
             &mut form.analysis_model,
+            // A model identifier, not prose.
             "lmstudio-community/vision-large",
             theme::FieldOpts::monospace(),
         );
     });
 
+    ui.add_space(20.0);
+    // Language belongs on this page precisely because the default —
+    // `Language::System` — already does the right thing for almost everyone.
+    // You only come looking for this control when you want an app language
+    // that differs from your OS, which is exactly what "unusual setups" means.
+    //
+    // Picking a language repaints *this* window immediately (see the `apply`
+    // below). A language picker whose own window stays in the old language
+    // gives the user no way to tell whether the click registered — and if they
+    // picked wrong, no way to read the label that would let them undo it.
+    // Saving is what makes the choice stick and relabels the tray.
+    theme::field_label(ui, &rust_i18n::t!("settings.language.label"));
+    ui.add_space(6.0);
+    egui::Frame::new()
+        .fill(theme::INPUT())
+        .stroke(egui::Stroke::new(1.0, theme::BORDER()))
+        .corner_radius(egui::CornerRadius::same(10))
+        .inner_margin(egui::Margin::same(3))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 3.0;
+                for language in crate::locale::Language::ALL {
+                    // `label()` is written in the language it names, so it is
+                    // deliberately not translated per-locale.
+                    if theme::segment(ui, &language.label(), form.ui_language == language) {
+                        form.ui_language = language;
+                        // Repaint this window in the chosen language right away.
+                        // Safe to do before Save: the locale is per-process
+                        // state, so abandoning the dialog without saving leaves
+                        // nothing behind — the next launch reads config again.
+                        crate::locale::apply(language);
+                        changed = true;
+                    }
+                }
+            });
+        });
+    ui.add_space(8.0);
+    theme::caption(ui, &rust_i18n::t!("settings.language.help"));
+
     changed
 }
-
 
 #[cfg(test)]
 mod tests {
     use super::{AuthMode, SettingsFormState};
-    use crate::server_common::normalize_server_url;
     use crate::config::{AppConfig, OidcSession};
+    use crate::server_common::normalize_server_url;
 
     #[test]
     fn oidc_session_infers_oidc_mode_not_api_key() {
@@ -1066,15 +1162,15 @@ fn render_capture_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bool {
     let mut changed = false;
     page_header(
         ui,
-        "Capture",
-        "What gets recorded from this computer, and how often.",
+        &SettingsTab::Capture.label(),
+        &rust_i18n::t!("settings.capture.subtitle"),
     );
 
     ui.columns(2, |cols| {
         // Screenshot interval stepper.
         theme::card(&mut cols[0], |ui| {
             ui.set_width(ui.available_width());
-            theme::field_label(ui, "Screenshot interval");
+            theme::field_label(ui, &rust_i18n::t!("settings.capture.interval.label"));
             ui.add_space(12.0);
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 12.0;
@@ -1107,14 +1203,16 @@ fn render_capture_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bool {
                 }
             });
             ui.add_space(12.0);
-            ui.vertical_centered(|ui| theme::caption(ui, "Floored to 30s · default 300s"));
+            ui.vertical_centered(|ui| {
+                theme::caption(ui, &rust_i18n::t!("settings.capture.interval.help"))
+            });
         });
 
         // Diff threshold slider.
         theme::card(&mut cols[1], |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
-                theme::field_label(ui, "Diff threshold");
+                theme::field_label(ui, &rust_i18n::t!("settings.capture.diff.label"));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(
                         egui::RichText::new("%")
@@ -1136,41 +1234,42 @@ fn render_capture_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bool {
                 )
                 .changed();
             ui.add_space(12.0);
-            theme::caption(ui, "Frames changing less than this are skipped.");
+            theme::caption(ui, &rust_i18n::t!("settings.capture.diff.help"));
         });
     });
 
     ui.add_space(20.0);
-    theme::field_label(ui, "Capture lanes");
+    theme::field_label(ui, &rust_i18n::t!("settings.capture.lanes.label"));
     ui.add_space(10.0);
     // Plain language: these rows describe what the user gets, not how it is
     // implemented. "vizier", "JSON-Patch" and "durable queue" are internals and
     // told a first-time reader nothing.
+    let on = rust_i18n::t!("settings.capture.lane.on").to_string();
     theme::lane_row(
         ui,
         theme::LANE_SHOT(),
-        "Screens",
-        "Your main display, skipping frames that barely changed. Paused while locked.",
-        "on",
+        &rust_i18n::t!("settings.capture.lane.screens.title"),
+        &rust_i18n::t!("settings.capture.lane.screens.detail"),
+        &on,
     );
     ui.add_space(10.0);
     theme::lane_row(
         ui,
         theme::LANE_ACTIVITY(),
-        "Activity",
-        "Which app and window you're in, so your memory has context.",
-        "on",
+        &rust_i18n::t!("settings.capture.lane.activity.title"),
+        &rust_i18n::t!("settings.capture.lane.activity.detail"),
+        &on,
     );
     ui.add_space(10.0);
     theme::lane_row(
         ui,
         theme::LANE_FILE(),
-        "Files",
-        "Documents you edit in the folders below, saved as readable text.",
-        if form.watched_paths.is_empty() {
-            "off"
+        &rust_i18n::t!("settings.capture.lane.files.title"),
+        &rust_i18n::t!("settings.capture.lane.files.detail"),
+        &if form.watched_paths.is_empty() {
+            rust_i18n::t!("settings.capture.lane.off")
         } else {
-            "on"
+            rust_i18n::t!("settings.capture.lane.on")
         },
     );
 
@@ -1189,9 +1288,9 @@ fn render_watched_folders(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bo
 
     ui.add_space(20.0);
     ui.horizontal(|ui| {
-        theme::field_label(ui, "Watched folders");
+        theme::field_label(ui, &rust_i18n::t!("settings.folders.label"));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if theme::primary_button(ui, "Add folder…").clicked() {
+            if theme::primary_button(ui, &rust_i18n::t!("settings.folders.add")).clicked() {
                 // Start the picker somewhere useful rather than at "/".
                 let start = form
                     .watched_paths
@@ -1200,7 +1299,7 @@ fn render_watched_folders(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bo
                     .or_else(|| directories::UserDirs::new().map(|d| d.home_dir().to_path_buf()))
                     .unwrap_or_default();
                 if let Some(picked) = tinyfiledialogs::select_folder_dialog(
-                    "Watch a folder",
+                    &rust_i18n::t!("settings.folders.picker_title"),
                     &start.to_string_lossy(),
                 ) {
                     let path = PathBuf::from(picked);
@@ -1234,11 +1333,7 @@ fn render_watched_folders(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bo
     if form.watched_paths.is_empty() {
         theme::card(ui, |ui| {
             ui.set_width(ui.available_width());
-            theme::subtitle(
-                ui,
-                "No folders watched yet — file tracking is off. Add a folder and the files you \
-                 edit inside it become part of your Companion Memory.",
-            );
+            theme::subtitle(ui, &rust_i18n::t!("settings.folders.empty"));
         });
     } else {
         let mut remove = None;
@@ -1247,7 +1342,15 @@ fn render_watched_folders(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bo
                 ui.set_width(ui.available_width());
                 ui.horizontal(|ui| {
                     let exists = path.is_dir();
-                    theme::status_dot(ui, if exists { theme::GREEN() } else { theme::AMBER() }, false);
+                    theme::status_dot(
+                        ui,
+                        if exists {
+                            theme::GREEN()
+                        } else {
+                            theme::AMBER()
+                        },
+                        false,
+                    );
                     ui.add_space(8.0);
                     ui.vertical(|ui| {
                         ui.spacing_mut().item_spacing.y = 2.0;
@@ -1263,14 +1366,20 @@ fn render_watched_folders(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bo
                         theme::mono_label(
                             ui,
                             &path.to_string_lossy(),
-                            if exists { theme::MUTED() } else { theme::AMBER() },
+                            if exists {
+                                theme::MUTED()
+                            } else {
+                                theme::AMBER()
+                            },
                         );
                         if !exists {
-                            theme::caption(ui, "This folder is missing — it will be skipped.");
+                            theme::caption(ui, &rust_i18n::t!("settings.folders.missing"));
                         }
                     });
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if theme::ghost_button(ui, "Remove").clicked() {
+                        if theme::ghost_button(ui, &rust_i18n::t!("settings.folders.remove"))
+                            .clicked()
+                        {
                             remove = Some(i);
                         }
                     });
@@ -1287,8 +1396,8 @@ fn render_watched_folders(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bo
         changed |= theme::toggle_row(
             ui,
             &mut form.file_tracking_enabled,
-            "File tracking enabled",
-            "Turn off to stop watching without losing the folder list.",
+            &rust_i18n::t!("settings.folders.toggle.title"),
+            &rust_i18n::t!("settings.folders.toggle.detail"),
         );
     }
 
@@ -1316,13 +1425,13 @@ fn render_minio_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bool {
     let mut changed = false;
     page_header(
         ui,
-        "Storage",
-        "MinIO / S3-compatible object store for captured artifacts.",
+        &SettingsTab::Minio.label(),
+        &rust_i18n::t!("settings.storage.subtitle"),
     );
 
     changed |= field(
         ui,
-        "Endpoint",
+        &rust_i18n::t!("settings.storage.endpoint.label"),
         &mut form.minio_endpoint,
         "http://localhost:9000",
         theme::FieldOpts::monospace(),
@@ -1330,14 +1439,14 @@ fn render_minio_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bool {
     ui.columns(2, |cols| {
         changed |= field(
             &mut cols[0],
-            "Bucket",
+            &rust_i18n::t!("settings.storage.bucket.label"),
             &mut form.minio_bucket,
             "ci-captures",
             theme::FieldOpts::monospace(),
         );
         changed |= field(
             &mut cols[1],
-            "Region",
+            &rust_i18n::t!("settings.storage.region.label"),
             &mut form.minio_region,
             "us-east-1",
             theme::FieldOpts::monospace(),
@@ -1346,24 +1455,24 @@ fn render_minio_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bool {
     ui.columns(2, |cols| {
         changed |= field(
             &mut cols[0],
-            "Access Key",
+            &rust_i18n::t!("settings.storage.access_key.label"),
             &mut form.minio_access_key,
-            "Access key",
+            &rust_i18n::t!("settings.storage.access_key.hint"),
             theme::FieldOpts::monospace(),
         );
         changed |= field(
             &mut cols[1],
-            "Secret Key",
+            &rust_i18n::t!("settings.storage.secret_key.label"),
             &mut form.minio_secret_key,
-            "Secret key",
+            &rust_i18n::t!("settings.storage.secret_key.hint"),
             theme::FieldOpts::password(),
         );
     });
     changed |= theme::toggle_row(
         ui,
         &mut form.minio_use_ssl,
-        "Use SSL",
-        "Encrypt the connection to the object store.",
+        &rust_i18n::t!("settings.storage.ssl.title"),
+        &rust_i18n::t!("settings.storage.ssl.detail"),
     );
     changed
 }
@@ -1373,17 +1482,21 @@ fn render_minio_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bool {
 #[cfg(feature = "legacy-postgres")]
 fn render_postgres_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bool {
     let mut changed = false;
-    page_header(ui, "Database", "Postgres connection for capture metadata.");
+    page_header(
+        ui,
+        &SettingsTab::Postgres.label(),
+        &rust_i18n::t!("settings.database.subtitle"),
+    );
 
     ui.columns(2, |cols| {
         changed |= field(
             &mut cols[0],
-            "Host",
+            &rust_i18n::t!("settings.database.host.label"),
             &mut form.postgres_host,
             "db.example.com",
             theme::FieldOpts::monospace(),
         );
-        theme::field_label(&mut cols[1], "Port");
+        theme::field_label(&mut cols[1], &rust_i18n::t!("settings.database.port.label"));
         cols[1].add_space(6.0);
         changed |= cols[1]
             .add(
@@ -1397,14 +1510,14 @@ fn render_postgres_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bool 
     ui.columns(2, |cols| {
         changed |= field(
             &mut cols[0],
-            "Database",
+            &rust_i18n::t!("settings.database.name.label"),
             &mut form.postgres_database,
             "companion",
             theme::FieldOpts::monospace(),
         );
         changed |= field(
             &mut cols[1],
-            "User",
+            &rust_i18n::t!("settings.database.user.label"),
             &mut form.postgres_user,
             "ci_applet",
             theme::FieldOpts::monospace(),
@@ -1412,17 +1525,16 @@ fn render_postgres_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bool 
     });
     changed |= field(
         ui,
-        "Password",
+        &rust_i18n::t!("settings.database.password.label"),
         &mut form.postgres_password,
-        "Password",
+        &rust_i18n::t!("settings.database.password.hint"),
         theme::FieldOpts::password(),
     );
     changed |= theme::toggle_row(
         ui,
         &mut form.postgres_require_ssl,
-        "Require SSL",
-        "Refuse unencrypted database connections.",
+        &rust_i18n::t!("settings.database.ssl.title"),
+        &rust_i18n::t!("settings.database.ssl.detail"),
     );
     changed
 }
-
