@@ -4,11 +4,15 @@ name: Packages
 # (ghcr.io/companionintelligence/ci-capture) on pushes to main, on version
 # tags, and on manual dispatch. Pull requests build the image but don't push.
 
+# >>> ci-local:gated original triggers below, restore with `ci-local restore`
+# on:
+#   push:
+#     branches: [main]
+#     tags: ['v*']
+#   pull_request:
+#   workflow_dispatch:
+# <<< ci-local:gated
 on:
-  push:
-    branches: [main]
-    tags: ['v*']
-  pull_request:
   workflow_dispatch:
 
 permissions:

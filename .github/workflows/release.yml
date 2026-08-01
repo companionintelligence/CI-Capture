@@ -481,6 +481,7 @@ jobs:
       - name: Upload release artifacts
         uses: actions/upload-artifact@v4
         with:
+          retention-days: 7
           name: companion-capture-${{ matrix.artifact }}
           path: release-artifacts/*
           if-no-files-found: error
