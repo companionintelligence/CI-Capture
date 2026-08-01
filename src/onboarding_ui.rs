@@ -47,21 +47,24 @@ impl Step {
         Step::Finish,
     ];
 
-    fn short_label(self) -> &'static str {
+    fn short_label(self) -> String {
         match self {
-            Step::Welcome => "What it does",
-            Step::Connect => "Connect",
-            Step::Permissions => "Permission",
-            Step::Finish => "Done",
+            Step::Welcome => rust_i18n::t!("onboarding.step.welcome"),
+            Step::Connect => rust_i18n::t!("onboarding.step.connect"),
+            Step::Permissions => rust_i18n::t!("onboarding.step.permissions"),
+            Step::Finish => rust_i18n::t!("onboarding.step.finish"),
         }
+        .to_string()
     }
 
-    fn title(self) -> &'static str {
+    fn title(self) -> String {
         match self {
-            Step::Welcome => "Companion Capture",
-            Step::Connect => "Connect your Companion Memory",
-            Step::Permissions => "One permission",
-            Step::Finish => "You're set",
+            // The first screen's title is the bare product name, which is the
+            // same in every locale — there is nothing to translate.
+            Step::Welcome => "Companion Capture".to_string(),
+            Step::Connect => rust_i18n::t!("onboarding.title.connect").to_string(),
+            Step::Permissions => rust_i18n::t!("onboarding.title.permissions").to_string(),
+            Step::Finish => rust_i18n::t!("onboarding.title.finish").to_string(),
         }
     }
 
@@ -106,9 +109,10 @@ const DOWNLOAD_URL: &str = "https://ci.computer/download";
 fn no_server_hint(ui: &mut egui::Ui) {
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
-        theme::caption(ui, "Don't have a Companion Memory server yet? Install");
+        theme::caption(ui, &rust_i18n::t!("onboarding.no_server.prefix"));
         if ui
             .link(
+                // "Companion Hub" is a product name, identical in every locale.
                 egui::RichText::new("Companion Hub")
                     .font(theme::body(tokens::text::SMALL))
                     .color(theme::TEAL()),
@@ -118,7 +122,7 @@ fn no_server_hint(ui: &mut egui::Ui) {
         {
             let _ = crate::open_url(DOWNLOAD_URL);
         }
-        theme::caption(ui, "to run one on your own hardware.");
+        theme::caption(ui, &rust_i18n::t!("onboarding.no_server.suffix"));
     });
 }
 
@@ -133,7 +137,7 @@ pub fn run_onboarding_ui() -> Result<()> {
     let native_options = NativeOptions {
         centered: true,
         viewport: egui::ViewportBuilder::default()
-            .with_title("Welcome to Companion Capture")
+            .with_title(rust_i18n::t!("onboarding.window.title").to_string())
             .with_inner_size([840.0, 680.0])
             .with_min_inner_size([720.0, 600.0]),
         ..Default::default()
@@ -258,7 +262,13 @@ impl OnboardingApp {
         mutate(&mut live);
         match self.manager.save(&live) {
             Ok(()) => self.config = live,
-            Err(e) => self.status_line = Some(Err(format!("Could not save: {e}"))),
+            Err(e) => {
+                self.status_line = Some(Err(rust_i18n::t!(
+                    "onboarding.status.save_failed",
+                    error = e
+                )
+                .to_string()))
+            }
         }
     }
 
@@ -318,8 +328,7 @@ impl OnboardingApp {
     fn start_login(&mut self) {
         if self.oidc_issuer.trim().is_empty() {
             self.status_line = Some(Err(
-                "Enter your portal sign-in URL (OIDC issuer) first, or paste an API key below."
-                    .into(),
+                rust_i18n::t!("onboarding.status.issuer_required").to_string()
             ));
             return;
         }
@@ -328,7 +337,9 @@ impl OnboardingApp {
         }
         let (tx, rx) = channel();
         self.login_rx = Some(rx);
-        self.status_line = Some(Ok("Opening your browser to sign in…".into()));
+        self.status_line = Some(Ok(
+            rust_i18n::t!("onboarding.status.opening_browser").to_string()
+        ));
         std::thread::spawn(move || {
             // login_with_portal opens the browser, waits for the loopback
             // redirect, and persists the tokens to config.json.
@@ -340,7 +351,9 @@ impl OnboardingApp {
     fn start_api_key_save(&mut self) {
         let key = self.api_key.trim().to_string();
         if key.is_empty() {
-            self.status_line = Some(Err("Paste an API key first.".into()));
+            self.status_line = Some(Err(
+                rust_i18n::t!("onboarding.status.api_key_required").to_string()
+            ));
             return;
         }
         let Some(url) = self.normalized_server_url() else {
@@ -354,7 +367,9 @@ impl OnboardingApp {
             c.oidc_session = None;
         });
         if self.has_credential() {
-            self.status_line = Some(Ok("API key saved. Testing the connection…".into()));
+            self.status_line = Some(Ok(
+                rust_i18n::t!("onboarding.status.api_key_saved").to_string()
+            ));
             self.start_connection_test();
         }
     }
@@ -375,7 +390,13 @@ impl OnboardingApp {
             {
                 Ok(rt) => rt,
                 Err(e) => {
-                    let _ = tx.send(Err(format!("runtime: {e}")));
+                    // This lands in `status_line`, i.e. on screen — not in the
+                    // log — so it has to be a translated sentence.
+                    let _ = tx.send(Err(rust_i18n::t!(
+                        "onboarding.status.runtime_failed",
+                        error = e
+                    )
+                    .to_string()));
                     return;
                 }
             };
@@ -484,12 +505,7 @@ impl OnboardingApp {
     // ── step 1: what this is, and one button to connect ─────────────────────
 
     fn welcome(&mut self, ui: &mut egui::Ui) {
-        theme::subtitle(
-            ui,
-            "Companion Capture records what you see and edit on this computer into your \
-             Companion Memory — saved on your own Companion Memory server, not in anyone \
-             else's cloud.",
-        );
+        theme::subtitle(ui, &rust_i18n::t!("onboarding.welcome.subtitle"));
         ui.add_space(14.0);
 
         // The animated explainer: three lanes flowing to your Companion Memory.
@@ -501,18 +517,18 @@ impl OnboardingApp {
             for (color, title, body) in [
                 (
                     theme::LANE_SHOT(),
-                    "Screens",
-                    "A picture of your screen now and then. Near-identical frames are skipped.",
+                    rust_i18n::t!("onboarding.welcome.lane.screens.title"),
+                    rust_i18n::t!("onboarding.welcome.lane.screens.body"),
                 ),
                 (
                     theme::LANE_ACTIVITY(),
-                    "Activity",
-                    "Which app and window you're in, so your memory has context.",
+                    rust_i18n::t!("onboarding.welcome.lane.activity.title"),
+                    rust_i18n::t!("onboarding.welcome.lane.activity.body"),
                 ),
                 (
                     theme::LANE_FILE(),
-                    "Files",
-                    "Documents you edit in folders you choose. Off until you pick one.",
+                    rust_i18n::t!("onboarding.welcome.lane.files.title"),
+                    rust_i18n::t!("onboarding.welcome.lane.files.body"),
                 ),
             ] {
                 ui.horizontal(|ui| {
@@ -521,11 +537,11 @@ impl OnboardingApp {
                     ui.vertical(|ui| {
                         ui.spacing_mut().item_spacing.y = 2.0;
                         ui.label(
-                            egui::RichText::new(title)
+                            egui::RichText::new(title.to_string())
                                 .font(theme::semibold(tokens::text::LABEL))
                                 .color(theme::TEXT()),
                         );
-                        theme::caption(ui, body);
+                        theme::caption(ui, &body);
                     });
                 });
                 ui.add_space(10.0);
@@ -533,11 +549,7 @@ impl OnboardingApp {
         });
 
         ui.add_space(14.0);
-        theme::caption(
-            ui,
-            "Passwords, SSH keys, .env files and keychains are never read — that exclusion can't \
-             be turned off.",
-        );
+        theme::caption(ui, &rust_i18n::t!("onboarding.welcome.exclusions"));
 
         ui.add_space(10.0);
         no_server_hint(ui);
@@ -548,10 +560,7 @@ impl OnboardingApp {
     fn connect(&mut self, ui: &mut egui::Ui) {
         let running = self.job_running();
 
-        theme::subtitle(
-            ui,
-            "Sign in and we'll find your Companion Memory server for you. Nothing to type.",
-        );
+        theme::subtitle(ui, &rust_i18n::t!("onboarding.connect.subtitle"));
         ui.add_space(16.0);
 
         if self.has_credential() {
@@ -563,12 +572,14 @@ impl OnboardingApp {
                     ui.vertical(|ui| {
                         ui.spacing_mut().item_spacing.y = 3.0;
                         ui.label(
-                            egui::RichText::new(self.who().unwrap_or_else(|| "Signed in".into()))
-                                .font(theme::semibold(tokens::text::BODY))
-                                .color(theme::TEXT()),
+                            egui::RichText::new(self.who().unwrap_or_else(|| {
+                                rust_i18n::t!("onboarding.connect.signed_in").to_string()
+                            }))
+                            .font(theme::semibold(tokens::text::BODY))
+                            .color(theme::TEXT()),
                         );
                         let target = if self.server_url.trim().is_empty() {
-                            "Looking for your Companion Memory server…".to_string()
+                            rust_i18n::t!("onboarding.connect.discovering").to_string()
                         } else {
                             self.server_url.trim().to_string()
                         };
@@ -579,15 +590,14 @@ impl OnboardingApp {
             ui.add_space(12.0);
         } else {
             ui.add_enabled_ui(!running, |ui| {
-                if theme::primary_button(ui, "Continue with Portal").clicked() {
+                if theme::primary_button(ui, &rust_i18n::t!("onboarding.connect.portal_button"))
+                    .clicked()
+                {
                     self.start_login();
                 }
             });
             ui.add_space(8.0);
-            theme::caption(
-                ui,
-                "Opens your browser to sign in. We never see your password.",
-            );
+            theme::caption(ui, &rust_i18n::t!("onboarding.connect.portal_help"));
             ui.add_space(14.0);
             no_server_hint(ui);
             ui.add_space(6.0);
@@ -597,7 +607,7 @@ impl OnboardingApp {
             ui.horizontal(|ui| {
                 ui.spinner();
                 ui.add_space(6.0);
-                theme::caption(ui, "Working…");
+                theme::caption(ui, &rust_i18n::t!("onboarding.connect.working"));
             });
             ui.add_space(10.0);
         }
@@ -609,27 +619,24 @@ impl OnboardingApp {
         // install should never need to open it — which is why it is collapsed
         // and why nothing here is prefilled with someone else's hostname.
         egui::CollapsingHeader::new(
-            egui::RichText::new("Set things up manually")
+            egui::RichText::new(rust_i18n::t!("onboarding.connect.manual_header").to_string())
                 .font(theme::body(tokens::text::SMALL))
                 .color(theme::MUTED()),
         )
         .id_salt("onboarding_advanced")
         .show(ui, |ui| {
             ui.add_space(6.0);
-            theme::field_label(ui, "Your Companion Memory server");
+            theme::field_label(ui, &rust_i18n::t!("onboarding.connect.server_label"));
             theme::text_field(
                 ui,
                 &mut self.server_url,
-                "http://core-1:8642 or http://my-core.tailnet.ts.net:8642",
+                &rust_i18n::t!("onboarding.connect.server_hint"),
                 theme::FieldOpts::default(),
             );
-            theme::caption(
-                ui,
-                "A LAN hostname or a Tailscale address — wherever your Companion Memory server runs.",
-            );
+            theme::caption(ui, &rust_i18n::t!("onboarding.connect.server_help"));
             ui.add_space(12.0);
 
-            theme::field_label(ui, "Portal sign-in URL");
+            theme::field_label(ui, &rust_i18n::t!("onboarding.connect.issuer_label"));
             theme::text_field(
                 ui,
                 &mut self.oidc_issuer,
@@ -638,18 +645,20 @@ impl OnboardingApp {
             );
             ui.add_space(12.0);
 
-            theme::field_label(ui, "…or paste an access key");
+            theme::field_label(ui, &rust_i18n::t!("onboarding.connect.api_key_label"));
             ui.horizontal(|ui| {
                 theme::text_field(
                     ui,
                     &mut self.api_key,
-                    "Access key for your Companion Memory server",
+                    &rust_i18n::t!("onboarding.connect.api_key_hint"),
                     theme::FieldOpts {
                         password: true,
                         ..Default::default()
                     },
                 );
-                if theme::ghost_button(ui, "Save").clicked() {
+                if theme::ghost_button(ui, &rust_i18n::t!("onboarding.connect.save_button"))
+                    .clicked()
+                {
                     self.start_api_key_save();
                 }
             });
@@ -659,7 +668,9 @@ impl OnboardingApp {
                 if ui
                     .add_enabled(
                         !running && self.has_credential(),
-                        egui::Button::new("Test the connection"),
+                        egui::Button::new(
+                            rust_i18n::t!("onboarding.connect.test_button").to_string(),
+                        ),
                     )
                     .clicked()
                 {
@@ -673,10 +684,7 @@ impl OnboardingApp {
     // ── step 3 (macOS only): the one permission that matters ────────────────
 
     fn permissions(&mut self, ui: &mut egui::Ui) {
-        theme::subtitle(
-            ui,
-            "macOS needs your permission before anything can see the screen.",
-        );
+        theme::subtitle(ui, &rust_i18n::t!("onboarding.permissions.subtitle"));
         ui.add_space(16.0);
 
         let sr = self.perms.screen_recording;
@@ -687,36 +695,51 @@ impl OnboardingApp {
             ui.horizontal(|ui| {
                 theme::status_dot(
                     ui,
-                    if granted { theme::GREEN() } else { theme::AMBER() },
+                    if granted {
+                        theme::GREEN()
+                    } else {
+                        theme::AMBER()
+                    },
                     !granted,
                 );
                 ui.add_space(10.0);
                 ui.vertical(|ui| {
                     ui.spacing_mut().item_spacing.y = 3.0;
                     ui.label(
-                        egui::RichText::new("Screen Recording")
-                            .font(theme::semibold(tokens::text::BODY))
-                            .color(theme::TEXT()),
+                        egui::RichText::new(
+                            rust_i18n::t!("onboarding.permissions.screen_recording").to_string(),
+                        )
+                        .font(theme::semibold(tokens::text::BODY))
+                        .color(theme::TEXT()),
                     );
                     theme::caption(
                         ui,
-                        if granted {
-                            "Granted — screens and activity will be captured."
+                        &if granted {
+                            rust_i18n::t!("onboarding.permissions.granted_detail")
                         } else {
-                            "Without this, captures come out blank."
+                            rust_i18n::t!("onboarding.permissions.missing_detail")
                         },
                     );
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if !granted {
-                        if theme::primary_button(ui, "Allow…").clicked() {
+                        if theme::primary_button(
+                            ui,
+                            &rust_i18n::t!("onboarding.permissions.allow_button"),
+                        )
+                        .clicked()
+                        {
                             // Triggers the OS prompt on first call; afterwards
                             // macOS only honours the Settings pane.
                             permissions::request_screen_recording();
                             let _ = crate::open_url(permissions::screen_recording_settings_url());
                         }
                     } else {
-                        theme::status_badge(ui, "Granted", theme::GREEN());
+                        theme::status_badge(
+                            ui,
+                            &rust_i18n::t!("onboarding.permissions.granted_badge"),
+                            theme::GREEN(),
+                        );
                     }
                 });
             });
@@ -725,16 +748,15 @@ impl OnboardingApp {
         ui.add_space(14.0);
         if granted {
             ui.label(
-                egui::RichText::new("✓  Nothing else to do.")
-                    .font(theme::body(tokens::text::LABEL))
-                    .color(theme::GREEN()),
+                egui::RichText::new(format!(
+                    "✓  {}",
+                    rust_i18n::t!("onboarding.permissions.all_set")
+                ))
+                .font(theme::body(tokens::text::LABEL))
+                .color(theme::GREEN()),
             );
         } else {
-            theme::caption(
-                ui,
-                "Flip the switch next to Companion Capture in System Settings — this page notices \
-                 on its own, no need to come back and click anything.",
-            );
+            theme::caption(ui, &rust_i18n::t!("onboarding.permissions.how_to"));
         }
 
         // Accessibility is deliberately absent. Nothing in the applet or in
@@ -746,7 +768,7 @@ impl OnboardingApp {
     // ── step 4: what's on, and what to do next ──────────────────────────────
 
     fn finish_step(&mut self, ui: &mut egui::Ui) {
-        theme::subtitle(ui, "Capture is running. Here's where things stand.");
+        theme::subtitle(ui, &rust_i18n::t!("onboarding.finish.subtitle"));
         ui.add_space(16.0);
 
         let connected = self.has_credential();
@@ -755,11 +777,10 @@ impl OnboardingApp {
             self.summary_row(
                 ui,
                 connected,
-                "Connected to your Companion Memory",
+                &rust_i18n::t!("onboarding.finish.connected_title"),
                 &match self.who() {
                     Some(w) if connected => format!("{w} · {}", self.server_url.trim()),
-                    _ => "Not signed in — captures will wait on this machine until you are."
-                        .to_string(),
+                    _ => rust_i18n::t!("onboarding.finish.not_connected").to_string(),
                 },
             );
             ui.add_space(10.0);
@@ -769,11 +790,11 @@ impl OnboardingApp {
                 self.summary_row(
                     ui,
                     sr.is_ok(),
-                    "Screen Recording allowed",
-                    if sr.is_ok() {
-                        "Screens and activity are being captured."
+                    &rust_i18n::t!("onboarding.finish.screen_recording_title"),
+                    &if sr.is_ok() {
+                        rust_i18n::t!("onboarding.finish.screen_recording_ok")
                     } else {
-                        "Captures will be blank until you allow it in System Settings."
+                        rust_i18n::t!("onboarding.finish.screen_recording_missing")
                     },
                 );
                 ui.add_space(10.0);
@@ -783,23 +804,19 @@ impl OnboardingApp {
             self.summary_row(
                 ui,
                 folders > 0,
-                "Watching folders for file edits",
+                &rust_i18n::t!("onboarding.finish.folders_title"),
                 &match folders {
-                    0 => "Off. Add a folder in Settings whenever you want it.".to_string(),
-                    1 => "1 folder.".to_string(),
-                    n => format!("{n} folders."),
+                    0 => rust_i18n::t!("onboarding.finish.folders_none").to_string(),
+                    1 => rust_i18n::t!("onboarding.finish.folders_one").to_string(),
+                    n => rust_i18n::t!("onboarding.finish.folders_many", count = n).to_string(),
                 },
             );
         });
 
         ui.add_space(18.0);
-        theme::field_label(ui, "Where to find things");
+        theme::field_label(ui, &rust_i18n::t!("onboarding.finish.where_label"));
         ui.add_space(8.0);
-        theme::caption(
-            ui,
-            "Companion Capture lives in your menu bar. Click it to pause capture, open your \
-             memory in a browser, add folders, or sign in again.",
-        );
+        theme::caption(ui, &rust_i18n::t!("onboarding.finish.where_body"));
     }
 
     /// One ✓/• line in the finish summary.
@@ -831,7 +848,7 @@ impl OnboardingApp {
             .and_then(|s| s.email.clone().or_else(|| s.subject.clone()))
             .or_else(|| {
                 self.has_credential()
-                    .then(|| "Signed in with an access key".into())
+                    .then(|| rust_i18n::t!("onboarding.connect.signed_in_with_key").to_string())
             })
     }
 
@@ -856,7 +873,8 @@ impl OnboardingApp {
     fn nav_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             if let Some(prev) = self.step.prev() {
-                if theme::ghost_button(ui, "←  Back").clicked() {
+                let back = format!("←  {}", rust_i18n::t!("onboarding.nav.back"));
+                if theme::ghost_button(ui, &back).clicked() {
                     self.step = prev;
                 }
             }
@@ -864,7 +882,12 @@ impl OnboardingApp {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 match self.step {
                     Step::Finish => {
-                        if theme::primary_button(ui, "Start capturing").clicked() {
+                        if theme::primary_button(
+                            ui,
+                            &rust_i18n::t!("onboarding.nav.start_capturing"),
+                        )
+                        .clicked()
+                        {
                             let ctx = ui.ctx().clone();
                             self.finish(&ctx);
                         }
@@ -875,11 +898,11 @@ impl OnboardingApp {
                         // onboarding_completed and stops the auto-reopen) is
                         // always reachable even without a credential.
                         let label = if self.has_credential() {
-                            "Continue  →"
+                            format!("{}  →", rust_i18n::t!("onboarding.nav.continue"))
                         } else {
-                            "Skip for now  →"
+                            format!("{}  →", rust_i18n::t!("onboarding.nav.skip"))
                         };
-                        if theme::primary_button(ui, label).clicked() {
+                        if theme::primary_button(ui, &label).clicked() {
                             // An empty address is a real skip and advances. One
                             // that was typed but can't be used holds the step,
                             // so the message lands next to the field that
@@ -892,17 +915,17 @@ impl OnboardingApp {
                             }
                         }
                         if !self.has_credential() {
-                            theme::caption(ui, "You can sign in later from the menu bar.");
+                            theme::caption(ui, &rust_i18n::t!("onboarding.nav.sign_in_later"));
                         }
                     }
                     _ => {
                         if let Some(next) = self.step.next() {
                             let label = if self.step == Step::Welcome {
-                                "Get started  →"
+                                format!("{}  →", rust_i18n::t!("onboarding.nav.get_started"))
                             } else {
-                                "Continue  →"
+                                format!("{}  →", rust_i18n::t!("onboarding.nav.continue"))
                             };
-                            if theme::primary_button(ui, label).clicked() {
+                            if theme::primary_button(ui, &label).clicked() {
                                 self.step = next;
                             }
                         }
@@ -941,7 +964,7 @@ impl eframe::App for OnboardingApp {
             )
             .show(ctx, |ui| {
                 let step = self.step;
-                self.header(ui, step.title());
+                self.header(ui, &step.title());
                 let eased = self.step_progress(ctx);
                 // Every step scrolls. Without this the Connect step clipped
                 // irrecoverably at the minimum window size, with no way to reach

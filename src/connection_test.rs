@@ -27,13 +27,17 @@ fn client() -> Result<Client, String> {
 pub async fn test_ci_server(config: &AppConfig) -> Result<String, String> {
     let portal = config.server.portal_url.trim();
     if portal.is_empty() {
-        return Err("Add your Companion Memory server address first.".into());
+        return Err(rust_i18n::t!("status.check.no_server_address").into());
     }
-    let origin = server_origin(portal).map_err(|e| format!("Invalid URL: {e}"))?;
+    let origin = server_origin(portal)
+        .map_err(|e| rust_i18n::t!("status.check.invalid_url", error = e).to_string())?;
     let client = client()?;
     let credential = AuthCredential::from_config(config).ok();
 
-    let urls = graphql_urls(portal).map_err(|e| e.to_string())?;
+    // Same failure as `server_origin` above (an address with no usable host),
+    // so it must not report through an untranslated anyhow chain.
+    let urls = graphql_urls(portal)
+        .map_err(|e| rust_i18n::t!("status.check.invalid_url", error = e).to_string())?;
     let mut last_err: Option<String> = None;
     for gql in urls {
         let mut req = client
@@ -48,20 +52,27 @@ pub async fn test_ci_server(config: &AppConfig) -> Result<String, String> {
                 if status == reqwest::StatusCode::UNAUTHORIZED
                     || status == reqwest::StatusCode::FORBIDDEN
                 {
-                    return Err(format!(
-                        "Reached the server, but the credential was rejected (HTTP {}).",
-                        status.as_u16()
-                    ));
+                    return Err(rust_i18n::t!(
+                        "status.check.credential_rejected",
+                        status = status.as_u16()
+                    )
+                    .to_string());
                 }
                 let body = resp.text().await.unwrap_or_default();
                 if body.contains("__typename") || status.is_success() {
                     let auth_note = match &credential {
-                        Some(c) => format!(" · {} auth accepted", c.label()),
-                        None => " · no credential sent".to_string(),
+                        Some(c) => rust_i18n::t!("status.check.auth_accepted", kind = c.label())
+                            .to_string(),
+                        None => rust_i18n::t!("status.check.no_credential").to_string(),
                     };
-                    return Ok(format!("Reachable · HTTP {}{auth_note}", status.as_u16()));
+                    let reachable =
+                        rust_i18n::t!("status.check.reachable", status = status.as_u16());
+                    return Ok(format!("{reachable} · {auth_note}"));
                 }
-                last_err = Some(format!("HTTP {} (unexpected response)", status.as_u16()));
+                last_err = Some(
+                    rust_i18n::t!("status.check.unexpected_response", status = status.as_u16())
+                        .to_string(),
+                );
             }
             Err(err) => last_err = Some(friendly_error(&err)),
         }
@@ -71,14 +82,15 @@ pub async fn test_ci_server(config: &AppConfig) -> Result<String, String> {
     // basic reachability.
     if let Ok(health) = origin.join("/health") {
         if let Ok(resp) = client.get(health).send().await {
-            return Ok(format!(
-                "Server reachable · GET /health HTTP {} (GraphQL route not found)",
-                resp.status().as_u16()
-            ));
+            return Ok(rust_i18n::t!(
+                "status.check.health_fallback",
+                status = resp.status().as_u16()
+            )
+            .to_string());
         }
     }
 
-    Err(last_err.unwrap_or_else(|| "Your Companion Memory server didn't respond on any known address.".into()))
+    Err(last_err.unwrap_or_else(|| rust_i18n::t!("status.check.no_response").to_string()))
 }
 
 /// Reachability probe for the vision endpoint. A `GET` on a POST-only path
@@ -87,15 +99,17 @@ pub async fn test_ci_server(config: &AppConfig) -> Result<String, String> {
 pub async fn test_vision(config: &AppConfig) -> Result<String, String> {
     let endpoint = config.analysis.endpoint.trim();
     if endpoint.is_empty() {
-        return Err("Set a vision endpoint first.".into());
+        return Err(rust_i18n::t!("status.check.no_vision_endpoint").into());
     }
-    let url = reqwest::Url::parse(endpoint).map_err(|e| format!("Invalid endpoint URL: {e}"))?;
+    let url = reqwest::Url::parse(endpoint)
+        .map_err(|e| rust_i18n::t!("status.check.invalid_endpoint_url", error = e).to_string())?;
     let client = client()?;
     match client.get(url).send().await {
-        Ok(resp) => Ok(format!(
-            "Endpoint reachable · HTTP {}",
-            resp.status().as_u16()
-        )),
+        Ok(resp) => Ok(rust_i18n::t!(
+            "status.check.endpoint_reachable",
+            status = resp.status().as_u16()
+        )
+        .to_string()),
         Err(err) => Err(friendly_error(&err)),
     }
 }
@@ -113,7 +127,7 @@ pub async fn test_postgres(config: &AppConfig) -> Result<String, String> {
 
     let pg = &config.postgres;
     if pg.host.trim().is_empty() {
-        return Err("Set a database host first.".into());
+        return Err(rust_i18n::t!("status.check.no_database_host").into());
     }
 
     let mut cfg = Config::new();
@@ -133,11 +147,16 @@ pub async fn test_postgres(config: &AppConfig) -> Result<String, String> {
             let result = db.query_one("SELECT 1", &[]).await;
             handle.abort();
             match result {
-                Ok(_) => Ok(format!(
-                    "Connected · {}@{}:{}/{} · SELECT 1 ok",
-                    pg.user, pg.host, pg.port, pg.database
-                )),
-                Err(e) => Err(format!("Connected, but query failed: {e}")),
+                Ok(_) => {
+                    let target = format!("{}@{}:{}/{}", pg.user, pg.host, pg.port, pg.database);
+                    Ok(
+                        rust_i18n::t!("status.check.postgres_connected", target = target)
+                            .to_string(),
+                    )
+                }
+                Err(e) => {
+                    Err(rust_i18n::t!("status.check.postgres_query_failed", error = e).to_string())
+                }
             }
         }
         Err(e) => Err(format!("{e}")),
@@ -150,8 +169,11 @@ pub async fn test_postgres(config: &AppConfig) -> Result<String, String> {
 #[cfg(feature = "legacy-minio")]
 pub async fn test_minio(config: &AppConfig) -> Result<String, String> {
     match crate::minio::MinioUploader::new(&config.minio).await {
-        Ok(_) => Ok(format!("Bucket '{}' reachable", config.minio.bucket)),
+        Ok(_) => Ok(rust_i18n::t!(
+            "status.check.bucket_reachable",
+            bucket = config.minio.bucket
+        )
+        .to_string()),
         Err(e) => Err(format!("{e}")),
     }
 }
-

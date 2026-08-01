@@ -1,0 +1,122 @@
+_version: 2
+
+# Status, permission, and connection-test strings.
+#
+# Covers src/server_common.rs (friendly connection errors + address
+# validation), src/permissions.rs (the traffic-light badges), and
+# src/connection_test.rs (the inline "Test connection" report lines).
+#
+# House style for Spanish:
+#   - Address the user as "tu" / "tú" (informal), matching the English tone.
+#   - "Companion Memory", "Companion Capture", "CI-Server" and "Portal" are
+#     product names — never translated.
+#   - Glyphs (✅ ⛔ — ·) are part of the copy and stay in both locales.
+#   - Protocol tokens (HTTP, TLS, GraphQL, SELECT 1, /health) stay verbatim.
+
+# ── Connection failures (server_common::friendly_error) ─────────────────────
+
+status.error.tls_certificate:
+  en: TLS certificate rejected; use a trusted CI-Server URL or install the server certificate
+  es: Certificado TLS rechazado; usa una URL de CI-Server de confianza o instala el certificado del servidor
+
+status.error.tls_handshake:
+  en: TLS handshake failed; check the URL and certificate
+  es: Falló la negociación TLS; revisa la URL y el certificado
+
+status.error.connect_refused:
+  en: connection refused / host unreachable
+  es: conexión rechazada / host inalcanzable
+
+status.error.timed_out:
+  en: timed out
+  es: tiempo de espera agotado
+
+# ── Server address validation (server_common::normalize_server_url) ─────────
+
+status.address.empty:
+  en: Enter your Companion Memory server address.
+  es: Escribe la dirección de tu servidor de Companion Memory.
+
+status.address.invalid:
+  en: That doesn't look like a valid address.
+  es: Eso no parece una dirección válida.
+
+# ── Permission badges (permissions::PermissionStatus::badge) ────────────────
+
+status.permission.granted:
+  en: "✅ Granted"
+  es: "✅ Concedido"
+
+status.permission.denied:
+  en: "⛔ Not granted"
+  es: "⛔ No concedido"
+
+status.permission.not_required:
+  en: "— Not required on this OS"
+  es: "— No hace falta en este sistema"
+
+# ── Connection tests (connection_test) ──────────────────────────────────────
+
+status.check.no_server_address:
+  en: Add your Companion Memory server address first.
+  es: Primero añade la dirección de tu servidor de Companion Memory.
+
+status.check.invalid_url:
+  en: "Invalid URL: %{error}"
+  es: "URL no válida: %{error}"
+
+status.check.credential_rejected:
+  en: Reached the server, but the credential was rejected (HTTP %{status}).
+  es: El servidor respondió, pero rechazó la credencial (HTTP %{status}).
+
+status.check.reachable:
+  en: Reachable · HTTP %{status}
+  es: Accesible · HTTP %{status}
+
+status.check.auth_accepted:
+  en: "%{kind} auth accepted"
+  es: "autenticación %{kind} aceptada"
+
+status.check.no_credential:
+  en: no credential sent
+  es: sin credencial
+
+status.check.unexpected_response:
+  en: HTTP %{status} (unexpected response)
+  es: HTTP %{status} (respuesta inesperada)
+
+status.check.health_fallback:
+  en: Server reachable · GET /health HTTP %{status} (GraphQL route not found)
+  es: Servidor accesible · GET /health HTTP %{status} (ruta GraphQL no encontrada)
+
+status.check.no_response:
+  en: Your Companion Memory server didn't respond on any known address.
+  es: Tu servidor de Companion Memory no respondió en ninguna dirección conocida.
+
+status.check.no_vision_endpoint:
+  en: Set a vision endpoint first.
+  es: Primero configura un endpoint de visión.
+
+status.check.invalid_endpoint_url:
+  en: "Invalid endpoint URL: %{error}"
+  es: "URL del endpoint no válida: %{error}"
+
+status.check.endpoint_reachable:
+  en: Endpoint reachable · HTTP %{status}
+  es: Endpoint accesible · HTTP %{status}
+
+status.check.no_database_host:
+  en: Set a database host first.
+  es: Primero configura un host de base de datos.
+
+status.check.postgres_connected:
+  en: Connected · %{target} · SELECT 1 ok
+  es: Conectado · %{target} · SELECT 1 correcto
+
+status.check.postgres_query_failed:
+  en: "Connected, but the query failed: %{error}"
+  es: "Conectado, pero la consulta falló: %{error}"
+
+status.check.bucket_reachable:
+  en: Bucket '%{bucket}' reachable
+  es: Bucket '%{bucket}' accesible

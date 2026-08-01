@@ -497,10 +497,21 @@ pub fn capture_flow(ui: &mut Ui, height: f32) -> egui::Rect {
     // ── the three lanes ─────────────────────────────────────────────────────
     // Computed before the endpoints are drawn so their departure/arrival
     // pulses (below) can react to how close a packet is to each end.
-    let lanes: [(Color32, &str); 3] = [
-        (LANE_SHOT(), "Screens"),
-        (LANE_ACTIVITY(), "Activity"),
-        (LANE_FILE(), "Files"),
+    // Same keys as the lane cards the onboarding step draws underneath: the
+    // diagram and the list must say the same word in every locale.
+    let lanes: [(Color32, String); 3] = [
+        (
+            LANE_SHOT(),
+            rust_i18n::t!("onboarding.welcome.lane.screens.title").to_string(),
+        ),
+        (
+            LANE_ACTIVITY(),
+            rust_i18n::t!("onboarding.welcome.lane.activity.title").to_string(),
+        ),
+        (
+            LANE_FILE(),
+            rust_i18n::t!("onboarding.welcome.lane.files.title").to_string(),
+        ),
     ];
     let x0 = device.right() + 14.0;
     let x1 = core_c.x - core_r - 10.0;
@@ -525,7 +536,7 @@ pub fn capture_flow(ui: &mut Ui, height: f32) -> egui::Rect {
         p.text(
             egui::pos2(x0 + 2.0, y - 6.0),
             Align2::LEFT_BOTTOM,
-            *label,
+            label,
             body(tokens::text::MIN),
             tint(*color, 210),
         );
@@ -590,7 +601,7 @@ pub fn capture_flow(ui: &mut Ui, height: f32) -> egui::Rect {
     p.text(
         egui::pos2(device.center().x, device.bottom() + 18.0),
         Align2::CENTER_TOP,
-        "This computer",
+        rust_i18n::t!("onboarding.welcome.flow.this_computer").to_string(),
         body(tokens::text::SMALL),
         MUTED(),
     );
@@ -613,7 +624,7 @@ pub fn capture_flow(ui: &mut Ui, height: f32) -> egui::Rect {
     p.text(
         egui::pos2(core_c.x, core_c.y + core_r + 10.0),
         Align2::CENTER_TOP,
-        "Your Memory",
+        rust_i18n::t!("onboarding.welcome.flow.your_memory").to_string(),
         body(tokens::text::SMALL),
         MUTED(),
     );
@@ -792,7 +803,11 @@ pub fn lane_row(ui: &mut Ui, color: Color32, title: &str, subtitle: &str, tag: &
                 ui.vertical(|ui| {
                     ui.spacing_mut().item_spacing.y = 2.0;
                     ui.label(egui::RichText::new(title).font(body(15.0)).color(TEXT()));
-                    ui.label(egui::RichText::new(subtitle).font(body(13.0)).color(MUTED()));
+                    ui.label(
+                        egui::RichText::new(subtitle)
+                            .font(body(13.0))
+                            .color(MUTED()),
+                    );
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     mono_label(ui, tag, MUTED());
@@ -841,7 +856,11 @@ pub fn toggle_row(ui: &mut Ui, on: &mut bool, title: &str, subtitle: &str) -> bo
                 ui.vertical(|ui| {
                     ui.spacing_mut().item_spacing.y = 2.0;
                     ui.label(egui::RichText::new(title).font(body(15.0)).color(TEXT()));
-                    ui.label(egui::RichText::new(subtitle).font(body(13.0)).color(MUTED()));
+                    ui.label(
+                        egui::RichText::new(subtitle)
+                            .font(body(13.0))
+                            .color(MUTED()),
+                    );
                 });
             });
         });
@@ -863,9 +882,11 @@ fn press_amount(ui: &Ui, resp: &Response) -> f32 {
     let hovered = ui
         .ctx()
         .animate_bool_with_time(resp.id, resp.hovered(), 0.12);
-    let pressed = ui
-        .ctx()
-        .animate_bool_with_time(resp.id.with("press"), resp.is_pointer_button_down_on(), 0.08);
+    let pressed = ui.ctx().animate_bool_with_time(
+        resp.id.with("press"),
+        resp.is_pointer_button_down_on(),
+        0.08,
+    );
     hovered * (1.0 + 0.15 * pressed)
 }
 

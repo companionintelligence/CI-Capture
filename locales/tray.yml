@@ -1,0 +1,273 @@
+_version: 2
+
+# Menu-bar (tray) labels and the message boxes the tray raises. Keys are
+# namespaced by the surface that renders them so a string's home is obvious
+# from its id alone.
+#
+# House style for Spanish:
+#   - Address the user as "tú" (informal), matching the English copy's tone.
+#   - "Companion Capture", "Companion Memory", "Companion Hub", "Portal" and
+#     "CI-Server" are product names — never translated. "servidor de Companion
+#     Memory" is the accepted form.
+#   - Prefer the infinitive for menu commands ("Pausar", not "Pausa").
+#   - Menu-bar items are read at a glance in a narrow strip: keep them short.
+
+# --- Status line -----------------------------------------------------------
+
+tray.status:
+  en: "Status: %{state}"
+  es: "Estado: %{state}"
+
+tray.state_starting:
+  en: Starting
+  es: Iniciando
+
+# The ⚠︎ prefix is the whole point of these two — keep it in every language.
+tray.state_setup_needed:
+  en: "⚠︎ Setup needed"
+  es: "⚠︎ Falta configurar"
+
+tray.state_permissions_needed:
+  en: "⚠︎ Permissions needed"
+  es: "⚠︎ Faltan permisos"
+
+tray.state_monitoring:
+  en: Monitoring
+  es: Supervisando
+
+tray.state_paused:
+  en: Paused
+  es: En pausa
+
+# --- Capture commands ------------------------------------------------------
+
+tray.pause_captures:
+  en: Pause Captures
+  es: Pausar capturas
+
+tray.resume_captures:
+  en: Resume Captures
+  es: Reanudar capturas
+
+tray.capture_now:
+  en: Capture Now
+  es: Capturar ahora
+
+tray.upload_document:
+  en: Upload Document…
+  es: Subir documento…
+
+tray.open_memory:
+  en: Open Companion Memory
+  es: Abrir Companion Memory
+
+tray.today_activity:
+  en: Today's Activity
+  es: Actividad de hoy
+
+# --- Configuration read-outs ----------------------------------------------
+
+tray.interval:
+  en: Screenshot Interval
+  es: Intervalo de captura
+
+tray.interval_value:
+  en: "Screenshot Interval: %{secs}s"
+  es: "Intervalo de captura: %{secs} s"
+
+tray.threshold:
+  en: Diff Threshold
+  es: Umbral de cambio
+
+tray.threshold_value:
+  en: "Diff Threshold: %{percent}%"
+  es: "Umbral de cambio: %{percent} %"
+
+tray.identity:
+  en: Set Identity IDs
+  es: Definir identificadores
+
+tray.identity_value:
+  en: "Identity: user %{user} / device %{device}"
+  es: "Identidad: usuario %{user} / dispositivo %{device}"
+
+tray.identity_unset:
+  en: unset
+  es: sin definir
+
+tray.portal_url:
+  en: Portal URL
+  es: URL del Portal
+
+tray.portal_url_value:
+  en: "Portal URL: %{url}"
+  es: "URL del Portal: %{url}"
+
+tray.login:
+  en: Login to Portal
+  es: Iniciar sesión en el Portal
+
+tray.login_via:
+  en: Login via %{issuer}
+  es: Iniciar sesión con %{issuer}
+
+tray.configure_postgres:
+  en: Configure Postgres
+  es: Configurar Postgres
+
+tray.postgres_value:
+  en: "Postgres: %{host}:%{port} / %{database}"
+  es: "Postgres: %{host}:%{port} / %{database}"
+
+tray.configure_minio:
+  en: Configure MinIO
+  es: Configurar MinIO
+
+tray.minio_value:
+  en: "MinIO: %{bucket} @ %{endpoint}"
+  es: "MinIO: %{bucket} @ %{endpoint}"
+
+tray.configure_vision:
+  en: Configure Vision Endpoint
+  es: Configurar el endpoint de visión
+
+tray.vision_server:
+  en: "Vision: handled by your Companion Memory server"
+  es: "Visión: la gestiona tu servidor de Companion Memory"
+
+tray.vision_local:
+  en: "Vision: this computer · %{model}"
+  es: "Visión: este equipo · %{model}"
+
+# --- Windows and app commands ---------------------------------------------
+
+tray.setup_assistant:
+  en: Setup Assistant…
+  es: Asistente de configuración…
+
+tray.open_settings:
+  en: Open Settings…
+  es: Abrir Ajustes…
+
+tray.show_config:
+  en: Show Config Location
+  es: Ver ruta de la configuración
+
+tray.quit:
+  en: Quit Companion Capture
+  es: Salir de Companion Capture
+
+# --- Dialogs ---------------------------------------------------------------
+
+tray.dialog.config_path_title:
+  en: Config Path
+  es: Ruta de configuración
+
+tray.error.reload_config:
+  en: Unable to reload configuration; see logs for details.
+  es: No se pudo recargar la configuración; consulta los registros.
+
+tray.error.reload_after_pairing:
+  en: Linked account, but failed to reload configuration.
+  es: Cuenta vinculada, pero no se pudo recargar la configuración.
+
+tray.error.exe_settings:
+  en: Unable to locate executable for settings window.
+  es: No se encontró el ejecutable de la ventana de Ajustes.
+
+tray.error.launch_settings:
+  en: Unable to launch settings window. Check logs for details.
+  es: No se pudo abrir la ventana de Ajustes. Consulta los registros.
+
+tray.error.exe_upload:
+  en: Unable to locate executable for upload window.
+  es: No se encontró el ejecutable de la ventana de subida.
+
+tray.error.launch_upload:
+  en: Unable to launch upload window. Check logs for details.
+  es: No se pudo abrir la ventana de subida. Consulta los registros.
+
+tray.error.exe_setup:
+  en: Unable to locate executable for the setup assistant.
+  es: No se encontró el ejecutable del asistente de configuración.
+
+tray.error.launch_setup:
+  en: Unable to launch the setup assistant. Check logs for details.
+  es: No se pudo abrir el asistente de configuración. Consulta los registros.
+
+tray.error.login_in_progress:
+  en: Portal login is already in progress.
+  es: El inicio de sesión en el Portal ya está en curso.
+
+tray.error.oidc_issuer_missing:
+  en: OIDC issuer is not configured (config.json → oidc.issuer).
+  es: El emisor OIDC no está configurado (config.json → oidc.issuer).
+
+tray.error.login_failed:
+  en: "Unable to sign in to %{issuer}: %{error}.\n\nCheck that the portal is reachable and that this app's OIDC client \"%{client_id}\" is registered with the loopback redirect (config.json → oidc)."
+  es: "No se pudo iniciar sesión en %{issuer}: %{error}.\n\nComprueba que el portal esté accesible y que el cliente OIDC \"%{client_id}\" de esta app esté registrado con la redirección de loopback (config.json → oidc)."
+
+tray.error.memory_address:
+  en: "Can't work out your Companion Memory server address: %{error}\n\nSet it in Settings first."
+  es: "No se pudo determinar la dirección de tu servidor de Companion Memory: %{error}\n\nConfigúrala primero en Ajustes."
+
+tray.error.open_url:
+  en: "Couldn't open %{url}: %{error}"
+  es: "No se pudo abrir %{url}: %{error}"
+
+# --- Sign-in result, shown in a message box (and printed by --login) -------
+
+tray.login.signed_in:
+  en: Signed in as %{who}. %{note}
+  es: Sesión iniciada como %{who}. %{note}
+
+tray.login.your_account:
+  en: your account
+  es: tu cuenta
+
+tray.discovery.attributed:
+  en: Captures will now be attributed to that account.
+  es: Ahora las capturas se atribuirán a esa cuenta.
+
+tray.discovery.none:
+  en: No Companion Memory server is registered to your account yet. Install Companion Hub from ci.computer/download to run one, then add its address in Settings.
+  es: Todavía no tienes ningún servidor de Companion Memory registrado en tu cuenta. Instala Companion Hub desde ci.computer/download para ejecutar uno y luego añade su dirección en Ajustes.
+
+tray.discovery.saving_to:
+  en: Saving to your Companion Memory server on %{device}.
+  es: Guardando en tu servidor de Companion Memory en %{device}.
+
+tray.discovery.connected:
+  en: Connected to %{url}.
+  es: Conectado a %{url}.
+
+tray.discovery.multiple:
+  en: You have Companion Memory on %{count} machines — pick which one this computer should record to in Settings.
+  es: "Tienes Companion Memory en %{count} equipos: elige en Ajustes en cuál debe grabar este equipo."
+
+tray.discovery.unauthorized:
+  en: Signed in, but your portal wouldn't share your server address — add it in Settings.
+  es: "Sesión iniciada, pero tu portal no compartió la dirección de tu servidor: añádela en Ajustes."
+
+tray.discovery.error:
+  en: Signed in. Add your Companion Memory server in Settings.
+  es: Sesión iniciada. Añade tu servidor de Companion Memory en Ajustes.
+
+# --- Scriptable entry points ----------------------------------------------
+#
+# `--login`, `--search` and `--open-memory` are driven by macOS Shortcuts, so
+# their output is read by the same person who reads the menu bar — it is user
+# copy, not operator logging, and is translated on the same terms. Flag names
+# (`--login`) stay literal: they are typed, not read.
+
+tray.cli.login_failed:
+  en: "Portal sign-in failed: %{error}"
+  es: "No se pudo iniciar sesión en el Portal: %{error}"
+
+tray.cli.no_server:
+  en: No Companion Memory server configured. Set one in Settings, or run --login.
+  es: No hay ningún servidor de Companion Memory configurado. Añade uno en Ajustes o ejecuta --login.
+
+tray.cli.bad_server_url:
+  en: "\"%{url}\" isn't a usable Companion Memory server address. Fix it in Settings."
+  es: "\"%{url}\" no es una dirección válida de un servidor de Companion Memory. Corrígela en Ajustes."

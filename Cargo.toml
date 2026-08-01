@@ -58,6 +58,7 @@ csv = "1"
 html2md = { version = "0.2", optional = true }
 mail-parser = { version = "0.9", optional = true }
 epub = { version = "2", optional = true }
+rust-i18n = "3"
 
 [features]
 default = []

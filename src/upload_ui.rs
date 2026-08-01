@@ -16,15 +16,22 @@ pub fn run_upload_ui() -> Result<()> {
     let manager = ConfigManager::new()?;
     let config = manager.load_or_default()?;
 
+    // Every `t!` below — starting with the window title — depends on
+    // `main::apply_saved_language()` having run *before* the `--upload-ui`
+    // dispatch. This window is its own process, so if that call ever slides
+    // below the argument dispatch the whole window silently renders the
+    // English fallback instead of the user's language.
+    let window_title = rust_i18n::t!("upload.window_title").to_string();
+
     let mut native_options = NativeOptions::default();
     native_options.centered = true;
     native_options.viewport = egui::ViewportBuilder::default()
-        .with_title("Upload Documents — Companion Capture")
+        .with_title(window_title.clone())
         .with_inner_size([700.0, 600.0])
         .with_min_inner_size([560.0, 440.0]);
 
     eframe::run_native(
-        "Upload Documents — Companion Capture",
+        &window_title,
         native_options,
         Box::new(move |cc| {
             crate::theme::install_fonts(&cc.egui_ctx);
@@ -137,15 +144,22 @@ impl UploadApp {
             .collect();
         let pattern_refs: Vec<&str> = patterns.iter().map(String::as_str).collect();
 
+        let dialog_title = rust_i18n::t!("upload.picker.title").to_string();
+        let filter_label = rust_i18n::t!("upload.picker.filter").to_string();
         let paths = tinyfiledialogs::open_file_dialog_multi(
-            "Select Documents",
+            &dialog_title,
             "",
-            Some((pattern_refs.as_slice(), "Supported Documents")),
+            Some((pattern_refs.as_slice(), &filter_label)),
         );
 
         if let Some(paths) = paths {
             for path_str in paths {
                 let path = PathBuf::from(path_str);
+                // "unknown" stays untranslated on purpose: `server_upload`
+                // derives the multipart filename the same way, and the server
+                // echoes it back as the key we match on in `drain_updates`.
+                // Translating it here would break that match for a path with
+                // no usable file name.
                 let filename = path
                     .file_name()
                     .and_then(|n| n.to_str())
@@ -320,7 +334,7 @@ impl eframe::App for UploadApp {
                     ui.spacing_mut().item_spacing.x = 10.0;
                     theme::logo(ui, &self.logo, 24.0, theme::TEAL());
                     ui.label(
-                        egui::RichText::new("Upload Documents")
+                        egui::RichText::new(rust_i18n::t!("upload.heading").to_string())
                             .font(theme::light(20.0))
                             .color(theme::TEXT()),
                     );
@@ -332,7 +346,7 @@ impl eframe::App for UploadApp {
                     if authed {
                         theme::status_dot(ui, theme::GREEN(), false);
                         ui.label(
-                            egui::RichText::new("Signed in")
+                            egui::RichText::new(rust_i18n::t!("upload.auth.signed_in").to_string())
                                 .font(theme::body(13.0))
                                 .color(theme::MUTED()),
                         );
@@ -340,10 +354,10 @@ impl eframe::App for UploadApp {
                         theme::status_dot(ui, theme::AMBER(), false);
                         ui.label(
                             egui::RichText::new(
-                                "Not signed in — choose “Login to Portal” in the menu bar first",
+                                rust_i18n::t!("upload.auth.signed_out").to_string(),
                             )
-                                .font(theme::body(13.0))
-                                .color(theme::AMBER()),
+                            .font(theme::body(13.0))
+                            .color(theme::AMBER()),
                         );
                     }
 
@@ -353,15 +367,19 @@ impl eframe::App for UploadApp {
                             && !self.uploading
                             && self.files.iter().any(|f| f.phase == Phase::Queued);
                         let upload = ui
-                            .add_enabled_ui(can_upload, |ui| theme::primary_button(ui, "Upload"))
+                            .add_enabled_ui(can_upload, |ui| {
+                                theme::primary_button(ui, &rust_i18n::t!("upload.action.upload"))
+                            })
                             .inner
                             .on_disabled_hover_text(
-                                "Sign in first: menu bar → “Login to Portal”.",
+                                rust_i18n::t!("upload.action.upload_needs_auth").to_string(),
                             );
                         if upload.clicked() {
                             self.start_upload(ctx);
                         }
-                        if theme::ghost_button(ui, "Add Files…").clicked() {
+                        if theme::ghost_button(ui, &rust_i18n::t!("upload.action.add_files"))
+                            .clicked()
+                        {
                             self.pick_files();
                         }
                     });
@@ -385,7 +403,7 @@ impl eframe::App for UploadApp {
                         ui.set_width(ui.available_width());
                         ui.vertical_centered(|ui| {
                             ui.add_space(8.0);
-                            theme::caption(ui, "No files added yet.");
+                            theme::caption(ui, &rust_i18n::t!("upload.empty_state"));
                             ui.add_space(8.0);
                         });
                     });
@@ -440,7 +458,7 @@ fn dropzone(ui: &mut egui::Ui) {
     painter.text(
         egui::pos2(rect.center().x, rect.center().y - 9.0),
         egui::Align2::CENTER_CENTER,
-        "Drop documents to upload",
+        rust_i18n::t!("upload.dropzone.hint"),
         theme::body(15.0),
         theme::MUTED(),
     );
@@ -484,38 +502,63 @@ fn file_row(ui: &mut egui::Ui, entry: &FileEntry) {
 fn render_phase(ui: &mut egui::Ui, phase: &Phase) {
     match phase {
         Phase::Queued => {
-            theme::status_badge(ui, "Queued", theme::MUTED());
+            theme::status_badge(ui, &rust_i18n::t!("upload.status.queued"), theme::MUTED());
         }
         Phase::Uploading => {
-            theme::status_badge(ui, "Uploading", theme::AMBER());
+            theme::status_badge(
+                ui,
+                &rust_i18n::t!("upload.status.uploading"),
+                theme::AMBER(),
+            );
         }
         Phase::Polling { .. } | Phase::AlreadyUploaded { .. } => {
-            theme::status_badge(ui, "Processing", theme::AMBER());
+            theme::status_badge(
+                ui,
+                &rust_i18n::t!("upload.status.processing"),
+                theme::AMBER(),
+            );
         }
         Phase::Done(state) => match state.status {
             ParseStatusValue::Completed => {
-                theme::status_badge(ui, "Ready", theme::GREEN());
+                theme::status_badge(ui, &rust_i18n::t!("upload.status.ready"), theme::GREEN());
             }
             ParseStatusValue::Failed => {
-                let resp = theme::status_badge(ui, "Parse failed", theme::RED());
+                let resp = theme::status_badge(
+                    ui,
+                    &rust_i18n::t!("upload.status.parse_failed"),
+                    theme::RED(),
+                );
                 if let Some(err) = &state.error {
                     resp.on_hover_text(err);
                 }
             }
             ParseStatusValue::Skipped => {
                 if state.was_duplicate {
-                    theme::status_badge(ui, "Already uploaded", theme::MUTED()).on_hover_text(
-                        "This file already exists on the server. Parsing may take a few minutes for larger documents.",
+                    theme::status_badge(
+                        ui,
+                        &rust_i18n::t!("upload.status.already_uploaded"),
+                        theme::MUTED(),
+                    )
+                    .on_hover_text(
+                        rust_i18n::t!("upload.status.already_uploaded_hint").to_string(),
                     );
                 } else {
-                    theme::status_badge(ui, "Uploaded · not parsed", theme::MUTED()).on_hover_text(
-                        "File type is not parsed, but the file was uploaded successfully.",
-                    );
+                    theme::status_badge(
+                        ui,
+                        &rust_i18n::t!("upload.status.not_parsed"),
+                        theme::MUTED(),
+                    )
+                    .on_hover_text(rust_i18n::t!("upload.status.not_parsed_hint").to_string());
                 }
             }
         },
         Phase::UploadFailed(err) => {
-            theme::status_badge(ui, "Upload failed", theme::RED()).on_hover_text(err);
+            theme::status_badge(
+                ui,
+                &rust_i18n::t!("upload.status.upload_failed"),
+                theme::RED(),
+            )
+            .on_hover_text(err);
         }
     }
 }

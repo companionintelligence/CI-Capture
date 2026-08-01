@@ -1,0 +1,107 @@
+_version: 2
+
+# Document-upload window (src/upload_ui.rs): window chrome, the file picker,
+# the drop zone, and the per-file status pills.
+#
+# House style for Spanish:
+#   - Address the user as "tú" (informal), matching the English copy's tone.
+#   - "Companion Capture" and "Portal" are product names — never translated.
+#   - Status pills sit in a fixed-width row, so keep them short.
+
+upload.window_title:
+  en: Upload Documents — Companion Capture
+  es: Subir documentos — Companion Capture
+
+upload.heading:
+  en: Upload Documents
+  es: Subir documentos
+
+# ── File picker (native dialog) ───────────────────────────────────────────────
+
+upload.picker.title:
+  en: Select Documents
+  es: Seleccionar documentos
+
+upload.picker.filter:
+  en: Supported Documents
+  es: Documentos compatibles
+
+# ── Auth banner + actions ─────────────────────────────────────────────────────
+
+upload.auth.signed_in:
+  en: Signed in
+  es: Sesión iniciada
+
+# The banner shares one non-wrapping row with the Upload / Add Files buttons,
+# so it has roughly 60 characters before it pushes them off the panel. The
+# literal menu-item name does not fit in Spanish (“Iniciar sesión en el Portal”
+# is 11 characters longer than “Login to Portal”), and it is redundant here —
+# upload.action.upload_needs_auth spells it out verbatim in the Upload
+# button's disabled tooltip, right next to this line.
+upload.auth.signed_out:
+  en: Not signed in — choose “Login to Portal” in the menu bar first
+  es: No has iniciado sesión — hazlo desde la barra de menús
+
+upload.action.upload:
+  en: Upload
+  es: Subir
+
+upload.action.upload_needs_auth:
+  en: "Sign in first: menu bar → “Login to Portal”."
+  es: "Inicia sesión primero: barra de menús → «Iniciar sesión en el Portal»."
+
+upload.action.add_files:
+  en: Add Files…
+  es: Añadir archivos…
+
+# ── Drop zone + empty list ────────────────────────────────────────────────────
+
+upload.dropzone.hint:
+  en: Drop documents to upload
+  es: Suelta documentos para subirlos
+
+upload.empty_state:
+  en: No files added yet.
+  es: Aún no has añadido archivos.
+
+# ── Per-file status pills ─────────────────────────────────────────────────────
+
+upload.status.queued:
+  en: Queued
+  es: En cola
+
+upload.status.uploading:
+  en: Uploading
+  es: Subiendo
+
+upload.status.processing:
+  en: Processing
+  es: Procesando
+
+upload.status.ready:
+  en: Ready
+  es: Listo
+
+upload.status.parse_failed:
+  en: Parse failed
+  es: Error al procesar
+
+upload.status.already_uploaded:
+  en: Already uploaded
+  es: Ya subido
+
+upload.status.already_uploaded_hint:
+  en: This file already exists on the server. Parsing may take a few minutes for larger documents.
+  es: Este archivo ya existe en el servidor. Procesar documentos grandes puede tardar unos minutos.
+
+upload.status.not_parsed:
+  en: Uploaded · not parsed
+  es: Subido · sin procesar
+
+upload.status.not_parsed_hint:
+  en: File type is not parsed, but the file was uploaded successfully.
+  es: Este tipo de archivo no se procesa, pero el archivo se subió correctamente.
+
+upload.status.upload_failed:
+  en: Upload failed
+  es: Error al subir

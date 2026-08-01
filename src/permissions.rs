@@ -38,18 +38,22 @@ impl PermissionStatus {
     }
 
     /// A short label + traffic-light glyph for the UI.
-    pub fn badge(self) -> &'static str {
+    ///
+    /// Localized, so this owns its text rather than returning `&'static str`:
+    /// the label depends on the active locale, which is only known at runtime.
+    pub fn badge(self) -> String {
         match self {
-            Self::Granted => "✅ Granted",
-            Self::Denied => "⛔ Not granted",
-            Self::NotRequired => "— Not required on this OS",
+            Self::Granted => rust_i18n::t!("status.permission.granted"),
+            Self::Denied => rust_i18n::t!("status.permission.denied"),
+            Self::NotRequired => rust_i18n::t!("status.permission.not_required"),
         }
+        .to_string()
     }
 }
 
 impl fmt::Display for PermissionStatus {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.badge())
+        f.write_str(&self.badge())
     }
 }
 
