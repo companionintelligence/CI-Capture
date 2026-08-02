@@ -1116,6 +1116,24 @@ fn login_with_portal() -> Result<String> {
         }
     }
 
+    // Best-effort: trade the ~1 h id_token for a durable api key while it's
+    // fresh, so ingest survives past the token's expiry (the portal's refresh
+    // grant never reissues an id_token). On failure the id_token stays the
+    // bearer and the refresh loop retries the mint while it can.
+    if !config.server.portal_url.trim().is_empty()
+        && let Some(token) = id_token.as_deref()
+    {
+        match runtime.block_on(async { mint_api_key(&config, token).await }) {
+            Ok(key) => {
+                config.server.applet_auth_token = Some(key);
+                log::info!("minted durable CI-Server api key for ingest");
+            }
+            Err(err) => {
+                log::warn!("api-key mint deferred (ingest stays on id_token): {err:#}");
+            }
+        }
+    }
+
     manager
         .save(&config)
         .context("saving config after sign-in")?;
@@ -1352,6 +1370,99 @@ async fn register_device(config: &AppConfig, bearer: &str) -> Result<Uuid> {
     Err(last_error.unwrap_or_else(|| anyhow!("device registration failed")))
 }
 
+/// The stable, human-recognizable name for the api key this install mints for
+/// itself. Stable so re-sign-ins rotate one key instead of accumulating rows;
+/// the hostname makes it identifiable in Memory's settings UI.
+fn applet_api_key_name() -> String {
+    let hostname = whoami::fallible::hostname().unwrap_or_else(|_| "unknown".to_string());
+    format!("Companion Capture ({hostname})")
+}
+
+/// Exchange a fresh portal id_token for a durable CI-Server api key.
+///
+/// The id_token CI-Server accepts as an ingest bearer expires after about an
+/// hour, and the portal's refresh grant never reissues it — ingest built on
+/// the raw id_token rots mid-session. A key minted here carries no
+/// `expires_at`, so it never expires; instead of refreshing it we rotate it
+/// on every sign-in (delete-by-name, then create — CI-Server enforces a
+/// unique (user, name) index). CI-Server accepts the portal bearer on
+/// `/api/keys` but rejects api-key auth there, so this can only run while
+/// the id_token is still fresh. Older CI-Server builds reject the portal
+/// bearer on these routes entirely; the caller keeps the id_token as the
+/// bearer when that happens.
+async fn mint_api_key(config: &AppConfig, bearer: &str) -> Result<String> {
+    let name = applet_api_key_name();
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .use_rustls_tls()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .context("building api-key client")?;
+
+    let mut last_error = None;
+    for url in server_common::keys_urls(&config.server.portal_url)? {
+        // Rotate: find and delete the key a previous sign-in minted under our
+        // name, or the create below trips the unique index.
+        let existing = match client.get(url.clone()).bearer_auth(bearer).send().await {
+            Ok(resp) if resp.status().is_success() => {
+                let keys: serde_json::Value =
+                    resp.json().await.context("decoding api-key list")?;
+                keys.as_array().and_then(|keys| {
+                    keys.iter()
+                        .find(|k| k.get("name").and_then(|n| n.as_str()) == Some(name.as_str()))
+                        .and_then(|k| k.get("id").and_then(|i| i.as_str()))
+                        .map(str::to_string)
+                })
+            }
+            Ok(resp)
+                if matches!(
+                    resp.status(),
+                    reqwest::StatusCode::NOT_FOUND | reqwest::StatusCode::METHOD_NOT_ALLOWED
+                ) =>
+            {
+                last_error = Some(anyhow!("GET {url} → HTTP {}", resp.status()));
+                continue;
+            }
+            Ok(resp) => return Err(anyhow!("GET {url} → HTTP {}", resp.status())),
+            Err(err) => return Err(anyhow!("GET {url}: {err}")),
+        };
+
+        if let Some(id) = existing {
+            let delete_url = format!("{}/{}", url.as_str().trim_end_matches('/'), id);
+            let resp = client
+                .delete(&delete_url)
+                .bearer_auth(bearer)
+                .send()
+                .await
+                .map_err(|err| anyhow!("DELETE {delete_url}: {err}"))?;
+            // 404 = already gone (a racing rotation won) — the name is free
+            // either way.
+            if !resp.status().is_success() && resp.status() != reqwest::StatusCode::NOT_FOUND {
+                return Err(anyhow!("DELETE {delete_url} → HTTP {}", resp.status()));
+            }
+        }
+
+        let resp = client
+            .post(url.clone())
+            .bearer_auth(bearer)
+            .json(&serde_json::json!({ "name": name }))
+            .send()
+            .await
+            .map_err(|err| anyhow!("POST {url}: {err}"))?;
+        if !resp.status().is_success() {
+            return Err(anyhow!("POST {url} → HTTP {}", resp.status()));
+        }
+        let v: serde_json::Value = resp.json().await.context("decoding api-key response")?;
+        return v
+            .get("key")
+            .and_then(|k| k.as_str())
+            .map(str::to_string)
+            .context("api-key response missing raw key");
+    }
+
+    Err(last_error.unwrap_or_else(|| anyhow!("api-key mint failed")))
+}
+
 /// How often the background loop checks token expiry / pending registration.
 const TOKEN_REFRESH_CHECK: Duration = Duration::from_secs(60);
 
@@ -1388,8 +1499,10 @@ fn spawn_token_refresh(worker: WorkerHandle, shared: Arc<Mutex<AppConfig>>) {
         let skew = chrono::Duration::minutes(2);
         let mut refresh_failures: u32 = 0;
         let mut registration_failures: u32 = 0;
+        let mut mint_failures: u32 = 0;
         let mut skip_refresh_ticks: u32 = 0;
         let mut skip_registration_ticks: u32 = 0;
+        let mut skip_mint_ticks: u32 = 0;
         loop {
             match token_refresh_tick(
                 &manager,
@@ -1399,6 +1512,7 @@ fn spawn_token_refresh(worker: WorkerHandle, shared: Arc<Mutex<AppConfig>>) {
                 skew,
                 skip_refresh_ticks == 0,
                 skip_registration_ticks == 0,
+                skip_mint_ticks == 0,
             ) {
                 Ok(outcome) => {
                     match outcome.refresh {
@@ -1417,12 +1531,21 @@ fn spawn_token_refresh(worker: WorkerHandle, shared: Arc<Mutex<AppConfig>>) {
                         }
                         ConcernOutcome::Idle => {}
                     }
+                    match outcome.mint {
+                        ConcernOutcome::Succeeded => mint_failures = 0,
+                        ConcernOutcome::Failed => {
+                            mint_failures += 1;
+                            skip_mint_ticks = failure_backoff_ticks(mint_failures);
+                        }
+                        ConcernOutcome::Idle => {}
+                    }
                 }
                 Err(err) => log::warn!("token-refresh tick failed: {err:?}"),
             }
             thread::sleep(TOKEN_REFRESH_CHECK);
             skip_refresh_ticks = skip_refresh_ticks.saturating_sub(1);
             skip_registration_ticks = skip_registration_ticks.saturating_sub(1);
+            skip_mint_ticks = skip_mint_ticks.saturating_sub(1);
         }
     });
 }
@@ -1437,6 +1560,7 @@ enum ConcernOutcome {
 struct TickOutcome {
     refresh: ConcernOutcome,
     registration: ConcernOutcome,
+    mint: ConcernOutcome,
 }
 
 /// One iteration of the refresh loop.
@@ -1449,10 +1573,12 @@ fn token_refresh_tick(
     skew: chrono::Duration,
     try_refresh: bool,
     try_registration: bool,
+    try_mint: bool,
 ) -> Result<TickOutcome> {
     let mut outcome = TickOutcome {
         refresh: ConcernOutcome::Idle,
         registration: ConcernOutcome::Idle,
+        mint: ConcernOutcome::Idle,
     };
     let config = manager.load_or_default()?;
     let Some(session) = config.oidc_session.clone() else {
@@ -1533,6 +1659,40 @@ fn token_refresh_tick(
             Err(err) => {
                 outcome.registration = ConcernOutcome::Failed;
                 log::debug!("deferred device registration failed (will back off): {err:#}");
+            }
+        }
+    }
+
+    // 3) Upgrade a raw id_token ingest bearer to a durable api key. Covers a
+    //    sign-in that couldn't mint (Memory URL unknown or unreachable at the
+    //    time): the exchange only works while the id_token is still fresh, so
+    //    retry from here until it expires. Pasted api keys and already-minted
+    //    keys never equal the session id_token, so they're left alone.
+    let config = manager.load_or_default()?;
+    if try_mint
+        && let Some(session) = config.oidc_session.clone()
+        && let Some(id_token) = session.id_token.clone()
+        && config.server.applet_auth_token.as_deref() == Some(id_token.as_str())
+        && !config.server.portal_url.trim().is_empty()
+        && !oidc::token_expiring(session.expires_at, Utc::now(), skew)
+    {
+        match runtime.block_on(async { mint_api_key(&config, &id_token).await }) {
+            Ok(key) => {
+                // Reload → merge → save; only swap the bearer if it is still
+                // the id_token we exchanged.
+                let mut fresh = manager.load_or_default()?;
+                if fresh.server.applet_auth_token.as_deref() == Some(id_token.as_str()) {
+                    fresh.server.applet_auth_token = Some(key);
+                    manager.save(&fresh).context("persisting minted api key")?;
+                    *shared.lock() = fresh.clone();
+                    worker.update_config(fresh);
+                }
+                outcome.mint = ConcernOutcome::Succeeded;
+                log::info!("minted durable CI-Server api key for ingest (deferred)");
+            }
+            Err(err) => {
+                outcome.mint = ConcernOutcome::Failed;
+                log::debug!("deferred api-key mint failed (will back off): {err:#}");
             }
         }
     }
