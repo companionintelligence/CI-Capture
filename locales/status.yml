@@ -69,6 +69,10 @@ status.check.credential_rejected:
   en: Reached the server, but the credential was rejected (HTTP %{status}).
   es: El servidor respondió, pero rechazó la credencial (HTTP %{status}).
 
+status.check.edge_sso_intercept:
+  en: Hub signed you out of the Memory API (edge login page). Capture needs Portal Bearer through Traefik — update Companion Hub on that device, or use a local Memory URL.
+  es: Hub interceptó la API de Memory (página de inicio de sesión). Capture necesita el Bearer de Portal en Traefik — actualiza Companion Hub en ese equipo, o usa una URL local de Memory.
+
 status.check.reachable:
   en: Reachable · HTTP %{status}
   es: Accesible · HTTP %{status}

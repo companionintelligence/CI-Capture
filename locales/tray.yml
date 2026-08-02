@@ -37,6 +37,10 @@ tray.state_memory_disconnected:
   en: "⚠︎ Memory not connected"
   es: "⚠︎ Memory no conectada"
 
+tray.state_device_pending:
+  en: "⚠︎ Finishing device setup"
+  es: "⚠︎ Terminando el dispositivo"
+
 tray.state_permissions_needed:
   en: "⚠︎ Permissions needed"
   es: "⚠︎ Faltan permisos"
@@ -145,6 +149,10 @@ tray.memory_url_missing:
   en: "Memory: not connected — open Settings or Setup"
   es: "Memory: no conectada — abre Ajustes o Configuración"
 
+tray.memory_device_value:
+  en: "Memory: %{device}"
+  es: "Memory: %{device}"
+
 tray.portal_url_value:
   en: "Portal URL: %{url}"
   es: "URL del Portal: %{url}"
@@ -164,6 +172,14 @@ tray.signed_in_as:
 tray.signed_in_api_key:
   en: Signed in with API key
   es: Sesión con clave de API
+
+tray.sign_out:
+  en: Sign Out
+  es: Cerrar sesión
+
+tray.error.sign_out_save:
+  en: Unable to save after signing out; see logs for details.
+  es: No se pudo guardar al cerrar sesión; consulta los registros.
 
 tray.configure_postgres:
   en: Configure Postgres

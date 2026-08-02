@@ -96,6 +96,22 @@ settings.status.connected.detail:
   en: Sending to your Companion Memory
   es: Enviando a tu Companion Memory
 
+settings.status.device_pending.title:
+  en: Almost ready
+  es: Casi listo
+
+settings.status.device_pending.detail:
+  en: Signed in — finishing device registration with Memory
+  es: Sesión iniciada — registrando este equipo en Memory
+
+settings.status.choose_memory.title:
+  en: Choose a Memory
+  es: Elige un Memory
+
+settings.status.choose_memory.detail:
+  en: Your account has several — pick one below
+  es: Tu cuenta tiene varios — elige uno abajo
+
 settings.status.almost.title:
   en: Almost there
   es: Casi listo
@@ -111,6 +127,38 @@ settings.status.unset.title:
 settings.status.unset.detail:
   en: Add your Companion Memory server
   es: Añade tu servidor de Companion Memory
+
+settings.connection.memory_pick.label:
+  en: Companion Memory on your devices
+  es: Companion Memory en tus equipos
+
+settings.connection.memory_pick.help:
+  en: Several Capture installs can share one Memory. Choose which Hub device this computer should send to.
+  es: Varias instalaciones de Capture pueden compartir un Memory. Elige a qué equipo Hub debe enviar este ordenador.
+
+settings.connection.memory_pick.refresh:
+  en: Find my Memories…
+  es: Buscar mis Memories…
+
+settings.connection.memory_pick.refreshing:
+  en: Looking up Memories…
+  es: Buscando Memories…
+
+settings.connection.memory_pick.bound:
+  en: "This computer → %{device}"
+  es: "Este equipo → %{device}"
+
+settings.connection.memory_pick.need_signin:
+  en: Sign in with Portal first, then find your Memories.
+  es: Primero inicia sesión en el Portal y luego busca tus Memories.
+
+settings.connection.memory_pick.empty:
+  en: No Companion Memory found on your account yet.
+  es: Aún no hay Companion Memory en tu cuenta.
+
+settings.connection.memory_pick.error:
+  en: "Couldn't list Memories: %{error}"
+  es: "No se pudieron listar Memories: %{error}"
 
 # ── Inline connection test ────────────────────────────────────────────────
 

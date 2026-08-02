@@ -77,6 +77,11 @@ pub struct SettingsFormState {
     pub user_id: String,
     pub device_id: String,
     pub portal_url: String,
+    /// When set with a list pick, Save writes `url_source = Discovered`.
+    pub bound_device_slug: String,
+    pub bound_device_name: String,
+    /// True after the user picks a Memory from Portal discovery (not typed).
+    pub memory_from_discovery: bool,
     pub oidc_issuer: String,
     pub oidc_client_id: String,
     pub oidc_scopes: String,
@@ -143,6 +148,18 @@ impl From<&AppConfig> for SettingsFormState {
                 .map(|id| id.to_string())
                 .unwrap_or_default(),
             portal_url: config.server.portal_url.clone(),
+            bound_device_slug: config
+                .server
+                .bound_device_slug
+                .clone()
+                .unwrap_or_default(),
+            bound_device_name: config
+                .server
+                .bound_device_name
+                .clone()
+                .unwrap_or_default(),
+            memory_from_discovery: config.server.url_source
+                == crate::config::ServerUrlSource::Discovered,
             oidc_issuer: config.oidc.issuer.clone(),
             oidc_client_id: config.oidc.client_id.clone(),
             oidc_scopes: config.oidc.scopes.clone(),
@@ -272,6 +289,11 @@ struct SettingsApp {
     test_tx: Sender<(SettingsTab, Result<String, String>)>,
     test_rx: Receiver<(SettingsTab, Result<String, String>)>,
     tests: HashMap<SettingsTab, TestState>,
+    discover_tx: Sender<Result<Vec<crate::portal_apps::PortalApp>, String>>,
+    discover_rx: Receiver<Result<Vec<crate::portal_apps::PortalApp>, String>>,
+    memory_choices: Vec<crate::portal_apps::PortalApp>,
+    memory_status: Option<String>,
+    discovering: bool,
     /// One-shot latch for [`theme::center_once`].
     centered: bool,
 }
@@ -293,6 +315,7 @@ impl SettingsApp {
             .build()
             .expect("failed to create settings runtime");
         let (test_tx, test_rx) = channel();
+        let (discover_tx, discover_rx) = channel();
         Self {
             manager,
             base_config,
@@ -305,6 +328,11 @@ impl SettingsApp {
             test_tx,
             test_rx,
             tests: HashMap::new(),
+            discover_tx,
+            discover_rx,
+            memory_choices: Vec::new(),
+            memory_status: None,
+            discovering: false,
             centered: false,
         }
     }
@@ -320,11 +348,17 @@ impl SettingsApp {
         // actually looking at.
         let typed = normalize_server_url(self.form.portal_url.trim())
             .unwrap_or_else(|_| self.form.portal_url.trim().to_string());
-        // Saving from this form is an explicit choice, so mark the address
-        // manual: Portal discovery may replace one it set itself, but must
-        // never move a server the user picked.
-        if typed != c.server.portal_url {
+        if self.form.memory_from_discovery {
+            c.server.url_source = crate::config::ServerUrlSource::Discovered;
+            c.server.bound_device_slug = Some(self.form.bound_device_slug.trim().to_string())
+                .filter(|s| !s.is_empty());
+            c.server.bound_device_name = Some(self.form.bound_device_name.trim().to_string())
+                .filter(|s| !s.is_empty());
+        } else if typed != c.server.portal_url {
+            // Typed address — Portal discovery must not move it later.
             c.server.url_source = crate::config::ServerUrlSource::Manual;
+            c.server.bound_device_slug = None;
+            c.server.bound_device_name = None;
         }
         c.server.portal_url = typed;
         // The tray login + token-refresh flow owns the OIDC session, the
@@ -403,6 +437,79 @@ impl SettingsApp {
         });
     }
 
+    fn drain_discoveries(&mut self) {
+        while let Ok(result) = self.discover_rx.try_recv() {
+            self.discovering = false;
+            match result {
+                Ok(apps) => {
+                    let candidates = crate::portal_apps::memory_candidates(&apps);
+                    if candidates.is_empty() {
+                        self.memory_status =
+                            Some(rust_i18n::t!("settings.connection.memory_pick.empty").to_string());
+                    } else {
+                        self.memory_status = None;
+                    }
+                    self.memory_choices = candidates;
+                }
+                Err(err) => {
+                    self.memory_status = Some(
+                        rust_i18n::t!("settings.connection.memory_pick.error", error = err)
+                            .to_string(),
+                    );
+                }
+            }
+        }
+    }
+
+    fn refresh_memories(&mut self, ctx: &egui::Context) {
+        let (portal, token) = {
+            let cfg = self.base_config.lock();
+            let portal = cfg
+                .oidc
+                .issuer
+                .trim()
+                .trim_end_matches("/api/auth")
+                .to_string();
+            let token = cfg
+                .oidc_session
+                .as_ref()
+                .and_then(|s| s.access_token.clone())
+                .filter(|t| !t.trim().is_empty());
+            (portal, token)
+        };
+        let Some(token) = token else {
+            self.memory_status = Some(
+                rust_i18n::t!("settings.connection.memory_pick.need_signin").to_string(),
+            );
+            return;
+        };
+        self.discovering = true;
+        self.memory_status =
+            Some(rust_i18n::t!("settings.connection.memory_pick.refreshing").to_string());
+        let tx = self.discover_tx.clone();
+        let ctx = ctx.clone();
+        self.runtime.spawn(async move {
+            let result = match crate::portal_apps::fetch_portal_apps(
+                &portal,
+                &token,
+                crate::portal_apps::MEMORY_APP_SLUG,
+            )
+            .await
+            {
+                crate::portal_apps::Discovery::Ok(apps) => Ok(apps),
+                crate::portal_apps::Discovery::Unsupported => {
+                    Err("Portal has no app discovery".into())
+                }
+                crate::portal_apps::Discovery::Unauthorized => {
+                    Err("Portal refused the session".into())
+                }
+                crate::portal_apps::Discovery::Error(e) => Err(e),
+            };
+            let _ = tx.send(result);
+            ctx.request_repaint();
+        });
+    }
+
     /// Apply any finished test results.
     fn drain_tests(&mut self) {
         while let Ok((tab, result)) = self.test_rx.try_recv() {
@@ -418,15 +525,35 @@ impl SettingsApp {
     /// call is made here — this is a visual hint, not a live probe).
     fn connection_status(&self) -> (String, String, egui::Color32) {
         let has_url = !self.form.portal_url.trim().is_empty();
-        let has_cred = match self.form.auth_mode {
-            AuthMode::ApiKey => !self.form.applet_auth_token.trim().is_empty(),
-            AuthMode::Oidc => !self.form.oidc_issuer.trim().is_empty(),
-        };
-        let (title, detail, color) = if has_url && has_cred {
+        let base = self.base_config.lock();
+        let has_token = base
+            .server
+            .applet_auth_token
+            .as_deref()
+            .is_some_and(|t| !t.trim().is_empty())
+            || (self.form.auth_mode == AuthMode::ApiKey
+                && !self.form.applet_auth_token.trim().is_empty());
+        let signed_in_oidc = base.oidc_session.is_some();
+        let device_pending = signed_in_oidc && base.identity.device_id.is_none() && has_url;
+        drop(base);
+
+        let (title, detail, color) = if has_url && has_token && device_pending {
+            (
+                rust_i18n::t!("settings.status.device_pending.title"),
+                rust_i18n::t!("settings.status.device_pending.detail"),
+                theme::AMBER(),
+            )
+        } else if has_url && has_token {
             (
                 rust_i18n::t!("settings.status.connected.title"),
                 rust_i18n::t!("settings.status.connected.detail"),
                 theme::GREEN(),
+            )
+        } else if signed_in_oidc && !has_url {
+            (
+                rust_i18n::t!("settings.status.choose_memory.title"),
+                rust_i18n::t!("settings.status.choose_memory.detail"),
+                theme::AMBER(),
             )
         } else if has_url {
             (
@@ -548,6 +675,7 @@ impl eframe::App for SettingsApp {
         theme::sync(ctx);
         theme::center_once(ctx, &mut self.centered);
         self.drain_tests();
+        self.drain_discoveries();
         self.render_sidebar(ctx);
         self.render_footer(ctx);
 
@@ -564,7 +692,7 @@ impl eframe::App for SettingsApp {
                         ui.set_width(ui.available_width());
                         let tab = self.current_tab;
                         let changed = match tab {
-                            SettingsTab::Connection => render_connection_tab(ui, &mut self.form),
+                            SettingsTab::Connection => render_connection_tab(ui, self, ctx),
                             SettingsTab::Capture => render_capture_tab(ui, &mut self.form),
                             SettingsTab::Advanced => render_advanced_tab(ui, &mut self.form),
                             #[cfg(feature = "legacy-minio")]
@@ -786,7 +914,11 @@ fn page_header(ui: &mut egui::Ui, title: &str, subtitle: &str) {
     ui.add_space(20.0);
 }
 
-fn render_connection_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bool {
+fn render_connection_tab(
+    ui: &mut egui::Ui,
+    app: &mut SettingsApp,
+    ctx: &egui::Context,
+) -> bool {
     let mut changed = false;
     page_header(
         ui,
@@ -794,13 +926,75 @@ fn render_connection_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> boo
         &rust_i18n::t!("settings.connection.subtitle"),
     );
 
-    changed |= field(
+    // Memory picker — Portal discovery by Hub device (many Captures may share one).
+    theme::field_label(ui, &rust_i18n::t!("settings.connection.memory_pick.label"));
+    ui.add_space(4.0);
+    theme::caption(ui, &rust_i18n::t!("settings.connection.memory_pick.help"));
+    ui.add_space(8.0);
+    if !app.form.bound_device_name.trim().is_empty() {
+        ui.label(
+            egui::RichText::new(
+                rust_i18n::t!(
+                    "settings.connection.memory_pick.bound",
+                    device = app.form.bound_device_name.as_str()
+                )
+                .to_string(),
+            )
+            .color(theme::TEAL()),
+        );
+        ui.add_space(6.0);
+    }
+    let refresh_label = if app.discovering {
+        rust_i18n::t!("settings.connection.memory_pick.refreshing").to_string()
+    } else {
+        rust_i18n::t!("settings.connection.memory_pick.refresh").to_string()
+    };
+    if ui
+        .add_enabled(!app.discovering, egui::Button::new(refresh_label))
+        .clicked()
+    {
+        app.refresh_memories(ctx);
+    }
+    if let Some(status) = &app.memory_status {
+        ui.add_space(4.0);
+        theme::caption(ui, status);
+    }
+    let choices = app.memory_choices.clone();
+    for choice in &choices {
+        let label = choice
+            .device_name
+            .clone()
+            .or_else(|| choice.device_slug.clone())
+            .unwrap_or_else(|| choice.url.clone());
+        let selected = app.form.bound_device_slug.as_str()
+            == choice.device_slug.as_deref().unwrap_or("")
+            || (!app.form.portal_url.is_empty() && app.form.portal_url == choice.url);
+        if ui.selectable_label(selected, &label).clicked() {
+            app.form.portal_url = choice.url.clone();
+            app.form.bound_device_slug = choice.device_slug.clone().unwrap_or_default();
+            app.form.bound_device_name = choice.device_name.clone().unwrap_or_default();
+            app.form.memory_from_discovery = true;
+            changed = true;
+        }
+    }
+    ui.add_space(16.0);
+
+    let url_before = app.form.portal_url.clone();
+    let form = &mut app.form;
+    let url_edited = field(
         ui,
         &rust_i18n::t!("settings.connection.server.label"),
         &mut form.portal_url,
         &rust_i18n::t!("settings.connection.server.hint"),
         theme::FieldOpts::monospace(),
     );
+    // Typing over a discovered URL → manual provenance on save.
+    if url_edited && form.portal_url != url_before {
+        form.memory_from_discovery = false;
+        form.bound_device_slug.clear();
+        form.bound_device_name.clear();
+    }
+    changed |= url_edited;
     theme::caption(ui, &rust_i18n::t!("settings.connection.server.help"));
     ui.add_space(6.0);
 

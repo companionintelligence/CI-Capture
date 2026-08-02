@@ -72,6 +72,14 @@ an agent to connect *to*: the applet is an HTTP client only, and its sole
 listening socket outside tests is the ephemeral loopback callback the OIDC
 flow binds on port 0 ([`src/oidc.rs:250-256`](../src/oidc.rs)).
 
+**Portal vs Memory credentials.** Portal sign-in yields an opaque
+`access_token` (for `GET /api/users/me/apps` discovery) and an `id_token` with
+`aud=ci-applet` (for Memory ingest). Do not swap them. Memory must have
+`PORTAL_OIDC_ENABLED` and an audience list that includes `ci-applet`. Public
+Memory hostnames also need Hub Traefik to accept that Portal Bearer; otherwise
+Capture only sees a Hub login HTML page. Many Capture installs may choose the
+same Memory (`bound_device_slug`); each registers its own CI-Server `device_id`.
+
 **The `/api` prefix in every agent-side path is a proxy convention, not a
 server mount.** CI-Server never calls `setGlobalPrefix`
 (`CI-Server/docs/api/rest.md:11`), so
