@@ -166,6 +166,13 @@ pub fn devices_urls(portal_url: &str) -> Result<Vec<Url>> {
     api_endpoint_urls(portal_url, "/api/devices")
 }
 
+/// Candidate URLs for CI-Server's api-key management routes (`/api/keys`,
+/// bare `/keys` fallback), used to exchange a fresh portal id_token for a
+/// durable ingest key at sign-in.
+pub fn keys_urls(portal_url: &str) -> Result<Vec<Url>> {
+    api_endpoint_urls(portal_url, "/api/keys")
+}
+
 /// The user-facing Companion Memory web app, for opening in a browser.
 ///
 /// CI-Server serves the memory SPA and the API from a single origin, so this is
