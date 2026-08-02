@@ -22,10 +22,20 @@ tray.state_starting:
   en: Starting
   es: Iniciando
 
-# The ⚠︎ prefix is the whole point of these two — keep it in every language.
+# The ⚠︎ prefix is the whole point of these states — keep it in every language.
 tray.state_setup_needed:
   en: "⚠︎ Setup needed"
   es: "⚠︎ Falta configurar"
+
+# Signed out / no API key — captures have nowhere authenticated to go.
+tray.state_sign_in_needed:
+  en: "⚠︎ Sign in to start"
+  es: "⚠︎ Inicia sesión para empezar"
+
+# Portal (or API key) is present, but no Companion Memory server URL yet.
+tray.state_memory_disconnected:
+  en: "⚠︎ Memory not connected"
+  es: "⚠︎ Memory no conectada"
 
 tray.state_permissions_needed:
   en: "⚠︎ Permissions needed"
@@ -53,17 +63,43 @@ tray.capture_now:
   en: Capture Now
   es: Capturar ahora
 
+# Disabled variants: macOS greys the row out — the suffix is the only explanation
+# the user can read without clicking. Keep short for a narrow menu.
+tray.capture_now_needs_signin:
+  en: "Capture Now — sign in first"
+  es: "Capturar ahora — inicia sesión primero"
+
+tray.capture_now_needs_memory:
+  en: "Capture Now — connect Memory first"
+  es: "Capturar ahora — conecta Memory primero"
+
 tray.upload_document:
   en: Upload Document…
   es: Subir documento…
+
+tray.upload_needs_signin:
+  en: "Upload Document — sign in first"
+  es: "Subir documento — inicia sesión primero"
+
+tray.upload_needs_memory:
+  en: "Upload Document — connect Memory first"
+  es: "Subir documento — conecta Memory primero"
 
 tray.open_memory:
   en: Open Companion Memory
   es: Abrir Companion Memory
 
+tray.open_memory_needs_memory:
+  en: "Open Companion Memory — not connected"
+  es: "Abrir Companion Memory — no conectada"
+
 tray.today_activity:
   en: Today's Activity
   es: Actividad de hoy
+
+tray.today_needs_memory:
+  en: "Today's Activity — not connected"
+  es: "Actividad de hoy — no conectada"
 
 # --- Configuration read-outs ----------------------------------------------
 
@@ -99,6 +135,16 @@ tray.portal_url:
   en: Portal URL
   es: URL del Portal
 
+# Read-only tray line. The config field is still `server.portal_url`, but the
+# product name users know is Companion Memory — say that, not "Portal URL".
+tray.memory_url_value:
+  en: "Memory: %{url}"
+  es: "Memory: %{url}"
+
+tray.memory_url_missing:
+  en: "Memory: not connected — open Settings or Setup"
+  es: "Memory: no conectada — abre Ajustes o Configuración"
+
 tray.portal_url_value:
   en: "Portal URL: %{url}"
   es: "URL del Portal: %{url}"
@@ -110,6 +156,14 @@ tray.login:
 tray.login_via:
   en: Login via %{issuer}
   es: Iniciar sesión con %{issuer}
+
+tray.signed_in_as:
+  en: "Signed in as %{who}"
+  es: "Sesión: %{who}"
+
+tray.signed_in_api_key:
+  en: Signed in with API key
+  es: Sesión con clave de API
 
 tray.configure_postgres:
   en: Configure Postgres
@@ -144,6 +198,11 @@ tray.vision_local:
 tray.setup_assistant:
   en: Setup Assistant…
   es: Asistente de configuración…
+
+# When Memory or sign-in is missing, point people at the guided path first.
+tray.setup_assistant_connect:
+  en: "Setup Assistant… — finish connecting"
+  es: "Asistente… — termina de conectar"
 
 tray.open_settings:
   en: Open Settings…
