@@ -157,6 +157,9 @@ async fn report(config: &AppConfig) -> Result<()> {
     let client = Client::builder()
         .no_proxy()
         .use_rustls_tls()
+        // Hub edge-SSO 302s to a Hub login HTML page; following that looks like
+        // HTTP 200 success. Stay on the Memory origin.
+        .redirect(reqwest::redirect::Policy::none())
         .timeout(PROBE_TIMEOUT)
         .build()
         .context("building probe client")?;
@@ -166,7 +169,17 @@ async fn report(config: &AppConfig) -> Result<()> {
         && let Ok(health) = o.join("/health")
     {
         match client.get(health.clone()).send().await {
-            Ok(resp) => println!("GET /health           : HTTP {}", resp.status().as_u16()),
+            Ok(resp) => {
+                let status = resp.status();
+                if status.is_redirection() {
+                    println!(
+                        "GET /health           : HTTP {} ✗ redirected (Hub edge SSO?) — Memory never saw this request",
+                        status.as_u16()
+                    );
+                } else {
+                    println!("GET /health           : HTTP {}", status.as_u16());
+                }
+            }
             Err(err) => println!("GET /health           : ✗ {}", friendly_error(&err)),
         }
     }
@@ -187,8 +200,15 @@ async fn report(config: &AppConfig) -> Result<()> {
                 match req.send().await {
                     Ok(resp) => {
                         let status = resp.status();
+                        if status.is_redirection() {
+                            println!(
+                                "POST GraphQL          : HTTP {} ✗ redirected to Hub login (edge SSO) — fix Hub Traefik Portal Bearer ({gql})",
+                                status.as_u16()
+                            );
+                            break;
+                        }
                         let body = resp.text().await.unwrap_or_default();
-                        let reachable = body.contains("__typename") || status.is_success();
+                        let reachable = body.contains("__typename");
                         let route_miss = matches!(
                             status,
                             reqwest::StatusCode::NOT_FOUND
@@ -199,12 +219,11 @@ async fn report(config: &AppConfig) -> Result<()> {
                             status.as_u16(),
                             if reachable {
                                 "✓ reachable"
+                            } else if body.contains("<html") || body.contains("<!DOCTYPE") {
+                                "✗ HTML body (not GraphQL) — likely Hub login page"
                             } else if route_miss && more_to_try {
                                 "route not found; trying next"
                             } else if route_miss {
-                                // Don't promise a retry that isn't coming: a
-                                // portal URL carrying its own base path has a
-                                // single candidate, so this is the verdict.
                                 "✗ route not found — is this the right address?"
                             } else {
                                 "(unexpected body)"
@@ -224,8 +243,9 @@ async fn report(config: &AppConfig) -> Result<()> {
         Err(err) => println!("POST GraphQL          : ✗ {err}"),
     }
 
-    println!("\nNote: browser login uses the OIDC issuer above. A pasted CI-Server");
-    println!("API key is sent as x-api-key; JWT/OIDC tokens are sent as bearer auth.");
+    println!("\nNote: Portal login uses the OIDC issuer above (opaque access_token for");
+    println!("discovery). Ingest uses the id_token as Bearer (aud must include ci-applet");
+    println!("in Memory PORTAL_OIDC_AUDIENCE). API keys are sent as x-api-key.");
     Ok(())
 }
 

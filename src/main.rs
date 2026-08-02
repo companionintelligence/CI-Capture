@@ -264,6 +264,8 @@ impl AppController {
             self.open_settings_window();
         } else if menu_id == *self.menu_state.login_item.id() {
             self.launch_portal_login();
+        } else if menu_id == *self.menu_state.logout_item.id() {
+            self.sign_out();
         } else if menu_id == *self.menu_state.setup_item.id() {
             self.open_onboarding_window();
         } else if menu_id == *self.menu_state.show_config_item.id() {
@@ -390,6 +392,32 @@ impl AppController {
             .refresh_labels(&snapshot, self.worker.is_running());
     }
 
+    /// Clear Portal session + ingest credential. Discovered Memory choice is
+    /// cleared; a manually typed Memory URL is kept.
+    fn sign_out(&mut self) {
+        let mut config = self.current_config();
+        config.oidc_session = None;
+        config.server.applet_auth_token = None;
+        config.identity.user_id = None;
+        config.identity.device_id = None;
+        if config.server.url_source == config::ServerUrlSource::Discovered {
+            config.server.portal_url.clear();
+            config.server.bound_device_slug = None;
+            config.server.bound_device_name = None;
+            config.server.url_source = config::ServerUrlSource::Manual;
+        }
+        if let Err(err) = self.manager.save(&config) {
+            log::error!("failed to save config after sign-out: {err:?}");
+            show_error(&t!("tray.error.sign_out_save"));
+            return;
+        }
+        *self.shared_config.lock() = config.clone();
+        self.worker.update_config(config.clone());
+        self.menu_state
+            .refresh_labels(&config, self.worker.is_running());
+        log::info!("signed out of Portal; ingest credential cleared");
+    }
+
     fn launch_portal_login(&mut self) {
         if self.pairing_in_progress {
             show_error(&t!("tray.error.login_in_progress"));
@@ -502,6 +530,7 @@ struct MenuState {
     identity_item: MenuItem,
     server_item: MenuItem,
     login_item: MenuItem,
+    logout_item: MenuItem,
     setup_item: MenuItem,
     settings_item: MenuItem,
     #[cfg(feature = "legacy-postgres")]
@@ -532,6 +561,7 @@ impl MenuState {
         let identity_item = MenuItem::new(&*t!("tray.identity"), true, None);
         let server_item = MenuItem::new(&*t!("tray.portal_url"), true, None);
         let login_item = MenuItem::new(&*t!("tray.login"), true, None);
+        let logout_item = MenuItem::new(&*t!("tray.sign_out"), true, None);
         let setup_item = MenuItem::new(&*t!("tray.setup_assistant"), true, None);
         let settings_item = MenuItem::new(&*t!("tray.open_settings"), true, None);
         #[cfg(feature = "legacy-postgres")]
@@ -567,6 +597,7 @@ impl MenuState {
             &identity_item,
             &server_item,
             &login_item,
+            &logout_item,
             #[cfg(feature = "legacy-postgres")]
             &postgres_item,
             #[cfg(feature = "legacy-minio")]
@@ -592,6 +623,7 @@ impl MenuState {
             identity_item,
             server_item,
             login_item,
+            logout_item,
             setup_item,
             settings_item,
             #[cfg(feature = "legacy-postgres")]
@@ -619,6 +651,13 @@ impl MenuState {
             {
                 t!("tray.state_permissions_needed")
             }
+            // Signed in with a Memory URL but device registration hasn't landed
+            // (often Hub edge blocked POST /devices). Don't claim Monitoring.
+            TrayConnection::Ready
+                if config.oidc_session.is_some() && config.identity.device_id.is_none() =>
+            {
+                t!("tray.state_device_pending")
+            }
             TrayConnection::Ready if running => t!("tray.state_monitoring"),
             TrayConnection::Ready => t!("tray.state_paused"),
         };
@@ -645,9 +684,17 @@ impl MenuState {
         let memory_url = config.server.portal_url.trim();
         self.server_item.set_text(&*if memory_url.is_empty() {
             t!("tray.memory_url_missing")
+        } else if let Some(name) = config
+            .server
+            .bound_device_name
+            .as_deref()
+            .filter(|s| !s.is_empty())
+        {
+            t!("tray.memory_device_value", device = name)
         } else {
             t!("tray.memory_url_value", url = memory_url)
         });
+        let signed_in = config.oidc_session.is_some() || server_ingest::is_configured(config);
         if let Some(session) = &config.oidc_session {
             let who = session
                 .name
@@ -667,6 +714,8 @@ impl MenuState {
             self.login_item
                 .set_text(&*t!("tray.login_via", issuer = issuer_display));
         }
+        self.logout_item.set_text(&*t!("tray.sign_out"));
+        self.logout_item.set_enabled(signed_in);
         #[cfg(feature = "legacy-postgres")]
         self.postgres_item.set_text(&*t!(
             "tray.postgres_value",
@@ -1013,17 +1062,17 @@ fn login_with_portal() -> Result<String> {
     Ok(t!("tray.login.signed_in", who = who, note = discovery_note).to_string())
 }
 
-/// Resolve the Companion Memory server address from CI-Portal after sign-in,
-/// `config` when there is exactly one unambiguous answer.
+/// Resolve the Companion Memory server address from CI-Portal after sign-in.
 ///
 /// Returns a sentence for the user. Never returns an error: this runs after a
 /// successful sign-in, and a discovery failure means "you'll have to type the
 /// address", not "signing in failed".
 ///
 /// The credential is the **opaque access_token**, not the id_token — see
-/// [`crate::portal_apps`].
+/// [`crate::portal_apps`]. Many Capture installs may share one Memory; when the
+/// account has several Memories, reuse `bound_device_slug` or ask in Settings.
 fn resolve_core_url(runtime: &Runtime, config: &mut AppConfig, access_token: &str) -> String {
-    use portal_apps::Discovery;
+    use portal_apps::{Discovery, MemorySelection};
 
     // Never move a server the user chose themselves.
     if config.server.url_source == config::ServerUrlSource::Manual
@@ -1045,21 +1094,29 @@ fn resolve_core_url(runtime: &Runtime, config: &mut AppConfig, access_token: &st
     match found {
         Discovery::Ok(apps) => {
             let candidates = portal_apps::memory_candidates(&apps);
-            match candidates.len() {
-                0 => t!("tray.discovery.none").into_owned(),
-                1 => {
-                    let core = &candidates[0];
-                    config.server.portal_url = core.url.clone();
-                    config.server.url_source = config::ServerUrlSource::Discovered;
-                    log::info!("discovered Companion Memory at {}", core.url);
+            let prior = config.server.bound_device_slug.clone();
+            match portal_apps::select_memory(&candidates, prior.as_deref()) {
+                MemorySelection::None => t!("tray.discovery.none").into_owned(),
+                MemorySelection::Chosen(core) => {
+                    apply_discovered_memory(config, &core);
+                    log::info!(
+                        "discovered Companion Memory at {} (device={:?})",
+                        core.url,
+                        core.device_slug
+                    );
                     match &core.device_name {
                         Some(name) => t!("tray.discovery.saving_to", device = name).into_owned(),
                         None => t!("tray.discovery.connected", url = core.url).into_owned(),
                     }
                 }
-                // Several servers: picking one would silently stream this
-                // machine's captures to the wrong box. Make the user choose.
-                n => t!("tray.discovery.multiple", count = n).into_owned(),
+                MemorySelection::NeedsChoice(list) => {
+                    // Leave URL empty until Settings picks — do not guess.
+                    log::info!(
+                        "Companion Memory discovery found {} devices; user must choose",
+                        list.len()
+                    );
+                    t!("tray.discovery.multiple", count = list.len()).into_owned()
+                }
             }
         }
         // A Portal that predates /api/users/me/apps. Say nothing about it; the
@@ -1079,6 +1136,14 @@ fn resolve_core_url(runtime: &Runtime, config: &mut AppConfig, access_token: &st
             t!("tray.discovery.error").into_owned()
         }
     }
+}
+
+/// Apply a Portal-discovered Memory choice to config (URL + device bind).
+fn apply_discovered_memory(config: &mut AppConfig, core: &portal_apps::PortalApp) {
+    config.server.portal_url = core.url.clone();
+    config.server.url_source = config::ServerUrlSource::Discovered;
+    config.server.bound_device_slug = core.device_slug.clone();
+    config.server.bound_device_name = core.device_name.clone();
 }
 
 /// After `--login`, print the stored identity and the id_token's audience +

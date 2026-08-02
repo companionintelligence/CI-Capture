@@ -299,6 +299,13 @@ pub struct ServerConfig {
     /// on the next sign-in.
     #[serde(default)]
     pub url_source: ServerUrlSource,
+    /// Hub device slug for the Memory this Capture install chose (`deviceSlug`
+    /// from Portal `/me/apps`). Many Capture installs may share the same slug.
+    #[serde(default)]
+    pub bound_device_slug: Option<String>,
+    /// Display name for [`Self::bound_device_slug`] (tray / Settings).
+    #[serde(default)]
+    pub bound_device_name: Option<String>,
 }
 
 /// Provenance of [`ServerConfig::portal_url`].
@@ -320,6 +327,8 @@ impl Default for ServerConfig {
             portal_url: String::new(),
             applet_auth_token: None,
             url_source: ServerUrlSource::Manual,
+            bound_device_slug: None,
+            bound_device_name: None,
         }
     }
 }

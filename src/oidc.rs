@@ -269,6 +269,79 @@ async fn bind_loopback(redirect_uri: &str) -> Result<(TcpListener, String)> {
     Ok((listener, url.to_string()))
 }
 
+/// Branded success/error page for the loopback OIDC callback (Capture dark tokens).
+fn oidc_callback_page(ok: bool) -> String {
+    // Compact CI mark (white paths) — full `ci-mark-white.svg` is too large for
+    // an inline success page; this keeps the product silhouette.
+    const MARK: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="56" height="56" aria-hidden="true"><rect width="64" height="64" rx="14" fill="#0a222e"/><path fill="#abd4d8" d="M18 34c2 8 8 14 16 16 9-1 16-8 17-17h-6c-1 6-5 11-11 12-6-1-10-5-12-11zm28-4c0-7-4-13-10-16l1-5c8 3 14 11 14 21h-5zm-20-9c4-3 9-4 14-2l2-5c-7-3-15-2-21 3l5 4zm8 21c5 0 10-2 13-6l4 3c-5 5-11 8-17 8v-5z"/></svg>"##;
+
+    let (title, lead, detail, accent) = if ok {
+        (
+            "Signed in",
+            "You're connected to Companion Capture.",
+            "You can close this tab and return to the app.",
+            "#58ebbf",
+        )
+    } else {
+        (
+            "Sign-in failed",
+            "Companion Capture could not finish signing in.",
+            "Close this tab and try again from the app.",
+            "#ef7070",
+        )
+    };
+
+    format!(
+        r##"<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Companion Capture — {title}</title>
+<style>
+  :root {{
+    --bg: #041620;
+    --card: #0a222e;
+    --text: #f5f8fa;
+    --muted: #8f98a3;
+    --primary: #abd4d8;
+    --accent: {accent};
+    --radius: 0.625rem;
+    --font: "Montserrat", system-ui, -apple-system, sans-serif;
+  }}
+  * {{ box-sizing: border-box; }}
+  body {{
+    margin: 0; min-height: 100vh; display: grid; place-items: center;
+    background: var(--bg); color: var(--text); font-family: var(--font);
+    background-image: radial-gradient(ellipse at 50% 0%, #0a222e 0%, #041620 55%);
+  }}
+  main {{
+    width: min(22rem, calc(100% - 2rem));
+    background: var(--card); border: 1px solid #2c676d; border-radius: var(--radius);
+    padding: 2rem 1.5rem 1.75rem; text-align: center;
+    box-shadow: 0 12px 40px rgba(0,0,0,0.35);
+  }}
+  .mark {{ margin: 0 auto 1.25rem; width: 56px; height: 56px; }}
+  h1 {{ margin: 0 0 0.5rem; font-size: 1.35rem; font-weight: 600; color: var(--primary); }}
+  .lead {{ margin: 0 0 0.35rem; color: var(--text); font-size: 0.95rem; }}
+  .detail {{ margin: 0; color: var(--muted); font-size: 0.85rem; line-height: 1.45; }}
+  .bar {{ height: 3px; width: 3rem; margin: 1.25rem auto 0; border-radius: 999px; background: var(--accent); }}
+</style>
+</head>
+<body>
+<main>
+  <div class="mark">{MARK}</div>
+  <h1>{title}</h1>
+  <p class="lead">{lead}</p>
+  <p class="detail">{detail}</p>
+  <div class="bar" aria-hidden="true"></div>
+</main>
+</body>
+</html>
+"##
+    )
+}
+
 /// Accept one request on the loopback listener and pull `code` / `state` from
 /// the query string, replying with a small "you can close this" page.
 async fn accept_code(listener: TcpListener) -> Result<(String, Option<String>)> {
@@ -303,11 +376,7 @@ async fn accept_code(listener: TcpListener) -> Result<(String, Option<String>)> 
     }
 
     let ok = code.is_some() && err.is_none();
-    let body = if ok {
-        "<!doctype html><meta charset=utf-8><title>Companion Capture</title><body style=\"font-family:-apple-system,system-ui,sans-serif;text-align:center;padding:3rem;color:#0d1117\"><h2>✅ Signed in</h2><p>You can close this tab and return to Companion Capture.</p></body>"
-    } else {
-        "<!doctype html><meta charset=utf-8><title>Companion Capture</title><body style=\"font-family:-apple-system,system-ui,sans-serif;text-align:center;padding:3rem;color:#0d1117\"><h2>Sign-in failed</h2><p>You can close this tab and try again from Companion Capture.</p></body>"
-    };
+    let body = oidc_callback_page(ok);
     let resp = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
         body.len(),
