@@ -103,6 +103,13 @@ pub mod light {
     pub const CHART_3: Color32 = hex(0x104e64);
     pub const CHART_4: Color32 = hex(0xffb900);
     pub const CHART_5: Color32 = hex(0xfe9a00);
+
+    pub const SIDEBAR: Color32 = hex(0xf8fafc);
+    pub const SIDEBAR_FOREGROUND: Color32 = hex(0x020618);
+    pub const SIDEBAR_PRIMARY: Color32 = hex(0x0f172b);
+    pub const SIDEBAR_ACCENT: Color32 = hex(0xf1f5f9);
+    pub const SIDEBAR_BORDER: Color32 = hex(0xe2e8f0);
+    pub const SIDEBAR_RING: Color32 = hex(0x70a6af);
 }
 
 /// Brand teal ramp — mode-independent.

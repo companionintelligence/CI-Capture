@@ -731,7 +731,7 @@ impl SettingsApp {
             .resizable(false)
             .frame(
                 egui::Frame::new()
-                    .fill(theme::PANEL_HI())
+                    .fill(theme::SIDEBAR())
                     .inner_margin(egui::Margin::same(14)),
             )
             .show(ctx, |ui| {
