@@ -166,8 +166,8 @@ fn main() -> Result<()> {
         menu_state,
         tray_icon: Some(tray_icon),
         proxy,
-        settings_open: false,
-        onboarding_open: false,
+        settings_pid: None,
+        onboarding_pid: None,
         pairing_in_progress: false,
     };
 
@@ -231,8 +231,11 @@ struct AppController {
     menu_state: MenuState,
     tray_icon: Option<TrayIcon>,
     proxy: EventLoopProxy<AppEvent>,
-    settings_open: bool,
-    onboarding_open: bool,
+    /// PID of the live `--settings-ui` child, if any — used to focus it when
+    /// the user clicks Open Settings again instead of silently no-oping.
+    settings_pid: Option<u32>,
+    /// PID of the live `--onboarding-ui` child, same focus behaviour.
+    onboarding_pid: Option<u32>,
     pairing_in_progress: bool,
 }
 
@@ -285,14 +288,14 @@ impl AppController {
     fn handle_app_event(&mut self, event: AppEvent, _target: &EventLoopWindowTarget<AppEvent>) {
         match event {
             AppEvent::ReloadConfig => {
-                self.settings_open = false;
+                self.settings_pid = None;
                 if let Err(err) = self.reload_config_from_disk() {
                     log::error!("failed to reload config: {err:?}");
                     show_error(&t!("tray.error.reload_config"));
                 }
             }
             AppEvent::OnboardingClosed => {
-                self.onboarding_open = false;
+                self.onboarding_pid = None;
                 if let Err(err) = self.reload_config_from_disk() {
                     log::error!("failed to reload config after onboarding: {err:?}");
                 }
@@ -314,17 +317,24 @@ impl AppController {
     }
 
     fn open_settings_window(&mut self) {
-        if self.settings_open {
-            return;
+        if let Some(pid) = self.settings_pid {
+            if process_is_running(pid) {
+                // Focus may report false even when the window is already
+                // frontmost — only relaunch when the PID itself is gone.
+                let _ = bring_pid_to_front(pid);
+                return;
+            }
+            // Child is gone but we never got ReloadConfig — clear and relaunch.
+            self.settings_pid = None;
         }
         let Ok(exe) = std::env::current_exe() else {
             show_error(&t!("tray.error.exe_settings"));
             return;
         };
-        self.settings_open = true;
         let proxy = self.proxy.clone();
         match Command::new(exe).arg("--settings-ui").spawn() {
             Ok(mut child) => {
+                self.settings_pid = Some(child.id());
                 thread::spawn(move || {
                     if let Err(err) = child.wait() {
                         log::error!("settings process failed: {err:?}");
@@ -333,7 +343,7 @@ impl AppController {
                 });
             }
             Err(err) => {
-                self.settings_open = false;
+                self.settings_pid = None;
                 log::error!("failed to launch settings window: {err:?}");
                 show_error(&t!("tray.error.launch_settings"));
             }
@@ -355,17 +365,21 @@ impl AppController {
     /// "Setup Assistant"). Reloads config when it closes so a fresh sign-in or
     /// completed onboarding takes effect immediately.
     fn open_onboarding_window(&mut self) {
-        if self.onboarding_open {
-            return;
+        if let Some(pid) = self.onboarding_pid {
+            if process_is_running(pid) {
+                let _ = bring_pid_to_front(pid);
+                return;
+            }
+            self.onboarding_pid = None;
         }
         let Ok(exe) = std::env::current_exe() else {
             show_error(&t!("tray.error.exe_setup"));
             return;
         };
-        self.onboarding_open = true;
         let proxy = self.proxy.clone();
         match Command::new(exe).arg("--onboarding-ui").spawn() {
             Ok(mut child) => {
+                self.onboarding_pid = Some(child.id());
                 thread::spawn(move || {
                     if let Err(err) = child.wait() {
                         log::error!("onboarding process failed: {err:?}");
@@ -374,7 +388,7 @@ impl AppController {
                 });
             }
             Err(err) => {
-                self.onboarding_open = false;
+                self.onboarding_pid = None;
                 log::error!("failed to launch onboarding window: {err:?}");
                 show_error(&t!("tray.error.launch_setup"));
             }
@@ -836,6 +850,59 @@ fn show_error(message: &str) {
 /// Open a URL in the user's default browser, cross-platform.
 ///
 /// Deep links carry query strings, which is what makes the Windows arm subtle:
+/// True when `pid` still refers to a live process we can signal.
+fn process_is_running(pid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        // SIGNAL 0 — existence / permission check, does not deliver a signal.
+        // SAFETY: kill(pid, 0) is the standard POSIX liveness probe.
+        unsafe { libc::kill(pid as i32, 0) == 0 }
+    }
+    #[cfg(not(unix))]
+    {
+        // No cheap liveness check wired here; trust the pid until the child
+        // wait thread clears it via ReloadConfig / OnboardingClosed.
+        let _ = pid;
+        true
+    }
+}
+
+/// Raise an already-running helper window (Settings / Setup) owned by `pid`.
+///
+/// Settings runs as a separate process (`--settings-ui`). A second tray click
+/// used to no-op while that process lived, leaving the window buried behind
+/// other apps. Activating by PID brings that exact process forward (the tray
+/// and Settings share a bundle id, so activating "the app" would be ambiguous).
+fn bring_pid_to_front(pid: u32) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        use objc::{class, msg_send, sel, sel_impl};
+
+        // NSApplicationActivateIgnoringOtherApps
+        const ACTIVATE_IGNORING_OTHER_APPS: u64 = 1 << 1;
+
+        // SAFETY: AppKit is linked via tray-icon/tao. Null means the PID is gone.
+        unsafe {
+            let app: *mut objc::runtime::Object = msg_send![
+                class!(NSRunningApplication),
+                runningApplicationWithProcessIdentifier: pid as i32
+            ];
+            if app.is_null() {
+                return false;
+            }
+            let ok: bool = msg_send![app, activateWithOptions: ACTIVATE_IGNORING_OTHER_APPS];
+            ok
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = pid;
+        // No reliable cross-process focus helper wired yet — caller still
+        // avoids spawning a duplicate while the PID is alive.
+        false
+    }
+}
+
 /// `cmd.exe` re-parses the raw command line and splits on `&` *before* argument
 /// parsing, so a plain `Command::arg` — whose MSVC-style quoting `cmd.exe` does
 /// not honour — truncates every multi-parameter URL at the first `&`. Passing
