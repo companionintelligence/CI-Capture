@@ -60,6 +60,17 @@ mail-parser = { version = "0.9", optional = true }
 epub = { version = "2", optional = true }
 rust-i18n = "3"
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+# Activate an already-open Settings/Setup helper process from the tray.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc = "0.2"
+
+# objc 0.2's macros probe a `cargo-clippy` cfg that isn't a crate feature.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("cargo-clippy"))'] }
+
 [features]
 default = []
 # Direct Postgres access from the client. A laptop should not hold database
