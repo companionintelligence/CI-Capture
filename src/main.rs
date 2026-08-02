@@ -607,16 +607,20 @@ impl MenuState {
     }
 
     fn refresh_labels(&self, config: &AppConfig, running: bool) {
-        // Truthful status: an unconfigured or permission-blocked applet must
-        // not read as "Monitoring".
-        let status = if !server_ingest::is_configured(config) {
-            t!("tray.state_setup_needed")
-        } else if permissions::permissions_relevant() && permissions::status().needs_attention() {
-            t!("tray.state_permissions_needed")
-        } else if running {
-            t!("tray.state_monitoring")
-        } else {
-            t!("tray.state_paused")
+        // Truthful status: missing sign-in, missing Memory, or blocked
+        // permissions must not read as "Monitoring".
+        let connection = tray_connection(config);
+        let status = match connection {
+            TrayConnection::NeedsSignIn => t!("tray.state_sign_in_needed"),
+            TrayConnection::NeedsMemory => t!("tray.state_memory_disconnected"),
+            TrayConnection::Ready
+                if permissions::permissions_relevant()
+                    && permissions::status().needs_attention() =>
+            {
+                t!("tray.state_permissions_needed")
+            }
+            TrayConnection::Ready if running => t!("tray.state_monitoring"),
+            TrayConnection::Ready => t!("tray.state_paused"),
         };
         self.status_item
             .set_text(&*t!("tray.status", state = status));
@@ -638,17 +642,31 @@ impl MenuState {
             user = short_uuid(config.identity.user_id),
             device = short_uuid(config.identity.device_id)
         ));
-        self.server_item.set_text(&*t!(
-            "tray.portal_url_value",
-            url = config.server.portal_url
-        ));
-        let issuer_display = config
-            .oidc
-            .issuer
-            .trim_start_matches("https://")
-            .trim_start_matches("http://");
-        self.login_item
-            .set_text(&*t!("tray.login_via", issuer = issuer_display));
+        let memory_url = config.server.portal_url.trim();
+        self.server_item.set_text(&*if memory_url.is_empty() {
+            t!("tray.memory_url_missing")
+        } else {
+            t!("tray.memory_url_value", url = memory_url)
+        });
+        if let Some(session) = &config.oidc_session {
+            let who = session
+                .name
+                .as_deref()
+                .or(session.email.as_deref())
+                .unwrap_or("Portal");
+            self.login_item
+                .set_text(&*t!("tray.signed_in_as", who = who));
+        } else if server_ingest::is_configured(config) {
+            self.login_item.set_text(&*t!("tray.signed_in_api_key"));
+        } else {
+            let issuer_display = config
+                .oidc
+                .issuer
+                .trim_start_matches("https://")
+                .trim_start_matches("http://");
+            self.login_item
+                .set_text(&*t!("tray.login_via", issuer = issuer_display));
+        }
         #[cfg(feature = "legacy-postgres")]
         self.postgres_item.set_text(&*t!(
             "tray.postgres_value",
@@ -672,23 +690,67 @@ impl MenuState {
                 t!("tray.vision_local", model = config.analysis.model)
             });
 
-        // Items whose text doesn't depend on config still have to be re-set:
-        // this runs after a language change too, and a menu half in Spanish
-        // and half in English is worse than either.
-        self.capture_now_item.set_text(&*t!("tray.capture_now"));
-        self.upload_item.set_text(&*t!("tray.upload_document"));
-        self.open_memory_item.set_text(&*t!("tray.open_memory"));
-        self.today_item.set_text(&*t!("tray.today_activity"));
-        self.setup_item.set_text(&*t!("tray.setup_assistant"));
+        // Disabled rows keep a short reason in the label — on macOS that is
+        // the only explanation visible without clicking (which does nothing).
+        let ready = matches!(connection, TrayConnection::Ready);
+        let has_memory = !memory_url.is_empty();
+        self.capture_now_item.set_text(&*match connection {
+            TrayConnection::NeedsSignIn => t!("tray.capture_now_needs_signin"),
+            TrayConnection::NeedsMemory => t!("tray.capture_now_needs_memory"),
+            TrayConnection::Ready => t!("tray.capture_now"),
+        });
+        self.upload_item.set_text(&*match connection {
+            TrayConnection::NeedsSignIn => t!("tray.upload_needs_signin"),
+            TrayConnection::NeedsMemory => t!("tray.upload_needs_memory"),
+            TrayConnection::Ready => t!("tray.upload_document"),
+        });
+        self.open_memory_item.set_text(&*if has_memory {
+            t!("tray.open_memory")
+        } else {
+            t!("tray.open_memory_needs_memory")
+        });
+        self.today_item.set_text(&*if has_memory {
+            t!("tray.today_activity")
+        } else {
+            t!("tray.today_needs_memory")
+        });
+        self.setup_item.set_text(&*if ready {
+            t!("tray.setup_assistant")
+        } else {
+            t!("tray.setup_assistant_connect")
+        });
         self.settings_item.set_text(&*t!("tray.open_settings"));
         self.show_config_item.set_text(&*t!("tray.show_config"));
         self.quit_item.set_text(&*t!("tray.quit"));
 
-        // Nothing to open until a server URL is set — greying these out is
-        // honest, where a click that pops an error dialog is not.
-        let has_server = !config.server.portal_url.trim().is_empty();
-        self.open_memory_item.set_enabled(has_server);
-        self.today_item.set_enabled(has_server);
+        self.capture_now_item.set_enabled(ready);
+        self.upload_item.set_enabled(ready);
+        // Opening Memory only needs the server address; auth is for ingest.
+        self.open_memory_item.set_enabled(has_memory);
+        self.today_item.set_enabled(has_memory);
+    }
+}
+
+/// What the tray needs before capture/upload can honestly say "ready".
+///
+/// Sign-in (`applet_auth_token`) and Companion Memory URL are independent:
+/// Portal login can succeed while discovery leaves `portal_url` empty, and a
+/// typed URL can sit without a credential. Surface each case separately so the
+/// menu tells people the next step instead of a vague "Setup needed".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TrayConnection {
+    NeedsSignIn,
+    NeedsMemory,
+    Ready,
+}
+
+fn tray_connection(config: &AppConfig) -> TrayConnection {
+    let has_auth = server_ingest::is_configured(config);
+    let has_memory = !config.server.portal_url.trim().is_empty();
+    match (has_auth, has_memory) {
+        (false, _) => TrayConnection::NeedsSignIn,
+        (true, false) => TrayConnection::NeedsMemory,
+        (true, true) => TrayConnection::Ready,
     }
 }
 
