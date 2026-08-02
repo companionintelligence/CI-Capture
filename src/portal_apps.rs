@@ -146,8 +146,16 @@ pub async fn fetch_portal_apps(portal_url: &str, access_token: &str, slug: &str)
     }
 }
 
-/// Reduce a raw app list to reachable Companion Memory candidates: right slug,
+/// Reduce a raw app list to reachable Companion Memory candidates:
 /// normalized URL, deduplicated.
+///
+/// The list is already scoped server-side: `fetch_portal_apps` requests
+/// `?slug=ci-memory`, and the Portal matches instances by slug *or* by the
+/// canonical application name — a user who typed a custom name at install time
+/// gets an instance slug like `ci-memory2`. Re-filtering by exact slug here
+/// discarded exactly those renamed instances ("No Companion Memory server is
+/// registered" for an account that has one), so the server's filtering is
+/// trusted.
 ///
 /// One candidate means the server can be configured without asking. Several means
 /// Memory is installed on more than one Hub device and the user has to choose —
@@ -157,9 +165,6 @@ pub fn memory_candidates(apps: &[PortalApp]) -> Vec<PortalApp> {
     let mut seen = Vec::new();
     let mut out = Vec::new();
     for app in apps {
-        if app.slug != MEMORY_APP_SLUG {
-            continue;
-        }
         let Ok(url) = normalize_server_url(&app.url) else {
             continue;
         };
@@ -232,15 +237,23 @@ mod tests {
     }
 
     #[test]
-    fn keeps_only_memory_apps() {
+    fn keeps_renamed_memory_instances() {
+        // A user who typed a custom name at install time gets an instance slug
+        // like `ci-memory2`; the Portal still returns it for `?slug=ci-memory`
+        // (canonical-name match) and it must not be re-filtered away here.
         let apps = [
             app("ci-memory", "http://core-1:8642", Some("Core"), Some("core-1")),
-            app("ci-web-xr-scan", "http://scan:3000", None, None),
+            app(
+                "my-custom-memory",
+                "https://my-custom-memory.example.com",
+                Some("Laptop"),
+                Some("laptop"),
+            ),
         ];
         let out = memory_candidates(&apps);
-        assert_eq!(out.len(), 1);
+        assert_eq!(out.len(), 2);
         assert_eq!(out[0].device_name.as_deref(), Some("Core"));
-        assert_eq!(out[0].device_slug.as_deref(), Some("core-1"));
+        assert_eq!(out[1].slug, "my-custom-memory");
     }
 
     #[test]
