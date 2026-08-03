@@ -23,6 +23,7 @@ mod server_upload;
 mod helper_window;
 mod settings_ui;
 mod svg_icon;
+mod telemetry;
 mod sync;
 mod theme;
 mod tokens;
@@ -70,6 +71,15 @@ enum AppEvent {
 fn main() -> Result<()> {
     let env = Env::default().default_filter_or("info");
     env_logger::Builder::from_env(env).init();
+
+    // Bound to a named local on purpose: the guard flushes and disables the
+    // client when dropped, so `let _ = …` would switch crash reporting off on
+    // the very next line. Installed before the dispatch for the same reason as
+    // the language — each window is a separate process, so a panic in the
+    // Settings window is only reported if this ran in *that* process. Returns
+    // None whenever any of the four gates is closed, which includes every build
+    // with no DSN compiled in; see `telemetry`.
+    let _sentry_guard = telemetry::init(saved_crash_reporting());
 
     // Before the dispatch, not after it — see the doc comment.
     apply_saved_language();
@@ -224,6 +234,28 @@ fn apply_saved_language() {
         .map(|config| config.ui_language)
         .unwrap_or_default();
     locale::apply(language);
+}
+
+/// Read the stored crash-reporting setting, which defaults to on.
+///
+/// Two different "no config" cases, deliberately resolved differently:
+///
+/// * **Absent** — a fresh install. `load_or_default` writes and returns
+///   `AppConfig::default()`, where `crash_reporting` is `true`. That is the
+///   opt-out posture doing its job.
+/// * **Unreadable or unparseable** — this stays fail-closed and yields `false`.
+///   A file we cannot read may be one in which the user switched reporting
+///   *off*, and guessing wrong in that direction is the expensive mistake. The
+///   cost is that the crash most worth seeing — one caused by a corrupt config —
+///   is the one we decline to report; that trade is taken knowingly.
+///
+/// This runs before the CLI dispatch, so it is also the value used by
+/// `--check-server` and the scriptable commands.
+fn saved_crash_reporting() -> bool {
+    ConfigManager::new()
+        .and_then(|manager| manager.load_or_default())
+        .map(|config| config.crash_reporting)
+        .unwrap_or(false)
 }
 
 struct AppController {

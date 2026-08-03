@@ -268,6 +268,8 @@ API-key installs are unaffected.
 
 Capture is local‑first and streamed only to the CI‑Server you sign in to. Screenshots are diff‑gated and suppressed while the macOS screensaver is running; nothing is captured until an identity is configured.
 
+One exception, and it is diagnostics rather than capture: **crash reporting**. Release builds send scrubbed panic reports to Sentry — panics only, no logs and no breadcrumbs, with paths, hosts, credentials and your machine's names rewritten first, and no capture payload on the path at all. It is on by default and off in one click — **Settings → Advanced → Crash reporting** — or from the app's environment with `CI_TELEMETRY=off`, or `CI_LOCAL_ONLY=true` for the fleet‑wide no‑egress posture. Builds made outside the release workflow have no endpoint compiled in and send nothing regardless. What it does and does not send, in full: [crash reporting](docs/crash-reporting.md).
+
 ## Documentation
 
 - [**Architecture**](docs/architecture.md) — diagrams: system context, file pipeline, edit sequence, lane lifecycle, server contract
@@ -275,6 +277,7 @@ Capture is local‑first and streamed only to the CI‑Server you sign in to. Sc
 - [**Memory integration**](docs/memory-integration.md) — how captures reach CI‑Server's Companion Memory, and what Hermes and OpenClaw can then read
 - [**Test plan**](docs/test-plan.md) — coverage map, gaps, and the per‑platform manual QA script for a release build
 - [**Screenpipe comparison**](docs/screenpipe-comparison.md) — what we kept, what diverged, and where upstream is still ahead
+- [**Crash reporting**](docs/crash-reporting.md) — the Sentry path: what it sends, how the scrubber works, how to turn it off, and where its guarantees stop
 - [**Rollout plan**](docs/plan/00-overview.md) — what shipped, the design records, and what's next
 - [**Brand & assets**](docs/assets/brand.md) — logo, palette, and the screenshots above
 

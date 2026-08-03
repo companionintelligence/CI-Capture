@@ -128,6 +128,10 @@ pub struct SettingsFormState {
     /// UI language. Read on the next window launch, not applied live — see the
     /// picker in [`render_advanced_tab`] and `crate::locale`.
     pub ui_language: crate::locale::Language,
+    /// Crash reporting, on by default. Like the language, it is read at process
+    /// start (`telemetry::init` in `main`) and not applied live — see the toggle
+    /// in [`render_advanced_tab`] and `crate::telemetry`.
+    pub crash_reporting: bool,
     auth_mode: AuthMode,
 }
 
@@ -202,6 +206,7 @@ impl From<&AppConfig> for SettingsFormState {
             analysis_api_key: config.analysis.api_key.clone(),
             analysis_model: config.analysis.model.clone(),
             ui_language: config.ui_language,
+            crash_reporting: config.crash_reporting,
             auth_mode,
         }
     }
@@ -443,6 +448,7 @@ impl SettingsApp {
         c.analysis.api_key = self.form.analysis_api_key.clone();
         c.analysis.model = self.form.analysis_model.clone();
         c.ui_language = self.form.ui_language;
+        c.crash_reporting = self.form.crash_reporting;
         if let Ok(uid) = Uuid::parse_str(self.form.user_id.trim()) {
             c.identity.user_id = Some(uid);
         }
@@ -1765,6 +1771,41 @@ fn render_advanced_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bool 
         });
     ui.add_space(8.0);
     theme::caption(ui, &rust_i18n::t!("settings.language.help"));
+
+    ui.add_space(20.0);
+    // The one exception to "captured data only reaches machines you own", so it
+    // is spelled out rather than sold: the row itself says it is on by default,
+    // and the captions below name what leaves, what does not, and where the
+    // guarantee stops. `crate::telemetry` is the implementation this copy
+    // describes — if the scrubber changes, these strings change with it.
+    //
+    // Unlike the language, flipping this does not take effect here. The Sentry
+    // client is installed once, at the top of `main`, and each window is its own
+    // process; there is no live start/stop, so the caption says so instead of
+    // implying one.
+    theme::field_label(ui, &rust_i18n::t!("settings.crash_reporting.label"));
+    ui.add_space(6.0);
+    changed |= theme::toggle_row(
+        ui,
+        &mut form.crash_reporting,
+        &rust_i18n::t!("settings.crash_reporting.title"),
+        &rust_i18n::t!("settings.crash_reporting.detail"),
+    );
+    // The environment switches outrank the toggle, and the toggle keeps its
+    // stored value when they are set — so say so rather than showing a control
+    // that appears to be in charge. Left deliberately enabled: the preference is
+    // still the user's to record for whenever the switch goes away.
+    if let Some(variable) = crate::telemetry::env_override().and_then(|r| r.env_var()) {
+        ui.add_space(8.0);
+        theme::caption(
+            ui,
+            &rust_i18n::t!("settings.crash_reporting.env_override", variable = variable),
+        );
+    }
+    ui.add_space(8.0);
+    theme::caption(ui, &rust_i18n::t!("settings.crash_reporting.help"));
+    ui.add_space(6.0);
+    theme::caption(ui, &rust_i18n::t!("settings.crash_reporting.limits"));
 
     changed
 }
