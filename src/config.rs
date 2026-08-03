@@ -203,7 +203,7 @@ impl Default for FileTrackerConfig {
 /// absent section, while users are explicitly pointed at this file to hand-edit
 /// and will delete individual keys. It also means a section can be retired in a
 /// future release without bricking installs that still have it on disk.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppConfig {
     pub capture: CaptureConfig,
@@ -235,11 +235,51 @@ pub struct AppConfig {
     /// See `crate::locale`.
     #[serde(default)]
     pub ui_language: crate::locale::Language,
-    /// Send scrubbed panic reports to Sentry. Defaults to `false` and stays
-    /// that way unless the user opts in — this is the one path that sends
-    /// anything to a machine the user does not own. See `crate::telemetry`.
-    #[serde(default)]
+    /// Send scrubbed panic reports to Sentry.
+    ///
+    /// Defaults to **`true`**: the fleet's posture is opt-out (owner decision,
+    /// 2026-08-03), so reporting is on wherever a DSN was compiled in and the
+    /// user turns it off. This is still the one path that sends anything to a
+    /// machine the user does not own, which is why `crate::telemetry` scrubs
+    /// every event and why a build with no DSN — every local build — sends
+    /// nothing regardless of this flag.
+    ///
+    /// The field default is spelled out rather than derived because
+    /// `bool::default()` is `false`; see the `Default` impl below, which exists
+    /// for this field alone.
+    #[serde(default = "crash_reporting_default")]
     pub crash_reporting: bool,
+}
+
+/// `true` — see [`AppConfig::crash_reporting`].
+fn crash_reporting_default() -> bool {
+    true
+}
+
+impl Default for AppConfig {
+    /// Hand-written, not derived, for one field: `crash_reporting` must default
+    /// to `true` and `#[derive(Default)]` would quietly make it `false` — which
+    /// would matter twice over, because `load_or_default` *persists* this value
+    /// when there is no config file yet. Every other field is its own `Default`,
+    /// and a field added later fails to compile here rather than defaulting by
+    /// accident.
+    fn default() -> Self {
+        Self {
+            capture: CaptureConfig::default(),
+            minio: MinioConfig::default(),
+            postgres: PostgresConfig::default(),
+            analysis: AnalysisConfig::default(),
+            identity: IdentityConfig::default(),
+            server: ServerConfig::default(),
+            vizier: VizierConfig::default(),
+            file_tracker: FileTrackerConfig::default(),
+            oidc: OidcConfig::default(),
+            oidc_session: None,
+            onboarding_completed: false,
+            ui_language: crate::locale::Language::default(),
+            crash_reporting: crash_reporting_default(),
+        }
+    }
 }
 
 /// OpenID Connect client config for portal sign-in (Authorization Code +
@@ -465,6 +505,33 @@ mod rebrand_tests {
         let cfg: AppConfig = serde_json::from_str(json).expect("must load");
         assert_eq!(cfg.server.portal_url, "http://core-1:8642");
         assert_eq!(cfg.minio.bucket, "ci-screens");
+    }
+
+    /// The posture is opt-out, so both paths that produce a config without an
+    /// explicit choice must produce `true`.
+    ///
+    /// Two paths, not one, and they are easy to get out of step: `#[serde(default)]`
+    /// at the *field* level would use `bool::default()` (false) and quietly
+    /// override the container default, while `#[derive(Default)]` would make
+    /// `load_or_default` **persist** `false` into a fresh install's config.json.
+    #[test]
+    fn crash_reporting_defaults_to_on() {
+        assert!(AppConfig::default().crash_reporting);
+        let cfg: AppConfig = serde_json::from_str("{}").expect("empty object must load");
+        assert!(
+            cfg.crash_reporting,
+            "a config with no key must default to on"
+        );
+    }
+
+    /// …and an explicit `false` is honoured, which is the whole point of a
+    /// toggle. A user who turned it off must stay off across upgrades.
+    #[test]
+    fn an_explicit_crash_reporting_choice_wins() {
+        let off: AppConfig = serde_json::from_str(r#"{ "crash_reporting": false }"#).unwrap();
+        assert!(!off.crash_reporting);
+        let on: AppConfig = serde_json::from_str(r#"{ "crash_reporting": true }"#).unwrap();
+        assert!(on.crash_reporting);
     }
 
     /// Unknown keys are ignored rather than rejected, so a config written by a

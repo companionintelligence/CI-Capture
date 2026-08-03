@@ -112,9 +112,9 @@ pub struct SettingsFormState {
     /// UI language. Read on the next window launch, not applied live — see the
     /// picker in [`render_advanced_tab`] and `crate::locale`.
     pub ui_language: crate::locale::Language,
-    /// Opt-in crash reporting. Like the language, it is read at process start
-    /// (`telemetry::init` in `main`) and not applied live — see the toggle in
-    /// [`render_advanced_tab`] and `crate::telemetry`.
+    /// Crash reporting, on by default. Like the language, it is read at process
+    /// start (`telemetry::init` in `main`) and not applied live — see the toggle
+    /// in [`render_advanced_tab`] and `crate::telemetry`.
     pub crash_reporting: bool,
     auth_mode: AuthMode,
 }
@@ -1302,7 +1302,7 @@ fn render_advanced_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bool 
 
     ui.add_space(20.0);
     // The one exception to "captured data only reaches machines you own", so it
-    // is spelled out rather than sold: the row itself says it is off by default,
+    // is spelled out rather than sold: the row itself says it is on by default,
     // and the captions below name what leaves, what does not, and where the
     // guarantee stops. `crate::telemetry` is the implementation this copy
     // describes — if the scrubber changes, these strings change with it.
@@ -1319,6 +1319,17 @@ fn render_advanced_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bool 
         &rust_i18n::t!("settings.crash_reporting.title"),
         &rust_i18n::t!("settings.crash_reporting.detail"),
     );
+    // The environment switches outrank the toggle, and the toggle keeps its
+    // stored value when they are set — so say so rather than showing a control
+    // that appears to be in charge. Left deliberately enabled: the preference is
+    // still the user's to record for whenever the switch goes away.
+    if let Some(variable) = crate::telemetry::env_override().and_then(|r| r.env_var()) {
+        ui.add_space(8.0);
+        theme::caption(
+            ui,
+            &rust_i18n::t!("settings.crash_reporting.env_override", variable = variable),
+        );
+    }
     ui.add_space(8.0);
     theme::caption(ui, &rust_i18n::t!("settings.crash_reporting.help"));
     ui.add_space(6.0);

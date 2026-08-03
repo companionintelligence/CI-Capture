@@ -1,13 +1,18 @@
-//! Opt-in crash reporting.
+//! Crash reporting.
 //!
 //! This module is a deliberate exception to the rule that captured data only
 //! reaches machines the user owns, so it is built to be defensible rather than
 //! convenient:
 //!
-//! * **Off unless the user turns it on.** [`AppConfig::crash_reporting`] defaults
-//!   to `false`. No DSN is even read until it is `true`, so a default install
-//!   makes no connection to Sentry at all — the privacy claim stays literally
-//!   true for anyone who does not opt in.
+//! * **On wherever a DSN was compiled in; the user turns it off.** This is the
+//!   fleet-wide posture (owner decision, 2026-08-03) and it is why the whole
+//!   rest of this module exists in the shape it does — a report that ships by
+//!   default has to be one that would be safe to ship to a stranger. The
+//!   Settings toggle ([`AppConfig::crash_reporting`]) is the user's switch;
+//!   `CI_LOCAL_ONLY` and `CI_TELEMETRY` are the fleet's. See [`resolve`] for the
+//!   precedence, and note that a build with no DSN still sends nothing at all,
+//!   whatever any switch says — which is every build produced outside the
+//!   release workflow.
 //! * **Panics only.** No breadcrumbs, no user identity, no performance spans, no
 //!   request bodies. Breadcrumbs are where PII leaks in practice, so the SDK is
 //!   configured with a zero-length breadcrumb buffer rather than trusting
@@ -194,11 +199,150 @@ const GENERIC_NAMES: &[&str] = &[
     "companion",
 ];
 
+/// Hard cap on any single string in an event, matching the rest of the fleet.
+///
+/// Sentry truncates a few fields itself, at sizes that differ per field and per
+/// SDK version; this makes the bound ours and uniform. It matters most for the
+/// leak this app is uniquely exposed to — an `expect` that interpolates a slice
+/// of a document, an OCR result or a transcript — where the sensitive text is
+/// prose the pattern rules cannot see. Truncation is not a fix for that (see the
+/// module docs), but an 8 KB ceiling is the difference between a fragment and a
+/// page.
+const MAX_STRING: usize = 8 * 1024;
+
+/// Marker so a reader can tell a cut string from a short one.
+const TRUNCATED: &str = "…[truncated]";
+
+/// Truncate at a char boundary. Applied *before* redaction, deliberately: the
+/// discarded tail cannot leak, every rule that matters runs to the end of its
+/// token so a half-cut path is still redacted, and it bounds the work the panic
+/// path does on a pathologically large message.
+fn truncate(input: &str) -> Cow<'_, str> {
+    if input.len() <= MAX_STRING {
+        return Cow::Borrowed(input);
+    }
+    let mut end = MAX_STRING;
+    while end > 0 && !input.is_char_boundary(end) {
+        end -= 1;
+    }
+    Cow::Owned(format!("{}{TRUNCATED}", &input[..end]))
+}
+
+/// Phrases after which the standard library quotes **the string that failed**.
+///
+/// This is the one leak shape that is specific to a capture app, and it is not
+/// hypothetical — `oidc.rs` documents it having already happened once, when a
+/// `&b[..300]` on a non-ASCII response body turned the whole body into a panic
+/// payload. The exposure now is bigger than an OAuth error: extraction runs
+/// third-party parsers (`html2md`, `mail-parser`, `epub`) over the user's real
+/// documents inside `spawn_blocking`, and while `file_tracker.rs` catches the
+/// resulting `JoinError`, the panic hook has already fired by then. A slicing
+/// panic inside any of them quotes the document text it was parsing — prose,
+/// which no pattern rule can recognise.
+///
+/// So the payload is removed by its *frame* instead of by its content: std's
+/// own wording is the marker, and everything from the opening backtick to the
+/// end of the message goes. What is kept — the index, the offending char, the
+/// byte range — is the whole diagnosis anyway.
+const QUOTED_PAYLOAD_MARKERS: &[&str] = &[
+    "is not a char boundary; it is inside ",
+    "is out of bounds of ",
+    "when slicing ",
+    "does not lie on a char boundary of ",
+];
+
+fn redact_quoted_payload(input: &str) -> Cow<'_, str> {
+    let Some(marker) = QUOTED_PAYLOAD_MARKERS
+        .iter()
+        .filter_map(|m| input.find(m).map(|at| at + m.len()))
+        .min()
+    else {
+        return Cow::Borrowed(input);
+    };
+    match input[marker..].find('`') {
+        Some(offset) => Cow::Owned(format!("{}`{REDACTED}`", &input[..marker + offset])),
+        None => Cow::Borrowed(input),
+    }
+}
+
 /// Rewrite one string, removing anything that identifies a person, a machine or
 /// a location on one.
 fn scrub_str(input: &str) -> String {
-    let patterned = redact_patterns(input);
-    redact_identifiers(&patterned, local_identifiers())
+    scrub_with(input, local_identifiers())
+}
+
+/// The production composition, with the identifier list passed in.
+///
+/// It exists so the corpus test can substitute a fixed set of names and still
+/// run *every* pass in the order production runs them. The previous version of
+/// that test open-coded two of the passes, which meant a pass added later was
+/// silently outside the drift guard — exactly the failure the corpus test was
+/// written to catch.
+fn scrub_with<S: AsRef<str>>(input: &str, ids: &[S]) -> String {
+    let bounded = truncate(input);
+    let unquoted = redact_quoted_payload(&bounded);
+    let patterned = redact_patterns(&unquoted);
+    redact_identifiers(&patterned, ids)
+}
+
+// ── Sensitive keys ──────────────────────────────────────────────────────────
+
+/// Key names whose *value* is never worth the risk, whatever it looks like.
+///
+/// Matched as a substring of the key with `-`, `_`, `.` and spaces removed, so
+/// one entry covers every spelling: `apikey` catches `x-api-key`, `api_key` and
+/// `API Key` — which is the whole reason the fleet contract specifies
+/// `api[-_ ]?key` rather than `apikey|api_key`. `signature` is here for the same
+/// reason it is in the contract: it is a credential in everything but name.
+///
+/// Bare `auth` is deliberately absent — it is a substring of `author`, and
+/// `authtoken`/`auth_token` normalise into `authtoken`, which `token` already
+/// covers.
+const SENSITIVE_KEY_PARTS: &[&str] = &[
+    "apikey",
+    "token",
+    "secret",
+    "password",
+    "passwd",
+    "passphrase",
+    "credential",
+    "authorization",
+    "cookie",
+    "session",
+    "signature",
+    "privatekey",
+    "bearer",
+    "dsn",
+    "email",
+    "username",
+    "forwarded",
+];
+
+/// Key names that name a **person**, matched on the last separated segment so
+/// the anchoring of `(?:^|[-_])user$` survives.
+///
+/// No value pattern can match a username, which is why this is a key rule at
+/// all. Anchored rather than substring so `user-agent`, `user_id` and
+/// `owner_id` — diagnostics, not identities — come through.
+const IDENTITY_KEY_SEGMENTS: &[&str] = &["user", "owner"];
+
+/// Whether a map key means "do not send the value".
+fn is_sensitive_key(key: &str) -> bool {
+    let lower = key.to_ascii_lowercase();
+    let squashed: String = lower
+        .chars()
+        .filter(|c| !matches!(c, '-' | '_' | '.' | ' '))
+        .collect();
+    if SENSITIVE_KEY_PARTS.iter().any(|p| squashed.contains(p)) {
+        return true;
+    }
+    if lower.starts_with("remote-") || lower.starts_with("remote_") {
+        return true;
+    }
+    lower
+        .rsplit(['-', '_', '.', ' '])
+        .next()
+        .is_some_and(|last| IDENTITY_KEY_SEGMENTS.contains(&last))
 }
 
 // ── Pattern-based redaction ─────────────────────────────────────────────────
@@ -262,6 +406,14 @@ fn left_boundary(s: &str, i: usize) -> bool {
 /// Try every rule at `i`, most specific first. Returns the replacement text and
 /// the byte offset to resume from.
 fn match_secret(s: &str, i: usize) -> Option<(String, usize)> {
+    // Credentials first: they are the only rules that key off a *label*, so
+    // they cannot be reached once a later rule has consumed the label as prose.
+    if let Some(m) = match_labelled_secret(s, i) {
+        return Some(m);
+    }
+    if let Some(end) = match_prefixed_secret(s, i) {
+        return Some((REDACTED.to_string(), end));
+    }
     if let Some(m) = match_url(s, i) {
         return Some(m);
     }
@@ -275,6 +427,144 @@ fn match_secret(s: &str, i: usize) -> Option<(String, usize)> {
         return Some((REDACTED.to_string(), end));
     }
     match_path(s, i)
+}
+
+// ── Credentials ─────────────────────────────────────────────────────────────
+
+/// Token prefixes that are self-identifying: nothing else is spelled this way,
+/// so no label or context is needed to know what has just been found.
+///
+/// `tskey-` is the one that matters here — this app talks to CI-Server over a
+/// tailnet, and a Tailscale auth key in an error string is a working credential
+/// for someone else's network. `eyJ` is a JWT's base64 `{"` and covers the OIDC
+/// access, refresh and id tokens this crate holds.
+const SECRET_PREFIXES: &[&str] = &[
+    "tskey-", "sk-", "sk_live_", "sk_test_", "ghp_", "gho_", "ghs_", "github_pat_", "xoxb-",
+    "xoxp-", "xapp-", "AKIA", "ASIA", "eyJ",
+];
+
+/// A labelled credential: `api_key=…`, `"token": "…"`, `Authorization: Bearer …`.
+///
+/// The label is checked with the same [`is_sensitive_key`] rule the map walker
+/// uses, so the two cannot drift — a key that is unsafe as a JSON field is
+/// unsafe spelled into a message, and both are natural shapes for a panic that
+/// interpolates a failing request.
+///
+/// The label itself is kept: `token=[redacted]` still says what was wrong.
+fn match_labelled_secret(s: &str, i: usize) -> Option<(String, usize)> {
+    let rest = &s[i..];
+    let b = rest.as_bytes();
+
+    // `Bearer <token>` with no `Authorization:` in front of it — the shape a
+    // header value takes once it has been logged on its own.
+    for scheme in AUTH_SCHEMES {
+        if rest
+            .get(..scheme.len())
+            .is_some_and(|head| head.eq_ignore_ascii_case(scheme))
+            && let Some(end) = credential_end(rest, scheme.len())
+        {
+            return Some((format!("{}{REDACTED}", &rest[..scheme.len()]), i + end));
+        }
+    }
+
+    // The label, optionally quoted: `"token"` as well as `token`.
+    let quoted = b.first() == Some(&b'"');
+    let label_start = usize::from(quoted);
+    let mut k = label_start;
+    while k < b.len() && (b[k].is_ascii_alphanumeric() || matches!(b[k], b'-' | b'_' | b'.')) {
+        k += 1;
+    }
+    let label = rest.get(label_start..k)?;
+    // Cheap bounds before the allocating check: no entry is shorter than three
+    // characters, and nothing this long is a field name.
+    if !(3..=48).contains(&label.len()) || !is_sensitive_key(label) {
+        return None;
+    }
+    if quoted {
+        if b.get(k) != Some(&b'"') {
+            return None;
+        }
+        k += 1;
+    }
+
+    // The separator: `=`, `:` or `=>`, with optional space either side.
+    while b.get(k) == Some(&b' ') {
+        k += 1;
+    }
+    match b.get(k) {
+        Some(b'=') | Some(b':') => k += 1,
+        _ => return None,
+    }
+    if b.get(k) == Some(&b'>') {
+        k += 1;
+    }
+    while matches!(b.get(k), Some(b' ') | Some(b'"') | Some(b'\'')) {
+        k += 1;
+    }
+
+    // `Authorization: Bearer <token>` — keep the scheme, it is diagnostic.
+    for scheme in AUTH_SCHEMES {
+        if rest
+            .get(k..k + scheme.len())
+            .is_some_and(|head| head.eq_ignore_ascii_case(scheme))
+        {
+            k += scheme.len();
+            break;
+        }
+    }
+
+    // `token:` with nothing after it is prose, not a credential.
+    let end = value_end(rest, k)?;
+
+    // Everything up to the value verbatim — label, separator, opening quote,
+    // auth scheme — then the marker. `"token": "[redacted]"` reads as the JSON
+    // it came from.
+    let mut emit = String::with_capacity(k + REDACTED.len());
+    emit.push_str(&rest[..k]);
+    emit.push_str(REDACTED);
+    Some((emit, i + end))
+}
+
+/// Auth schemes that precede a credential. `Token` and `Digest` are absent on
+/// purpose: `Token expired` is prose, and this rule fires without a label.
+const AUTH_SCHEMES: &[&str] = &["Bearer ", "Basic "];
+
+/// End of a credential value, or `None` if there is nothing there.
+fn value_end(s: &str, from: usize) -> Option<usize> {
+    let mut k = from;
+    while let Some(c) = s[k..].chars().next() {
+        if c.is_whitespace() || matches!(c, '"' | '\'' | ',' | ';' | '}' | ')' | ']' | '\\') {
+            break;
+        }
+        k += c.len_utf8();
+    }
+    (k > from).then_some(k)
+}
+
+/// As [`value_end`], but long enough to be a credential rather than a word.
+fn credential_end(s: &str, from: usize) -> Option<usize> {
+    value_end(s, from).filter(|end| end - from >= 12)
+}
+
+/// A self-identifying credential with no label: `tskey-auth-…`, `eyJhbGciOi…`.
+fn match_prefixed_secret(s: &str, i: usize) -> Option<usize> {
+    let rest = &s[i..];
+    // `get`, not indexing: `i` is a char boundary but `i + prefix.len()` need
+    // not be, and `café/Users/…` is a real input.
+    let prefix = SECRET_PREFIXES
+        .iter()
+        .find(|p| rest.get(..p.len()).is_some_and(|head| head.eq_ignore_ascii_case(p)))?;
+    let mut k = prefix.len();
+    while let Some(c) = rest[k..].chars().next() {
+        if !(c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '+' | '/' | '=')) {
+            break;
+        }
+        k += c.len_utf8();
+    }
+    // Long enough to be a key rather than a word that starts the same way.
+    // `sk-` and `AKIA` are short prefixes on long secrets; the length check is
+    // what keeps `AKIAs` and `sk-1` from being mistaken for them.
+    (k >= prefix.len() + 12).then_some(i + k)
 }
 
 // ── Bare IPv6 ───────────────────────────────────────────────────────────────
@@ -851,16 +1141,40 @@ fn redact_identifiers<S: AsRef<str>>(input: &str, ids: &[S]) -> String {
 
 // ── Event scrubbing ─────────────────────────────────────────────────────────
 
+/// How deep the walker will go before replacing a subtree wholesale. A JSON
+/// tree cannot be cyclic, but it can be deep enough to overflow the stack, and
+/// a panic handler that panics is worse than a lost field.
+const MAX_DEPTH: u32 = 32;
+
 /// Recursively scrub a JSON value in place — keys as well as values, since a
 /// map keyed by "which file failed" is a natural thing to write.
+///
+/// The **whole object** is passed to this walker rather than each value
+/// individually: scrubbing values alone would skip [`is_sensitive_key`] and ship
+/// a bare `data.token` verbatim, since a token matches no textual pattern.
 fn scrub_value(v: &mut Value) {
+    scrub_value_at(v, 0);
+}
+
+fn scrub_value_at(v: &mut Value, depth: u32) {
+    if depth >= MAX_DEPTH {
+        *v = Value::String(REDACTED.to_string());
+        return;
+    }
     match v {
         Value::String(s) => *s = scrub_str(s),
-        Value::Array(a) => a.iter_mut().for_each(scrub_value),
+        Value::Array(a) => a.iter_mut().for_each(|item| scrub_value_at(item, depth + 1)),
         Value::Object(o) => {
             let mut fresh = serde_json::Map::with_capacity(o.len());
             for (key, mut value) in std::mem::take(o) {
-                scrub_value(&mut value);
+                if is_sensitive_key(&key) {
+                    // The key is the whole finding. Replace the value outright
+                    // rather than filtering it — no credential, address or name
+                    // has a shape the text rules are guaranteed to catch.
+                    value = Value::String(REDACTED.to_string());
+                } else {
+                    scrub_value_at(&mut value, depth + 1);
+                }
                 fresh.insert(scrub_str(&key), value);
             }
             *o = fresh;
@@ -922,9 +1236,18 @@ fn safe_contexts(contexts: Map<String, Context>) -> Map<String, Context> {
     safe
 }
 
+/// Tags are `String → String`, so the sensitive-key rule has to be applied here
+/// too — the value walker never sees them.
 fn scrub_map(map: Map<String, String>) -> Map<String, String> {
     map.into_iter()
-        .map(|(k, v)| (scrub_str(&k), scrub_str(&v)))
+        .map(|(k, v)| {
+            let value = if is_sensitive_key(&k) {
+                REDACTED.to_string()
+            } else {
+                scrub_str(&v)
+            };
+            (scrub_str(&k), value)
+        })
         .collect()
 }
 
@@ -1013,7 +1336,11 @@ pub fn scrub(mut event: Event<'static>) -> Option<Event<'static>> {
     event.extra = extra
         .into_iter()
         .map(|(key, mut value)| {
-            scrub_value(&mut value);
+            if is_sensitive_key(&key) {
+                value = Value::String(REDACTED.to_string());
+            } else {
+                scrub_value(&mut value);
+            }
             (scrub_str(&key), value)
         })
         .collect();
@@ -1073,19 +1400,175 @@ impl TransportFactory for ProxyFreeFactory {
     }
 }
 
+// ── The gate ────────────────────────────────────────────────────────────────
+
+/// Environment variable spellings that mean "off", matching the rest of the
+/// fleet. Compared case-insensitively after trimming.
+const FALSEY: &[&str] = &["off", "false", "0", "no", "disabled"];
+
+/// …and "on", for the local-only switch, whose *presence* is not enough — an
+/// operator who writes `CI_LOCAL_ONLY=false` means false.
+const TRUTHY: &[&str] = &["on", "true", "1", "yes", "enabled"];
+
+/// The fleet-wide "turn telemetry off" switch.
+pub const TELEMETRY_VAR: &str = "CI_TELEMETRY";
+
+/// The fleet-wide "no egress at all" switch. Local-only mode has to mean zero
+/// phone-home or it means nothing.
+pub const LOCAL_ONLY_VAR: &str = "CI_LOCAL_ONLY";
+
+/// Why reporting is off, when it is off.
+///
+/// Ordered as the precedence itself: the *loudest* explicit choice wins, so the
+/// startup log tells whoever is looking why nothing is being sent rather than
+/// stopping at the first true condition in source order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DisabledReason {
+    /// `CI_LOCAL_ONLY` is set to a truthy value.
+    LocalOnly,
+    /// `CI_TELEMETRY` is set to a falsey value.
+    OptedOut,
+    /// The user turned the Settings toggle off (or the config was unreadable —
+    /// see `saved_crash_reporting` in `main.rs`).
+    SettingOff,
+    /// No DSN was compiled in. Every local build, and every release build made
+    /// before the secret existed.
+    NoDsn,
+}
+
+impl DisabledReason {
+    /// The fleet's wire spelling, so a CI-Capture log line reads the same as a
+    /// CI-Server one. `setting-off` is this app's extra rung; the other three
+    /// are the shared vocabulary.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::LocalOnly => "local-only",
+            Self::OptedOut => "opt-out",
+            Self::SettingOff => "setting-off",
+            Self::NoDsn => "no-dsn",
+        }
+    }
+
+    /// The environment variable responsible, for the Settings toggle to name it
+    /// instead of appearing to be in charge when it is not.
+    pub fn env_var(self) -> Option<&'static str> {
+        match self {
+            Self::LocalOnly => Some(LOCAL_ONLY_VAR),
+            Self::OptedOut => Some(TELEMETRY_VAR),
+            Self::SettingOff | Self::NoDsn => None,
+        }
+    }
+}
+
+/// The resolved decision, and why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Settings {
+    pub enabled: bool,
+    /// `None` exactly when `enabled` is true.
+    pub disabled_reason: Option<DisabledReason>,
+}
+
+fn matches(value: Option<&str>, set: &[&str]) -> bool {
+    value
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .is_some_and(|v| set.iter().any(|c| c.eq_ignore_ascii_case(v)))
+}
+
+/// `CI_TELEMETRY=off` (any falsey spelling) opts out; anything else leaves the
+/// decision to the toggle and the DSN.
+pub fn is_opted_out(telemetry: Option<&str>) -> bool {
+    matches(telemetry, FALSEY)
+}
+
+/// Local-only mode forbids all egress, telemetry included.
+pub fn is_local_only(local_only: Option<&str>) -> bool {
+    matches(local_only, TRUTHY)
+}
+
+/// Resolve the four gate conditions. Pure, so the tests do not have to mutate
+/// process environment — `std::env::set_var` is `unsafe` in edition 2024 and
+/// racy under a threaded test harness besides.
+///
+/// Precedence is **local-only > opt-out > setting-off > no-dsn**: the fleet's
+/// posture beats the machine's operator, who beats this app's own user, who
+/// beats the build. Only the *reason* depends on the order — every branch but
+/// the last disables reporting either way — and reporting the most deliberate
+/// choice is what makes "why is nothing arriving?" answerable.
+pub fn resolve(
+    setting_on: bool,
+    dsn: Option<&str>,
+    telemetry: Option<&str>,
+    local_only: Option<&str>,
+) -> Settings {
+    let disabled = |reason| Settings {
+        enabled: false,
+        disabled_reason: Some(reason),
+    };
+    if is_local_only(local_only) {
+        return disabled(DisabledReason::LocalOnly);
+    }
+    if is_opted_out(telemetry) {
+        return disabled(DisabledReason::OptedOut);
+    }
+    if !setting_on {
+        return disabled(DisabledReason::SettingOff);
+    }
+    if dsn.map(str::trim).filter(|d| !d.is_empty()).is_none() {
+        return disabled(DisabledReason::NoDsn);
+    }
+    Settings {
+        enabled: true,
+        disabled_reason: None,
+    }
+}
+
+/// [`resolve`] against this process's environment and the compiled-in DSN.
+pub fn settings(setting_on: bool) -> Settings {
+    resolve(
+        setting_on,
+        DSN,
+        std::env::var(TELEMETRY_VAR).ok().as_deref(),
+        std::env::var(LOCAL_ONLY_VAR).ok().as_deref(),
+    )
+}
+
+/// Whether an environment kill switch is overriding the Settings toggle, for
+/// the toggle to say so rather than lying about the effective state.
+pub fn env_override() -> Option<DisabledReason> {
+    match settings(true).disabled_reason {
+        reason @ Some(DisabledReason::LocalOnly | DisabledReason::OptedOut) => reason,
+        _ => None,
+    }
+}
+
 // ── Init ────────────────────────────────────────────────────────────────────
 
-/// Start crash reporting if the user asked for it and a DSN was compiled in.
+/// Start crash reporting unless something turned it off.
 ///
-/// Returns the guard, which must be held for the process lifetime — dropping it
-/// flushes and disables the client. `None` means nothing was started, which is
-/// the normal case.
+/// `setting_on` is the Settings toggle, which defaults to **on**; the two
+/// environment switches and the compiled-in DSN are read here. Returns the
+/// guard, which must be held for the process lifetime — dropping it flushes and
+/// disables the client.
 #[must_use = "dropping the guard immediately disables crash reporting"]
-pub fn init(enabled: bool) -> Option<sentry::ClientInitGuard> {
-    if !enabled {
+pub fn init(setting_on: bool) -> Option<sentry::ClientInitGuard> {
+    if let Some(reason) = settings(setting_on).disabled_reason {
+        // Debug, not info: a normal local build hits `no-dsn` on every launch of
+        // every process, and a line about a disabled feature is not worth
+        // putting in front of every developer every time.
+        log::debug!("crash reporting disabled ({})", reason.as_str());
         return None;
     }
-    let dsn = DSN?.parse::<sentry::types::Dsn>().ok()?;
+    // `settings` already established that the DSN is present and non-empty; a
+    // *malformed* one is a build-configuration mistake worth one debug line
+    // rather than a startup failure.
+    let dsn = match DSN?.trim().parse::<sentry::types::Dsn>() {
+        Ok(dsn) => dsn,
+        Err(_) => {
+            log::debug!("crash reporting disabled (the compiled-in DSN does not parse)");
+            return None;
+        }
+    };
 
     // Before the client exists, so the scrubber is never asked for names it has
     // not looked up yet.
@@ -1958,7 +2441,7 @@ mod tests {
         let input = "event ingest to https://core-1.tail1234.ts.net:8642/api/v1/events failed \
                      with HTTP 401 Unauthorized: {\"error\":\"unauthorized\",\
                      \"device\":\"ci-applet-liams-macbook\",\"user\":\"liam.broza@gmail.com\"}";
-        let out = redact_identifiers(&redact_patterns(input), &ids);
+        let out = scrub_with(input, &ids);
         assert_clean(input, &out, &["liam", "Liam", "macbook", "core-1", "tail1234", "gmail"]);
         // …and still says what failed.
         assert!(out.contains("401 Unauthorized"), "{out}");
@@ -1983,13 +2466,16 @@ mod tests {
             Some("Liam's MacBook Pro".into()),
             Some("/Users/liam".into()),
         ]);
-        let prod = |s: &str| redact_identifiers(&redact_patterns(s), &ids);
+        let prod = |s: &str| scrub_with(s, &ids);
         let secrets = [
             "liam", "Liam", "broza", "Broza", "core-1", "tail1234", "taxes", "Taxes", "passport",
             "ssn", "kids", "Art of War", "Screen Shot", "Application Support",
             "gmail", "macbook", "2001:db8", "192.168.1.47", "fileserver", "id_rsa", "notes.txt",
             "notes.docx", "Backup", "OneDrive", "w2", "Documents", "192.168", "fe80",
             "liams-server", "example.com", "mydomain", "lifescope",
+            // Credentials and quoted document text — see the sections above.
+            "sk-live", "9f3a2b1c8d7e", "tskey-auth", "eyJhbGciOiJIUzI1NiJ9", "hunter2horse",
+            "AKIAIOSFODNN7EXAMPLE", "biopsy", "Alvarez", "term sheet",
         ];
         let mut failures = Vec::new();
         for input in [
@@ -2055,6 +2541,17 @@ mod tests {
             "user liam not authorised",
             "connecting to mydomain.com:8642 timed out",
             "dial tcp 2001:db8::dead:beef refused",
+            "api key rejected: api_key=sk-live-9f3a2b1c8d7e",
+            "x-api-key: 9f3a2b1c8d7e4f5a",
+            r#"{"token":"9f3a2b1c8d7e","kind":"applet"}"#,
+            "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.e30.sig",
+            "Bearer eyJhbGciOiJIUzI1NiJ9.e30.sig rejected",
+            "password = hunter2horse",
+            "joining tailnet with tskey-auth-k9RsT2CNTRL-abcdefghijkl failed",
+            "using AKIAIOSFODNN7EXAMPLE for upload",
+            "connecting to postgres://liam:hunter2horse@core-1.tail1234.ts.net:5432/ci failed",
+            "byte index 12 is not a char boundary; it is inside 'ñ' (bytes 11..13) of `Dear Dr Alvarez, your biopsy result`",
+            "byte index 400 is out of bounds of `Subject: Series B term sheet — do not forward`",
         ] {
             let out = prod(input);
             for needle in secrets {
@@ -2066,12 +2563,328 @@ mod tests {
         assert!(failures.is_empty(), "{}", failures.join("\n\n"));
     }
 
+    // ── Credentials ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn labelled_credentials_lose_their_value_and_keep_their_label() {
+        for (input, keep) in [
+            ("api key rejected: api_key=sk-live-9f3a2b1c8d7e", "api_key="),
+            ("x-api-key: 9f3a2b1c8d7e4f5a", "x-api-key:"),
+            (r#"{"token":"9f3a2b1c8d7e","kind":"applet"}"#, r#""token":"#),
+            ("Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.e30.sig", "Bearer "),
+            // …and with no label in front of it, which is how a header value
+            // looks once it has been logged on its own.
+            ("Bearer 9f3a2b1c8d7e4f5a rejected", "Bearer "),
+            ("password = hunter2horse", "password ="),
+            ("signature=3045022100ab", "signature="),
+            ("client_secret => s3cr3t-value", "client_secret =>"),
+        ] {
+            let out = scrubbed(
+                input,
+                &[
+                    "sk-live",
+                    "9f3a2b1c8d7e",
+                    "eyJhbGciOiJIUzI1NiJ9",
+                    "hunter2horse",
+                    "3045022100ab",
+                    "s3cr3t-value",
+                ],
+            );
+            assert!(out.contains(keep), "lost the label: {out}");
+        }
+        // The label alone is prose, not a credential.
+        unchanged("the token expired");
+        unchanged("Caused by: session closed");
+    }
+
+    #[test]
+    fn self_identifying_tokens_are_removed_without_a_label() {
+        for (input, secret) in [
+            (
+                "joining tailnet with tskey-auth-k9RsT2CNTRL-abcdefghijkl failed",
+                "tskey-auth-k9RsT2CNTRL",
+            ),
+            (
+                "decoding eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxIn0.abc failed",
+                "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9",
+            ),
+            ("using AKIAIOSFODNN7EXAMPLE for upload", "AKIAIOSFODNN7EXAMPLE"),
+        ] {
+            scrubbed(input, &[secret]);
+        }
+        // Too short to be a key; must not eat the sentence.
+        unchanged("sk-1 is not a key");
+    }
+
+    #[test]
+    fn credentials_in_a_connection_url_go_with_the_authority() {
+        scrubbed(
+            "connecting to postgres://liam:hunter2horse@core-1.tail1234.ts.net:5432/ci failed",
+            &["liam", "hunter2horse", "core-1", "tail1234"],
+        );
+    }
+
+    // ── Sensitive keys ──────────────────────────────────────────────────────
+
+    #[test]
+    fn a_sensitive_key_redacts_its_value_whatever_it_looks_like() {
+        // A bare token matches no textual pattern; the key is the whole finding.
+        for key in [
+            "token",
+            "access_token",
+            "x-api-key",
+            "API Key",
+            "authorization",
+            "Cookie",
+            "signature",
+            "client_secret",
+            "password",
+            "session_id",
+            "email",
+            "username",
+            "x-forwarded-for",
+            "remote-addr",
+            "user",
+            "owner",
+            "repo_owner",
+        ] {
+            assert!(is_sensitive_key(key), "{key} should be sensitive");
+        }
+        // Anchored, so the diagnostics survive.
+        for key in [
+            "user-agent",
+            "user_id",
+            "owner_id",
+            "userland",
+            "author",
+            "route",
+            "status",
+            "duration_ms",
+        ] {
+            assert!(!is_sensitive_key(key), "{key} should survive");
+        }
+    }
+
+    #[test]
+    fn a_bare_token_in_tags_and_extra_is_removed_by_its_key() {
+        let mut event = Event::default();
+        event.tags.insert("token".into(), "9f3a2b1c8d7e".into());
+        event.tags.insert("user".into(), "Liam Broza".into());
+        event.tags.insert("user-agent".into(), "companion-capture/1".into());
+        event.extra.insert(
+            "authorization".into(),
+            Value::String("Bearer 9f3a2b1c8d7e".into()),
+        );
+        // The WHOLE object goes to the walker: scrubbing values one at a time
+        // would skip the key check and ship a bare `data.token`.
+        event.extra.insert(
+            "data".into(),
+            serde_json::json!({ "token": "9f3a2b1c8d7e", "email": "someone@example.org", "route": "/api/v1/events" }),
+        );
+        let json = json_of(event);
+        assert_clean("keys", &json, &["9f3a2b1c8d7e", "Liam", "Broza", "someone"]);
+        // …and the diagnostics are still there.
+        assert!(json.contains("companion-capture/1"), "{json}");
+        assert!(json.contains("/api/v1/events"), "{json}");
+    }
+
+    #[test]
+    fn a_request_with_headers_and_a_referer_is_dropped_whole() {
+        // `send_default_pii = false` does not stop request headers; dropping the
+        // container does. URL, query string and `referer` all carry the same
+        // content, so filtering only one of them redacts nothing.
+        let event = Event {
+            request: Some(sentry::protocol::Request {
+                url: "https://core-1.tail1234.ts.net:8642/api/v1/events?q=taxes"
+                    .parse()
+                    .ok(),
+                query_string: Some("q=taxes".into()),
+                cookies: Some("session=9f3a2b1c8d7e".into()),
+                headers: {
+                    let mut headers = Map::new();
+                    headers.insert(
+                        "referer".into(),
+                        "https://core-1.tail1234.ts.net/search?q=taxes".into(),
+                    );
+                    headers.insert("x-api-key".into(), "9f3a2b1c8d7e".into());
+                    headers
+                },
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let json = json_of(event);
+        assert_clean("request", &json, &["taxes", "core-1", "tail1234", "9f3a2b1c8d7e", "referer"]);
+    }
+
+    #[test]
+    fn breadcrumbs_never_survive_however_they_got_attached() {
+        let event = Event {
+            breadcrumbs: vec![sentry::protocol::Breadcrumb {
+                message: Some("reading /Users/liam/Documents/taxes.pdf".into()),
+                data: {
+                    let mut data = Map::new();
+                    data.insert("token".into(), Value::String("9f3a2b1c8d7e".into()));
+                    data
+                },
+                ..Default::default()
+            }]
+            .into(),
+            ..Default::default()
+        };
+        let json = json_of(event);
+        assert_clean("breadcrumbs", &json, &["liam", "taxes", "9f3a2b1c8d7e"]);
+    }
+
+    // ── Capture-specific: content quoted by a panic ──────────────────────────
+
+    #[test]
+    fn a_slicing_panic_does_not_ship_the_document_it_was_reading() {
+        // The live vector: extraction runs third-party parsers over the user's
+        // real files inside `spawn_blocking`, and the panic hook fires before
+        // the JoinError is caught. Document prose matches no pattern rule, so
+        // the payload is removed by std's own wording instead.
+        for input in [
+            "byte index 12 is not a char boundary; it is inside 'ñ' (bytes 11..13) of `Dear Dr Alvarez, your biopsy result`",
+            "byte index 400 is out of bounds of `Subject: Series B term sheet — do not forward`",
+            "begin <= end (5 <= 2) when slicing `PATIENT NAME: Jane Doe, DOB 1981-04-02`",
+        ] {
+            let out = scrubbed(
+                input,
+                &["Alvarez", "biopsy", "Series B", "term sheet", "PATIENT", "Jane Doe", "1981-04-02"],
+            );
+            // The diagnosis — index, char, byte range — is what makes it
+            // actionable, and it stays.
+            assert!(out.contains("byte index") || out.contains("begin <= end"), "{out}");
+        }
+        // Ordinary prose with a backtick is not a slicing panic.
+        unchanged("running `cargo test` first");
+    }
+
+    #[test]
+    fn an_oversized_message_is_truncated() {
+        let long = format!("leaking {}", "secret prose ".repeat(2_000));
+        let out = scrub_str(&long);
+        assert!(out.len() <= MAX_STRING + TRUNCATED.len(), "{}", out.len());
+        assert!(out.ends_with(TRUNCATED), "{}", &out[out.len() - 40..]);
+        unchanged("short strings are untouched");
+    }
+
+    #[test]
+    fn a_deeply_nested_extra_cannot_overflow_the_stack() {
+        let mut value = serde_json::json!("/Users/liam/Documents/taxes.pdf");
+        for _ in 0..(MAX_DEPTH * 4) {
+            value = serde_json::json!({ "next": value });
+        }
+        let mut event = Event::default();
+        event.extra.insert("deep".into(), value);
+        assert_clean("deep", &json_of(event), SECRETS);
+    }
+
+    // ── The gate ────────────────────────────────────────────────────────────
+
+    const FAKE_DSN: &str = "https://abc123@o1.ingest.us.sentry.io/9999999";
+
+    #[test]
+    fn reporting_is_on_by_default_wherever_a_dsn_is_configured() {
+        // The posture, in one assertion: nothing had to be switched on.
+        let settings = resolve(true, Some(FAKE_DSN), None, None);
+        assert!(settings.enabled);
+        assert_eq!(settings.disabled_reason, None);
+    }
+
+    #[test]
+    fn no_dsn_means_no_client_whatever_the_switches_say() {
+        for (telemetry, local_only) in [(None, None), (Some("on"), Some("false"))] {
+            let settings = resolve(true, None, telemetry, local_only);
+            assert!(!settings.enabled);
+            assert_eq!(settings.disabled_reason, Some(DisabledReason::NoDsn));
+        }
+        // An unset secret expands to the empty string in CI; same outcome.
+        assert_eq!(
+            resolve(true, Some("   "), None, None).disabled_reason,
+            Some(DisabledReason::NoDsn)
+        );
+    }
+
+    #[test]
+    fn the_settings_toggle_turns_it_off() {
+        let settings = resolve(false, Some(FAKE_DSN), None, None);
+        assert!(!settings.enabled);
+        assert_eq!(settings.disabled_reason, Some(DisabledReason::SettingOff));
+    }
+
+    #[test]
+    fn ci_telemetry_off_beats_a_baked_in_dsn() {
+        for spelling in ["off", "OFF", "false", "0", "no", "disabled", " off "] {
+            let settings = resolve(true, Some(FAKE_DSN), Some(spelling), None);
+            assert!(!settings.enabled, "{spelling} should disable");
+            assert_eq!(settings.disabled_reason, Some(DisabledReason::OptedOut));
+        }
+        // Anything else leaves the decision where it was.
+        for spelling in ["on", "true", "1", "yes", "enabled", "", "  ", "maybe"] {
+            assert!(
+                resolve(true, Some(FAKE_DSN), Some(spelling), None).enabled,
+                "{spelling} should not disable"
+            );
+        }
+    }
+
+    #[test]
+    fn ci_local_only_beats_everything() {
+        for spelling in ["true", "TRUE", "1", "yes", "on", "enabled", " 1 "] {
+            let settings = resolve(true, Some(FAKE_DSN), Some("on"), Some(spelling));
+            assert!(!settings.enabled, "{spelling} should disable");
+            assert_eq!(settings.disabled_reason, Some(DisabledReason::LocalOnly));
+        }
+        // Local-only mode is opt-in, so its absence and its negation both mean
+        // "not local-only" — presence alone must not be enough.
+        for spelling in ["false", "0", "no", "off", "", "  "] {
+            assert!(
+                resolve(true, Some(FAKE_DSN), None, Some(spelling)).enabled,
+                "{spelling} should not disable"
+            );
+        }
+    }
+
+    #[test]
+    fn the_reported_reason_follows_the_fleet_precedence() {
+        // local-only > opt-out > setting-off > no-dsn. Every case below is
+        // disabled either way; the assertion is about which reason is *named*,
+        // which is the only thing that makes "why is nothing arriving?"
+        // answerable.
+        for (setting, dsn, telemetry, local_only, expected) in [
+            (false, None, Some("off"), Some("1"), DisabledReason::LocalOnly),
+            (false, None, Some("off"), None, DisabledReason::OptedOut),
+            (false, None, None, None, DisabledReason::SettingOff),
+            (true, None, None, None, DisabledReason::NoDsn),
+        ] {
+            assert_eq!(
+                resolve(setting, dsn, telemetry, local_only).disabled_reason,
+                Some(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn every_disabled_reason_has_a_wire_name_and_knows_its_variable() {
+        for (reason, name, var) in [
+            (DisabledReason::LocalOnly, "local-only", Some(LOCAL_ONLY_VAR)),
+            (DisabledReason::OptedOut, "opt-out", Some(TELEMETRY_VAR)),
+            (DisabledReason::SettingOff, "setting-off", None),
+            (DisabledReason::NoDsn, "no-dsn", None),
+        ] {
+            assert_eq!(reason.as_str(), name);
+            assert_eq!(reason.env_var(), var);
+        }
+    }
+
     // ── Init ────────────────────────────────────────────────────────────────
 
     #[test]
-    fn init_is_inert_when_the_user_has_not_opted_in() {
-        // The whole privacy story rests on this: no opt-in, no client, no
-        // connection — regardless of whether a DSN was compiled in.
+    fn init_is_inert_when_the_user_has_turned_it_off() {
+        // No client, no panic hook, no socket — regardless of whether a DSN was
+        // compiled in.
         assert!(init(false).is_none());
     }
 

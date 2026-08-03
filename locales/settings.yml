@@ -479,12 +479,19 @@ settings.crash_reporting.title:
   es: Enviar informes de fallos
 
 settings.crash_reporting.detail:
-  en: Off by default. Nothing is sent while this is off.
-  es: Desactivado de forma predeterminada. Mientras esté desactivado no se envía nada.
+  en: On by default. Turn this off and nothing is sent.
+  es: Activado de forma predeterminada. Desactívalo y no se envía nada.
+
+# Shown only when CI_LOCAL_ONLY or CI_TELEMETRY is set in this process's
+# environment. The toggle keeps its stored value — the switch overrides the
+# effect, not the preference — so without this line the UI would be lying.
+settings.crash_reporting.env_override:
+  en: "Currently off regardless of this switch: %{variable} is set in this app's environment."
+  es: "Actualmente desactivado independientemente de este interruptor: %{variable} está definida en el entorno de esta app."
 
 settings.crash_reporting.help:
-  en: A crash sends the error message and stack trace, the app version, and your operating system and processor type. Your file paths, your server addresses, your username, your computer name and any email addresses are replaced with [redacted] first, leaving this app's own source paths and route names readable. Screenshots, the contents of your files, window titles and your sign-in details are never part of a report.
-  es: Un fallo envía el mensaje de error y la traza de pila, la versión de la app y tu sistema operativo y tipo de procesador. Tus rutas de archivos, las direcciones de tus servidores, tu nombre de usuario, el nombre de tu equipo y cualquier correo electrónico se sustituyen antes por [redacted], y solo quedan legibles las rutas del código de esta app y los nombres de sus endpoints. Las capturas de pantalla, el contenido de tus archivos, los títulos de las ventanas y tus datos de acceso nunca forman parte de un informe.
+  en: Only a crash sends anything, and only the error message and stack trace, the app version, and your operating system and processor type. Your file paths, your server addresses, your username, your computer name, any email addresses and anything that looks like a password or key are replaced with [redacted] first, leaving this app's own source paths and route names readable. Screenshots, window titles and your sign-in details are never part of a report, and the contents of your files are never attached to one. Normal activity is never reported — nothing is sent while the app is working.
+  es: Solo un fallo envía algo, y solo el mensaje de error y la traza de pila, la versión de la app y tu sistema operativo y tipo de procesador. Tus rutas de archivos, las direcciones de tus servidores, tu nombre de usuario, el nombre de tu equipo, cualquier correo electrónico y todo lo que parezca una contraseña o una clave se sustituyen antes por [redacted], y solo quedan legibles las rutas del código de esta app y los nombres de sus endpoints. Las capturas de pantalla, los títulos de las ventanas y tus datos de acceso nunca forman parte de un informe, y el contenido de tus archivos nunca se adjunta a uno. La actividad normal nunca se informa — mientras la app funciona no se envía nada.
 
 settings.crash_reporting.limits:
   en: Reports go to Sentry, a service we don't run — the one exception to everything Companion Capture records staying on machines you own. The redaction works by matching patterns, so treat it as careful rather than certain. Like the language, this applies the next time a window opens, not to whatever is already running.

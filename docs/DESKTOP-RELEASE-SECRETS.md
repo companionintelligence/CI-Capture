@@ -40,7 +40,7 @@ These are shared with CI-Hub **GitHub Environment** secrets (`production` / `dev
 |--------|---------|--------|
 | `LINUX_GPG_PRIVATE_KEY` | ASCII-armored or base64-encoded GPG **private** key for detached `.asc` signatures on release assets | **Required for production Linux** |
 | `LINUX_GPG_PASSPHRASE` | Passphrase for that key; leave empty if the key has none | Optional |
-| `SENTRY_DSN` | Ingest DSN for the CI-Capture desktop Sentry project, baked into the binary at build time so users who opt in can send scrubbed panic reports | Optional |
+| `SENTRY_DSN` | Ingest DSN for the CI-Capture desktop Sentry project, baked into the binary at build time; with it, scrubbed panic reports are sent unless the user turns them off | Optional |
 
 Production Linux releases **fail** without `LINUX_GPG_PRIVATE_KEY`. macOS and Windows require their signing secrets when building those platforms in production.
 
@@ -48,7 +48,7 @@ Production Linux releases **fail** without `LINUX_GPG_PRIVATE_KEY`. macOS and Wi
 
 The **Build installers** step passes `SENTRY_DSN` to `cargo packager` as an environment variable; [`src/telemetry.rs`](../src/telemetry.rs) reads it at compile time with `option_env!`. It is deliberately **not** a `.env` value and is never set on a developer machine — a developer's panic must not reach the shared project.
 
-It is optional in the same sense as the signing secrets: **no release job fails when it is missing.** The build logs a `::notice::` and produces installers with no ingest endpoint compiled in, so the Settings opt-in has nothing to send to and `telemetry::init` returns `None`. Nothing else about the build changes — same artifacts, same names, same signing.
+It is optional in the same sense as the signing secrets: **no release job fails when it is missing.** The build logs a `::notice::` and produces installers with no ingest endpoint compiled in, so there is nothing to send to and `telemetry::init` returns `None` whatever the Settings toggle says. Nothing else about the build changes — same artifacts, same names, same signing.
 
 Because the DSN is read at compile time, it only reaches binaries built by this workflow after the secret exists in that GitHub Environment. Add it to `dev` and `production` separately (ideally as two different Sentry projects, so alpha noise stays out of the production issue stream), and rebuild — an existing release asset cannot gain crash reporting retroactively.
 

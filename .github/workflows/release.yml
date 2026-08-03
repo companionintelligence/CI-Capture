@@ -365,9 +365,10 @@ jobs:
         run: |
           environment="${{ needs.release-metadata.outputs.environment }}"
           if [ "$SENTRY_CONFIGURED" = "true" ]; then
-            echo "SENTRY_DSN is configured for '$environment'; opt-in crash reporting will be compiled in."
+            echo "SENTRY_DSN is configured for '$environment'; crash reporting will be compiled in and on by default."
+            echo "Users turn it off in Settings; operators with CI_TELEMETRY=off or CI_LOCAL_ONLY=true in the app's environment."
           else
-            echo "::notice::SENTRY_DSN is not configured for '$environment'. Building with crash reporting compiled out - the Settings opt-in will have no effect in these installers."
+            echo "::notice::SENTRY_DSN is not configured for '$environment'. Building with crash reporting compiled out - these installers send nothing whatever the Settings toggle says."
           fi
 
       - name: Build installers
