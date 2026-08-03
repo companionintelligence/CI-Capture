@@ -6,6 +6,7 @@ use uuid::Uuid;
 
 use crate::config::AppConfig;
 use crate::db::VizierEventRecord;
+use crate::error_body::{error_body_suffix, error_code_suffix};
 use crate::server_common::{AuthCredential, events_urls, files_urls, upload_urls};
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -80,8 +81,18 @@ impl IngestError {
     /// 5xx) is transient, because retrying can't lose data (the 24 h parking
     /// valve still bounds head-of-queue liveness) but a wrong "permanent"
     /// verdict parks an event that would have gone through.
+    ///
+    /// The response body is reduced to an error code (see [`error_body_suffix`])
+    /// before it enters the message. This message is what `file_tracker` writes
+    /// into the queue DB, and the request it describes carries the changed
+    /// file's absolute path and up to [`DESCRIPTION_CONTENT_BYTES`] of its
+    /// text — a validation 4xx that quotes the offending field would otherwise
+    /// persist the document.
     fn from_status(status: StatusCode, body: &str, url: &reqwest::Url) -> Self {
-        let message = format!("event ingest to {url} failed with HTTP {status}: {body}");
+        let message = format!(
+            "event ingest to {url} failed with HTTP {status}{}",
+            error_body_suffix(body)
+        );
         let permanent = matches!(
             status,
             StatusCode::BAD_REQUEST                     // validation rejection
@@ -166,13 +177,19 @@ pub async fn ingest_capture(
         let status = response.status();
         if should_try_next_endpoint(status) {
             let body = response.text().await.unwrap_or_default();
-            last_error = Some(anyhow!("capture upload failed with HTTP {status}: {body}"));
+            last_error = Some(anyhow!(
+                "capture upload failed with HTTP {status}{}",
+                error_body_suffix(&body)
+            ));
             continue;
         }
 
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
-            return Err(anyhow!("capture upload failed with HTTP {status}: {body}"));
+            return Err(anyhow!(
+                "capture upload failed with HTTP {status}{}",
+                error_body_suffix(&body)
+            ));
         }
 
         let entries: Vec<UploadResponse> = response
@@ -399,9 +416,12 @@ async fn post_capture_event(config: &AppConfig, event: CaptureEvent) -> Result<(
         if let Some(rejected) = body.rejected.first() {
             // The server accepted the request but rejected this event's
             // payload — the one unambiguously permanent per-event outcome.
+            // `reason` is the server's free text about *our* event, so it only
+            // survives when it is code-shaped; the index always does.
             return Err(IngestError::permanent(format!(
-                "event ingest rejected event {}: {}",
-                rejected.index, rejected.reason
+                "event ingest rejected event {}{}",
+                rejected.index,
+                error_code_suffix(&rejected.reason)
             )));
         }
 
@@ -490,14 +510,16 @@ pub async fn set_file_metadata(
         if should_try_next_endpoint(status) {
             let text = response.text().await.unwrap_or_default();
             last_error = Some(anyhow!(
-                "file metadata update failed with HTTP {status}: {text}"
+                "file metadata update failed with HTTP {status}{}",
+                error_body_suffix(&text)
             ));
             continue;
         }
         if !status.is_success() {
             let text = response.text().await.unwrap_or_default();
             return Err(anyhow!(
-                "file metadata update failed with HTTP {status}: {text}"
+                "file metadata update failed with HTTP {status}{}",
+                error_body_suffix(&text)
             ));
         }
         return Ok(());
@@ -568,6 +590,109 @@ mod tests {
         }
         assert!(!IngestError::transient("net down").permanent);
         assert!(IngestError::permanent("rejected").permanent);
+    }
+
+    /// The exact shape of a CI-Server validation rejection that quotes the
+    /// fields `ingest_file_event` sends: `title` is the changed file's absolute
+    /// path, `description` is its extracted Markdown.
+    fn rejection_quoting_the_document() -> String {
+        serde_json::json!({
+            "statusCode": 422,
+            "error": "Unprocessable Entity",
+            "message": [
+                "title: /Users/liam/notes/q3-comp-review.md exceeds 255 characters",
+                "description: # Q3 review\n\nsalary band 4 — liam.broza@gmail.com",
+            ],
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn a_parked_events_persisted_reason_carries_no_document_text() {
+        // This string is what `file_tracker` hands to `queue.dead_letter(…)`,
+        // which writes it to `dead_letters.reason` — on disk, past process exit.
+        let url = reqwest::Url::parse("http://core/api/v1/events").unwrap();
+        let e = IngestError::from_status(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            &rejection_quoting_the_document(),
+            &url,
+        );
+        let persisted = e.to_string();
+
+        for secret in [
+            "/Users/liam/notes",
+            "q3-comp-review",
+            "Q3 review",
+            "salary band",
+            "liam.broza@gmail.com",
+        ] {
+            assert!(
+                !persisted.contains(secret),
+                "leaked {secret:?}: {persisted}"
+            );
+        }
+        // The diagnosis survives: status, endpoint, and the retry verdict.
+        assert!(persisted.contains("422"), "{persisted}");
+        assert!(
+            persisted.contains("http://core/api/v1/events"),
+            "{persisted}"
+        );
+        assert!(persisted.contains("(permanent)"), "{persisted}");
+    }
+
+    #[test]
+    fn a_machine_readable_code_still_reaches_the_queue() {
+        // Redaction must not cost the one field worth keeping.
+        let url = reqwest::Url::parse("http://core/api/v1/events").unwrap();
+        let e = IngestError::from_status(
+            StatusCode::BAD_REQUEST,
+            r#"{"error":{"code":"duplicate_source_id"}}"#,
+            &url,
+        );
+        assert!(e.to_string().contains("duplicate_source_id"), "{e}");
+    }
+
+    #[test]
+    fn a_rejected_event_keeps_its_index_and_drops_its_prose() {
+        // Mirrors the `body.rejected.first()` branch in `post_capture_event`.
+        let prose = RejectedEvent {
+            index: 0,
+            reason: "description quoted /Users/liam/notes/q3-comp-review.md".into(),
+        };
+        let msg = IngestError::permanent(format!(
+            "event ingest rejected event {}{}",
+            prose.index,
+            error_code_suffix(&prose.reason)
+        ))
+        .to_string();
+        assert!(!msg.contains("q3-comp-review"), "{msg}");
+        assert!(msg.contains("event 0"), "{msg}");
+
+        let coded = RejectedEvent {
+            index: 3,
+            reason: "duplicate_source_id".into(),
+        };
+        let msg = format!(
+            "event ingest rejected event {}{}",
+            coded.index,
+            error_code_suffix(&coded.reason)
+        );
+        assert_eq!(msg, "event ingest rejected event 3 — duplicate_source_id");
+    }
+
+    #[test]
+    fn a_rejected_file_metadata_update_leaks_no_screenshot_description() {
+        // `set_file_metadata` sends the vision model's description of the
+        // user's screen; a 400 that quotes it must not survive into the error.
+        let body = serde_json::json!({
+            "statusCode": 400,
+            "message": "description invalid: 'debugging a payroll import; salary band 4 visible'",
+        })
+        .to_string();
+        let out = error_body_suffix(&body);
+        for secret in ["payroll", "salary band", "debugging"] {
+            assert!(!out.contains(secret), "leaked {secret:?}: {out}");
+        }
     }
 
     #[test]

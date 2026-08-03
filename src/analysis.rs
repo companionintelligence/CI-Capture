@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::config::AnalysisConfig;
+use crate::error_body::error_body_suffix;
 
 // Generous headroom: reasoning-capable models (e.g. Qwen3-VL) may spend tokens
 // "thinking" before emitting the JSON, so a tight budget can truncate the
@@ -118,7 +119,15 @@ Return ONLY JSON. Do not include markdown, comments, or reasoning.
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
         if !status.is_success() {
-            return Err(anyhow!("vision endpoint error {status}: {body}"));
+            // The request we just sent held the base64 screenshot and the
+            // prompt, and a local LM Studio / Ollama routinely echoes the
+            // request back on an error — so the body is reduced to an error
+            // code before it goes anywhere. `body` itself stays in scope for
+            // the success path below.
+            return Err(anyhow!(
+                "vision endpoint error {status}{}",
+                error_body_suffix(&body)
+            ));
         }
         let raw_json: Value =
             serde_json::from_str(&body).with_context(|| "parsing analysis response".to_string())?;
@@ -405,8 +414,43 @@ fn extract_balanced_objects(raw: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::parse_analysis_json;
+    use crate::error_body::error_body_suffix;
 
     const FIELDS: &str = r#""activity_summary":"s","primary_application":"p","activity_category":"c","applications":[],"ui_elements":[],"contains_sensitive":false,"contains_pii":false,"ocr_text":"""#;
+
+    #[test]
+    fn a_vision_endpoint_error_leaks_neither_the_screenshot_nor_the_prompt() {
+        // The message `analyze` builds on a non-2xx. LM Studio and Ollama both
+        // echo the offending request, and this request is a base64 screenshot
+        // plus the analysis prompt.
+        let body = serde_json::json!({
+            "error": {
+                "message": format!(
+                    "could not decode image data:image/png;base64,{} in request",
+                    "iVBORw0KGgoAAAANSUhEUg".repeat(80)
+                ),
+                "type": "invalid_request_error",
+                "param": "messages[1].content[1].image_url",
+            }
+        })
+        .to_string();
+
+        let msg = format!("vision endpoint error 400{}", error_body_suffix(&body));
+        for secret in ["iVBORw0KGgoAAAANSUhEUg", "base64", "image_url"] {
+            assert!(!msg.contains(secret), "leaked {secret:?}: {msg}");
+        }
+        // Status plus the endpoint's own error class is the whole diagnosis.
+        assert_eq!(msg, "vision endpoint error 400 — invalid_request_error");
+    }
+
+    #[test]
+    fn a_prose_only_vision_error_is_dropped_but_still_reported() {
+        // Ollama's native shape: free text in `error`, nothing code-shaped.
+        let body = r#"{"error":"model 'qwen3-vl' not found, try: ollama pull qwen3-vl"}"#;
+        let msg = format!("vision endpoint error 404{}", error_body_suffix(body));
+        assert!(!msg.contains("qwen3-vl"), "{msg}");
+        assert!(msg.starts_with("vision endpoint error 404 — response body suppressed ("));
+    }
 
     #[test]
     fn parses_plain_json() {

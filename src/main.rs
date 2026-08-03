@@ -5,6 +5,7 @@ mod config;
 mod connection_test;
 mod conversion;
 mod db;
+mod error_body;
 mod extractors;
 mod file_tracker;
 mod locale;
