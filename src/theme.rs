@@ -47,8 +47,13 @@ struct Palette {
     bg: Color32,
     /// Window / panel surface.
     panel: Color32,
-    /// Slightly lighter surface for titlebars / sidebar.
+    /// Elevated chrome (titlebars, footers). Bluish slate in dark mode so it
+    /// sits with `sidebar-primary` / the primary button, not the green T800
+    /// ramp step that used to make the shell look off-brand.
     panel_hi: Color32,
+    /// Nav sidebar surface — CI-Common `sidebar` (same family as the primary
+    /// button's `sidebar-primary` / `primary`).
+    sidebar: Color32,
     /// Recessed surface behind cards / inputs. Deliberately *darker* than
     /// `panel` so text fields read as wells rather than raised chips.
     input: Color32,
@@ -99,7 +104,8 @@ impl Palette {
         Self {
             bg: dark::BACKGROUND,
             panel: dark::CARD,
-            panel_hi: teal::T800,
+            panel_hi: dark::SIDEBAR_ACCENT,
+            sidebar: dark::SIDEBAR,
             input: dark::BACKGROUND,
             card: teal::T900,
             border: dark::BORDER,
@@ -126,7 +132,8 @@ impl Palette {
         Self {
             bg: tokens::light::BACKGROUND,
             panel: tokens::light::CARD,
-            panel_hi: teal::T100,
+            panel_hi: tokens::light::SIDEBAR_ACCENT,
+            sidebar: tokens::light::SIDEBAR,
             input: tokens::light::BACKGROUND,
             card: tokens::light::CARD,
             border: tokens::light::BORDER,
@@ -186,6 +193,10 @@ pub fn PANEL() -> Color32 {
 #[allow(non_snake_case)]
 pub fn PANEL_HI() -> Color32 {
     PALETTE.with(|p| p.get().panel_hi)
+}
+#[allow(non_snake_case)]
+pub fn SIDEBAR() -> Color32 {
+    PALETTE.with(|p| p.get().sidebar)
 }
 #[allow(non_snake_case)]
 pub fn INPUT() -> Color32 {
