@@ -235,6 +235,11 @@ pub struct AppConfig {
     /// See `crate::locale`.
     #[serde(default)]
     pub ui_language: crate::locale::Language,
+    /// Send scrubbed panic reports to Sentry. Defaults to `false` and stays
+    /// that way unless the user opts in — this is the one path that sends
+    /// anything to a machine the user does not own. See `crate::telemetry`.
+    #[serde(default)]
+    pub crash_reporting: bool,
 }
 
 /// OpenID Connect client config for portal sign-in (Authorization Code +

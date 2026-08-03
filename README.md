@@ -275,6 +275,7 @@ Capture is local‑first and streamed only to the CI‑Server you sign in to. Sc
 - [**Memory integration**](docs/memory-integration.md) — how captures reach CI‑Server's Companion Memory, and what Hermes and OpenClaw can then read
 - [**Test plan**](docs/test-plan.md) — coverage map, gaps, and the per‑platform manual QA script for a release build
 - [**Screenpipe comparison**](docs/screenpipe-comparison.md) — what we kept, what diverged, and where upstream is still ahead
+- [**Crash reporting**](docs/crash-reporting.md) — the opt-in Sentry path: what it sends, how the scrubber works, and where its guarantees stop
 - [**Rollout plan**](docs/plan/00-overview.md) — what shipped, the design records, and what's next
 - [**Brand & assets**](docs/assets/brand.md) — logo, palette, and the screenshots above
 

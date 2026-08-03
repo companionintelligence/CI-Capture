@@ -224,12 +224,32 @@ pub fn token_expiring(
     }
 }
 
+/// Summarise a failed token-endpoint response.
+///
+/// Only the OAuth 2.0 `error` code (RFC 6749 §5.2) is kept. It is a fixed
+/// vocabulary — `invalid_grant`, `invalid_client`, … — and it is the whole
+/// diagnosis. Everything else the provider sends is dropped: `error_description`
+/// is free text that in practice carries the user's email, tenant and device
+/// name, and this string ends up in an `anyhow` chain that a panic can hand to
+/// crash reporting. Redacting it downstream is a race we do not need to run —
+/// it is cheaper never to put it in the error at all.
+///
+/// Also note the previous version sliced `&b[..300]` on a byte index, which
+/// panicked outright on a non-ASCII body (a Spanish `error_description` is
+/// enough), and Rust's boundary panic quotes the offending string — turning the
+/// whole response body into a panic payload.
 fn trim_body(body: &str) -> String {
-    let b = body.trim();
-    if b.is_empty() {
-        String::new()
-    } else {
-        format!(" — {}", &b[..b.len().min(300)])
+    let code = serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .as_ref()
+        .and_then(|v| v.get("error"))
+        .and_then(|e| e.as_str())
+        .map(str::trim)
+        .filter(|e| !e.is_empty() && e.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
+        .map(str::to_owned);
+    match code {
+        Some(code) => format!(" — {code}"),
+        None => String::new(),
     }
 }
 
@@ -446,6 +466,48 @@ mod tests {
             client_id: "ci-applet".into(),
             scopes: "openid profile email offline_access".into(),
             redirect_uri: "http://127.0.0.1:49473/callback".into(),
+        }
+    }
+
+    #[test]
+    fn a_failed_token_response_contributes_only_its_error_code() {
+        // The exact body an identity provider sends when the account is not a
+        // member of the tenant: an email, an org name, a device id.
+        let body = r#"{"error":"invalid_grant","error_description":"user liam.broza@gmail.com is not a member of tenant liams-org"}"#;
+        let out = trim_body(body);
+        assert_eq!(out, " — invalid_grant");
+        for secret in ["liam", "broza", "gmail", "liams-org", "member"] {
+            assert!(!out.contains(secret), "leaked {secret:?}: {out}");
+        }
+    }
+
+    #[test]
+    fn a_non_ascii_body_does_not_panic_on_a_byte_boundary() {
+        // The old `&b[..b.len().min(300)]` sliced by byte index, so a body whose
+        // 300th byte landed inside a multi-byte character panicked — and Rust's
+        // boundary panic quotes the string, handing the whole response to the
+        // crash reporter.
+        let long = "ñ".repeat(400);
+        let body = format!(r#"{{"error":"invalid_grant","error_description":"{long}"}}"#);
+        assert_eq!(trim_body(&body), " — invalid_grant");
+        assert_eq!(trim_body(&long), "");
+        assert_eq!(trim_body(&"a".repeat(5000)), "");
+    }
+
+    #[test]
+    fn a_body_without_a_usable_error_code_contributes_nothing() {
+        for body in [
+            "",
+            "   ",
+            "<html>gateway timeout for liam.broza@gmail.com</html>",
+            r#"{"error_description":"liam.broza@gmail.com is unknown"}"#,
+            r#"{"error":""}"#,
+            // A provider that puts prose in `error` gets nothing through: the
+            // code is a fixed vocabulary, so anything else is not one.
+            r#"{"error":"user liam.broza@gmail.com is not a member"}"#,
+            r#"{"error":{"nested":"liam"}}"#,
+        ] {
+            assert_eq!(trim_body(body), "", "body: {body}");
         }
     }
 

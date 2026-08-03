@@ -464,6 +464,32 @@ settings.advanced.model.label:
   en: Model
   es: Modelo
 
+# ── Crash reporting (Advanced tab) ────────────────────────────────────────
+# The copy here describes `src/telemetry.rs`. It is deliberately specific and
+# deliberately unflattering — this is the only feature that sends anything off
+# the user's own machines, so the claim has to survive someone reading the
+# code. If the scrubber changes, change these strings with it.
+
+settings.crash_reporting.label:
+  en: Crash reporting
+  es: Informes de fallos
+
+settings.crash_reporting.title:
+  en: Send crash reports
+  es: Enviar informes de fallos
+
+settings.crash_reporting.detail:
+  en: Off by default. Nothing is sent while this is off.
+  es: Desactivado de forma predeterminada. Mientras esté desactivado no se envía nada.
+
+settings.crash_reporting.help:
+  en: A crash sends the error message and stack trace, the app version, and your operating system and processor type. Your file paths, your server addresses, your username, your computer name and any email addresses are replaced with [redacted] first, leaving this app's own source paths and route names readable. Screenshots, the contents of your files, window titles and your sign-in details are never part of a report.
+  es: Un fallo envía el mensaje de error y la traza de pila, la versión de la app y tu sistema operativo y tipo de procesador. Tus rutas de archivos, las direcciones de tus servidores, tu nombre de usuario, el nombre de tu equipo y cualquier correo electrónico se sustituyen antes por [redacted], y solo quedan legibles las rutas del código de esta app y los nombres de sus endpoints. Las capturas de pantalla, el contenido de tus archivos, los títulos de las ventanas y tus datos de acceso nunca forman parte de un informe.
+
+settings.crash_reporting.limits:
+  en: Reports go to Sentry, a service we don't run — the one exception to everything Companion Capture records staying on machines you own. The redaction works by matching patterns, so treat it as careful rather than certain. Like the language, this applies the next time a window opens, not to whatever is already running.
+  es: Los informes van a Sentry, un servicio que no gestionamos nosotros — la única excepción a que todo lo que registra Companion Capture se quede en máquinas tuyas. La sustitución de esos datos se basa en patrones, así que considérala cuidadosa, no infalible. Igual que el idioma, esto se aplica la próxima vez que se abra una ventana, no a lo que ya esté en marcha.
+
 # ── Legacy Storage tab (feature "legacy-minio") ───────────────────────────
 
 settings.storage.subtitle:
