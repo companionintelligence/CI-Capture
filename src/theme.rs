@@ -99,13 +99,26 @@ struct Palette {
 const GREEN_DARK: Color32 = Color32::from_rgb(0x35, 0xa0, 0x5c);
 const GREEN_LIGHT: Color32 = Color32::from_rgb(0x13, 0x8b, 0x3f);
 
+/// Settings nav sidebar fill in dark mode. Upstream `sidebar` (`#041620`) is the
+/// same blue-leaning canvas as the window body; Capture wants a deeper, greener
+/// rail so the panel reads as chrome rather than disappearing into the content.
+const SIDEBAR_DARK: Color32 = Color32::from_rgb(0x02, 0x12, 0x0e);
+
+/// Nav row fills + ink. Labels (Connection / Capture / Advanced) are dark on a
+/// mint chip so they stay legible against the deep green rail — light ink on
+/// that rail (and on the old translucent teal wash) was effectively invisible.
+const NAV_ROW: Color32 = Color32::from_rgb(0xb7, 0xdc, 0xe0);
+const NAV_ROW_SELECTED: Color32 = Color32::from_rgb(0xd0, 0xeb, 0xee);
+const NAV_TITLE: Color32 = Color32::from_rgb(0x04, 0x16, 0x20);
+const NAV_SUBTITLE: Color32 = Color32::from_rgb(0x0d, 0x5f, 0x67);
+
 impl Palette {
     const fn dark() -> Self {
         Self {
             bg: dark::BACKGROUND,
             panel: dark::CARD,
             panel_hi: dark::SIDEBAR_ACCENT,
-            sidebar: dark::SIDEBAR,
+            sidebar: SIDEBAR_DARK,
             input: dark::BACKGROUND,
             card: teal::T900,
             border: dark::BORDER,
@@ -991,21 +1004,26 @@ pub fn nav_item(ui: &mut Ui, accent: Color32, title: &str, subtitle: &str, selec
     let (rect, resp) = ui.allocate_exact_size(desired, Sense::click());
     let painter = ui.painter();
 
+    let row_fill = if selected {
+        NAV_ROW_SELECTED
+    } else if resp.hovered() {
+        Color32::from_rgb(0xc5, 0xe4, 0xe8)
+    } else {
+        NAV_ROW
+    };
+    painter.rect_filled(rect, CornerRadius::same(10), row_fill);
     if selected {
-        painter.rect_filled(rect, CornerRadius::same(10), tint(TEAL(), 22));
         painter.rect_stroke(
             rect,
             CornerRadius::same(10),
-            Stroke::new(1.0, tint(TEAL(), 60)),
+            Stroke::new(1.0, TEAL_DIM()),
             StrokeKind::Inside,
         );
         let bar = egui::Rect::from_min_size(
             egui::pos2(rect.left() + 2.0, rect.center().y - 11.0),
             Vec2::new(3.0, 22.0),
         );
-        painter.rect_filled(bar, CornerRadius::same(2), TEAL());
-    } else if resp.hovered() {
-        painter.rect_filled(rect, CornerRadius::same(10), tint(Color32::WHITE, 12));
+        painter.rect_filled(bar, CornerRadius::same(2), TEAL_DIM());
     }
 
     // Accent chip.
@@ -1016,28 +1034,23 @@ pub fn nav_item(ui: &mut Ui, accent: Color32, title: &str, subtitle: &str, selec
     painter.rect_filled(
         chip,
         CornerRadius::same(6),
-        tint(accent, if selected { 70 } else { 40 }),
+        tint(accent, if selected { 90 } else { 70 }),
     );
     painter.circle_filled(chip.center(), 3.0, accent);
 
-    let title_color = if selected {
-        TEXT()
-    } else {
-        Color32::from_rgb(0xc4, 0xcb, 0xd8)
-    };
     painter.text(
         egui::pos2(rect.left() + 46.0, rect.center().y - 8.0),
         Align2::LEFT_CENTER,
         title,
         body(15.0),
-        title_color,
+        NAV_TITLE,
     );
     painter.text(
         egui::pos2(rect.left() + 46.0, rect.center().y + 8.0),
         Align2::LEFT_CENTER,
         subtitle,
         body(13.0),
-        MUTED(),
+        NAV_SUBTITLE,
     );
 
     resp.clicked()
