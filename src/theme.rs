@@ -51,9 +51,15 @@ struct Palette {
     /// sits with `sidebar-primary` / the primary button, not the green T800
     /// ramp step that used to make the shell look off-brand.
     panel_hi: Color32,
-    /// Nav sidebar surface — CI-Common `sidebar` (same family as the primary
-    /// button's `sidebar-primary` / `primary`).
+    /// Nav sidebar surface — CI-Common `sidebar`.
     sidebar: Color32,
+    /// CI-Common `sidebar-foreground` — primary ink on the rail (dark in light
+    /// mode, near-white in dark). Matches Companion Planning / shadcn sidebar.
+    sidebar_fg: Color32,
+    /// CI-Common `sidebar-accent` — selected / hover row fill.
+    sidebar_accent: Color32,
+    /// CI-Common `sidebar-accent-foreground`.
+    sidebar_accent_fg: Color32,
     /// Recessed surface behind cards / inputs. Deliberately *darker* than
     /// `panel` so text fields read as wells rather than raised chips.
     input: Color32,
@@ -99,26 +105,16 @@ struct Palette {
 const GREEN_DARK: Color32 = Color32::from_rgb(0x35, 0xa0, 0x5c);
 const GREEN_LIGHT: Color32 = Color32::from_rgb(0x13, 0x8b, 0x3f);
 
-/// Settings nav sidebar fill in dark mode. Upstream `sidebar` (`#041620`) is the
-/// same blue-leaning canvas as the window body; Capture wants a deeper, greener
-/// rail so the panel reads as chrome rather than disappearing into the content.
-const SIDEBAR_DARK: Color32 = Color32::from_rgb(0x02, 0x12, 0x0e);
-
-/// Nav row fills + ink. Labels (Connection / Capture / Advanced) are dark on a
-/// mint chip so they stay legible against the deep green rail — light ink on
-/// that rail (and on the old translucent teal wash) was effectively invisible.
-const NAV_ROW: Color32 = Color32::from_rgb(0xb7, 0xdc, 0xe0);
-const NAV_ROW_SELECTED: Color32 = Color32::from_rgb(0xd0, 0xeb, 0xee);
-const NAV_TITLE: Color32 = Color32::from_rgb(0x04, 0x16, 0x20);
-const NAV_SUBTITLE: Color32 = Color32::from_rgb(0x0d, 0x5f, 0x67);
-
 impl Palette {
     const fn dark() -> Self {
         Self {
             bg: dark::BACKGROUND,
             panel: dark::CARD,
             panel_hi: dark::SIDEBAR_ACCENT,
-            sidebar: SIDEBAR_DARK,
+            sidebar: dark::SIDEBAR,
+            sidebar_fg: dark::SIDEBAR_FOREGROUND,
+            sidebar_accent: dark::SIDEBAR_ACCENT,
+            sidebar_accent_fg: dark::SIDEBAR_ACCENT_FOREGROUND,
             input: dark::BACKGROUND,
             card: teal::T900,
             border: dark::BORDER,
@@ -147,6 +143,9 @@ impl Palette {
             panel: tokens::light::CARD,
             panel_hi: tokens::light::SIDEBAR_ACCENT,
             sidebar: tokens::light::SIDEBAR,
+            sidebar_fg: tokens::light::SIDEBAR_FOREGROUND,
+            sidebar_accent: tokens::light::SIDEBAR_ACCENT,
+            sidebar_accent_fg: tokens::light::SIDEBAR_ACCENT_FOREGROUND,
             input: tokens::light::BACKGROUND,
             card: tokens::light::CARD,
             border: tokens::light::BORDER,
@@ -210,6 +209,18 @@ pub fn PANEL_HI() -> Color32 {
 #[allow(non_snake_case)]
 pub fn SIDEBAR() -> Color32 {
     PALETTE.with(|p| p.get().sidebar)
+}
+#[allow(non_snake_case)]
+pub fn SIDEBAR_FG() -> Color32 {
+    PALETTE.with(|p| p.get().sidebar_fg)
+}
+#[allow(non_snake_case)]
+pub fn SIDEBAR_ACCENT() -> Color32 {
+    PALETTE.with(|p| p.get().sidebar_accent)
+}
+#[allow(non_snake_case)]
+pub fn SIDEBAR_ACCENT_FG() -> Color32 {
+    PALETTE.with(|p| p.get().sidebar_accent_fg)
 }
 #[allow(non_snake_case)]
 pub fn INPUT() -> Color32 {
@@ -997,33 +1008,25 @@ pub fn segment(ui: &mut Ui, text: &str, selected: bool) -> bool {
 
 // ── Sidebar nav item ──────────────────────────────────────────────────────--
 
-/// A sidebar navigation entry: leading accent chip, title + subtitle, active
-/// background and left accent bar. Returns true when clicked.
+/// A sidebar navigation entry matching CI-Common / shadcn `SidebarMenuButton`
+/// (same pattern Companion Planning uses): `sidebar-foreground` ink on the rail,
+/// `sidebar-accent` + `sidebar-accent-foreground` when selected or hovered.
+/// Returns true when clicked.
 pub fn nav_item(ui: &mut Ui, accent: Color32, title: &str, subtitle: &str, selected: bool) -> bool {
     let desired = Vec2::new(ui.available_width(), 46.0);
     let (rect, resp) = ui.allocate_exact_size(desired, Sense::click());
     let painter = ui.painter();
+    let active = selected || resp.hovered();
 
-    let row_fill = if selected {
-        NAV_ROW_SELECTED
-    } else if resp.hovered() {
-        Color32::from_rgb(0xc5, 0xe4, 0xe8)
-    } else {
-        NAV_ROW
-    };
-    painter.rect_filled(rect, CornerRadius::same(10), row_fill);
+    if active {
+        painter.rect_filled(rect, CornerRadius::same(tokens::radius::LG), SIDEBAR_ACCENT());
+    }
     if selected {
-        painter.rect_stroke(
-            rect,
-            CornerRadius::same(10),
-            Stroke::new(1.0, TEAL_DIM()),
-            StrokeKind::Inside,
-        );
         let bar = egui::Rect::from_min_size(
             egui::pos2(rect.left() + 2.0, rect.center().y - 11.0),
             Vec2::new(3.0, 22.0),
         );
-        painter.rect_filled(bar, CornerRadius::same(2), TEAL_DIM());
+        painter.rect_filled(bar, CornerRadius::same(2), TEAL());
     }
 
     // Accent chip.
@@ -1033,24 +1036,25 @@ pub fn nav_item(ui: &mut Ui, accent: Color32, title: &str, subtitle: &str, selec
     );
     painter.rect_filled(
         chip,
-        CornerRadius::same(6),
-        tint(accent, if selected { 90 } else { 70 }),
+        CornerRadius::same(tokens::radius::SM),
+        tint(accent, if selected { 70 } else { 40 }),
     );
     painter.circle_filled(chip.center(), 3.0, accent);
 
+    let title_color = if active { SIDEBAR_ACCENT_FG() } else { SIDEBAR_FG() };
     painter.text(
         egui::pos2(rect.left() + 46.0, rect.center().y - 8.0),
         Align2::LEFT_CENTER,
         title,
         body(15.0),
-        NAV_TITLE,
+        title_color,
     );
     painter.text(
         egui::pos2(rect.left() + 46.0, rect.center().y + 8.0),
         Align2::LEFT_CENTER,
         subtitle,
         body(13.0),
-        NAV_SUBTITLE,
+        MUTED(),
     );
 
     resp.clicked()

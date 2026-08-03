@@ -251,7 +251,7 @@ impl SettingsTab {
         match self {
             SettingsTab::Connection => theme::TEAL(),
             SettingsTab::Capture => theme::LANE_ACTIVITY(),
-            SettingsTab::Advanced => theme::MUTED(),
+            SettingsTab::Advanced => theme::TEAL_DIM(),
             #[cfg(feature = "legacy-minio")]
             SettingsTab::Minio => theme::AMBER(),
             #[cfg(feature = "legacy-postgres")]
@@ -744,7 +744,7 @@ impl SettingsApp {
                         ui.label(
                             egui::RichText::new("Companion Capture")
                                 .font(theme::light(18.0))
-                                .color(theme::TEXT()),
+                                .color(theme::SIDEBAR_FG()),
                         );
                         ui.label(
                             egui::RichText::new(
