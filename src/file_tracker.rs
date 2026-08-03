@@ -401,8 +401,11 @@ mod e2e {
     /// could consume the status meant for the event under test, so the
     /// assertions would hold while describing the wrong event.
     ///
-    /// 200s answer with a valid `/v1/events` ingest body; 4xx/5xx answer with
-    /// that status.
+    /// 200s answer with a valid `/v1/events` ingest body. 4xx/5xx answer with
+    /// that status **and echo the request back in the error body**, the way a
+    /// validation rejection that quotes the offending field does — so the
+    /// redaction in `server_ingest` is exercised against the payload it is
+    /// there to protect, not against an empty body.
     fn spawn_mock_server(rules: Vec<Rule>) -> (String, Arc<Mutex<Vec<Recorded>>>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let origin = format!("http://{}", listener.local_addr().unwrap());
@@ -461,8 +464,16 @@ mod e2e {
                         payload
                     )
                 } else {
+                    let payload = serde_json::json!({
+                        "statusCode": status,
+                        "error": "Unprocessable Entity",
+                        "message": format!("rejected request: {body}"),
+                    })
+                    .to_string();
                     format!(
-                        "HTTP/1.1 {status} X\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
+                        "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
+                        payload.len(),
+                        payload
                     )
                 };
                 let _ = reader.into_inner().write_all(response.as_bytes());
@@ -749,5 +760,22 @@ mod e2e {
             "park reason should record the rejection, got {:?}",
             parked_rows[0].reason
         );
+        // …and nothing else. This string is the `dead_letters.reason` column on
+        // disk, and the 400 that produced it echoed the whole request back —
+        // which carried poison.md's absolute path as the event `title` and its
+        // text as the `description`. The status is the diagnosis; the document
+        // is not, and must not outlive the process here.
+        let reason = &parked_rows[0].reason;
+        for leaked in [
+            "rejected payload", // poison.md's contents
+            "poison.md",        // the absolute path, sent as `title`
+            watched.to_string_lossy().as_ref(),
+            "Unprocessable", // the server's prose about our request
+        ] {
+            assert!(
+                !reason.contains(leaked),
+                "parked reason persisted {leaked:?} to disk: {reason:?}"
+            );
+        }
     }
 }
