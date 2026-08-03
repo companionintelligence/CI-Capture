@@ -19,6 +19,7 @@ mod server_check;
 mod server_common;
 mod server_ingest;
 mod server_upload;
+mod helper_window;
 mod settings_ui;
 mod svg_icon;
 mod sync;

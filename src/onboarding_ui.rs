@@ -134,14 +134,16 @@ pub fn run_onboarding_ui() -> Result<()> {
     let config = manager.load_or_default().context("loading configuration")?;
     let completed = Arc::new(Mutex::new(false));
 
-    let native_options = NativeOptions {
+    let mut native_options = NativeOptions {
         centered: true,
         viewport: egui::ViewportBuilder::default()
             .with_title(rust_i18n::t!("onboarding.window.title").to_string())
             .with_inner_size([840.0, 680.0])
-            .with_min_inner_size([720.0, 600.0]),
+            .with_min_inner_size([720.0, 600.0])
+            .with_active(true),
         ..Default::default()
     };
+    crate::helper_window::configure_helper_window(&mut native_options);
 
     let manager_c = manager.clone();
     let completed_c = completed.clone();

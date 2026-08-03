@@ -38,6 +38,8 @@ tray-icon = "0.11"
 uuid = { version = "1", features = ["v4", "serde"] }
 egui = "0.33.2"
 eframe = { version = "0.33.2", default-features = false, features = ["glow", "x11", "wayland"] }
+# Matched to eframe's winit; used to promote helper windows out of LSUIElement.
+winit = { version = "0.30", default-features = false }
 whoami = "1"
 vizier = { path = "vizier" }
 resvg = { version = "0.45", default-features = false, features = ["text"] }

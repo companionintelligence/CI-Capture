@@ -271,16 +271,13 @@ async fn bind_loopback(redirect_uri: &str) -> Result<(TcpListener, String)> {
 
 /// Branded success/error page for the loopback OIDC callback (Capture dark tokens).
 fn oidc_callback_page(ok: bool) -> String {
-    // Canonical Companion logo (same asset as Hub / Portal `public/logo.svg`).
-    const LOGO_SVG: &str = include_str!("../assets/logo.svg");
-    // Logo CSS classes use `{…}`; escape so `format!` does not treat them as args.
-    let mark = LOGO_SVG
-        .trim()
-        .strip_prefix("<?xml version=\"1.0\" encoding=\"UTF-8\"?>")
-        .unwrap_or(LOGO_SVG)
-        .trim()
-        .replace('{', "{{")
-        .replace('}', "}}");
+    // Chroma mark as a data-URI — the callback is a one-shot loopback response,
+    // so we cannot serve a second /logo.png fetch after the page loads.
+    const LOGO_PNG: &[u8] = include_bytes!("../assets/ci-logo-chroma.png");
+    let logo_src = format!(
+        "data:image/png;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(LOGO_PNG)
+    );
 
     let (title, lead, detail, accent) = if ok {
         (
@@ -329,7 +326,7 @@ fn oidc_callback_page(ok: bool) -> String {
     box-shadow: 0 12px 40px rgba(0,0,0,0.35);
   }}
   .mark {{ margin: 0 auto 1.25rem; width: 56px; height: 56px; }}
-  .mark svg {{ display: block; width: 56px; height: 56px; }}
+  .mark img {{ display: block; width: 56px; height: 56px; border-radius: 50%; }}
   h1 {{ margin: 0 0 0.5rem; font-size: 1.35rem; font-weight: 600; color: var(--primary); }}
   .lead {{ margin: 0 0 0.35rem; color: var(--text); font-size: 0.95rem; }}
   .detail {{ margin: 0; color: var(--muted); font-size: 0.85rem; line-height: 1.45; }}
@@ -338,7 +335,7 @@ fn oidc_callback_page(ok: bool) -> String {
 </head>
 <body>
 <main>
-  <div class="mark" aria-hidden="true">{mark}</div>
+  <div class="mark" aria-hidden="true"><img src="{logo_src}" alt=""/></div>
   <h1>{title}</h1>
   <p class="lead">{lead}</p>
   <p class="detail">{detail}</p>
@@ -595,7 +592,10 @@ mod tests {
         assert_eq!(state.as_deref(), Some("xyz789"));
         let body = String::from_utf8_lossy(&resp);
         assert!(body.contains("Signed in"));
-        assert!(body.contains("Layer_1"), "callback page should embed brand logo.svg");
+        assert!(
+            body.contains("data:image/png;base64,"),
+            "callback page should embed chroma logo as a PNG data URI"
+        );
     }
 
     #[tokio::test]

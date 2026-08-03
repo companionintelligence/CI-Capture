@@ -28,7 +28,9 @@ pub fn run_upload_ui() -> Result<()> {
     native_options.viewport = egui::ViewportBuilder::default()
         .with_title(window_title.clone())
         .with_inner_size([700.0, 600.0])
-        .with_min_inner_size([560.0, 440.0]);
+        .with_min_inner_size([560.0, 440.0])
+        .with_active(true);
+    crate::helper_window::configure_helper_window(&mut native_options);
 
     eframe::run_native(
         &window_title,

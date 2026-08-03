@@ -59,7 +59,9 @@ pub fn run_settings_ui() -> Result<()> {
     native_options.viewport = egui::ViewportBuilder::default()
         .with_title(rust_i18n::t!("settings.window_title").to_string())
         .with_inner_size([1000.0, 700.0])
-        .with_min_inner_size([820.0, 600.0]);
+        .with_min_inner_size([820.0, 600.0])
+        .with_active(true);
+    crate::helper_window::configure_helper_window(&mut native_options);
 
     eframe::run_native(
         // Not the visible title (`with_title` above owns that) — eframe uses
