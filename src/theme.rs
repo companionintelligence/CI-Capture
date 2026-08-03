@@ -47,8 +47,19 @@ struct Palette {
     bg: Color32,
     /// Window / panel surface.
     panel: Color32,
-    /// Slightly lighter surface for titlebars / sidebar.
+    /// Elevated chrome (titlebars, footers). Bluish slate in dark mode so it
+    /// sits with `sidebar-primary` / the primary button, not the green T800
+    /// ramp step that used to make the shell look off-brand.
     panel_hi: Color32,
+    /// Nav sidebar surface — CI-Common `sidebar`.
+    sidebar: Color32,
+    /// CI-Common `sidebar-foreground` — primary ink on the rail (dark in light
+    /// mode, near-white in dark). Matches Companion Planning / shadcn sidebar.
+    sidebar_fg: Color32,
+    /// CI-Common `sidebar-accent` — selected / hover row fill.
+    sidebar_accent: Color32,
+    /// CI-Common `sidebar-accent-foreground`.
+    sidebar_accent_fg: Color32,
     /// Recessed surface behind cards / inputs. Deliberately *darker* than
     /// `panel` so text fields read as wells rather than raised chips.
     input: Color32,
@@ -99,7 +110,11 @@ impl Palette {
         Self {
             bg: dark::BACKGROUND,
             panel: dark::CARD,
-            panel_hi: teal::T800,
+            panel_hi: dark::SIDEBAR_ACCENT,
+            sidebar: dark::SIDEBAR,
+            sidebar_fg: dark::SIDEBAR_FOREGROUND,
+            sidebar_accent: dark::SIDEBAR_ACCENT,
+            sidebar_accent_fg: dark::SIDEBAR_ACCENT_FOREGROUND,
             input: dark::BACKGROUND,
             card: teal::T900,
             border: dark::BORDER,
@@ -126,7 +141,11 @@ impl Palette {
         Self {
             bg: tokens::light::BACKGROUND,
             panel: tokens::light::CARD,
-            panel_hi: teal::T100,
+            panel_hi: tokens::light::SIDEBAR_ACCENT,
+            sidebar: tokens::light::SIDEBAR,
+            sidebar_fg: tokens::light::SIDEBAR_FOREGROUND,
+            sidebar_accent: tokens::light::SIDEBAR_ACCENT,
+            sidebar_accent_fg: tokens::light::SIDEBAR_ACCENT_FOREGROUND,
             input: tokens::light::BACKGROUND,
             card: tokens::light::CARD,
             border: tokens::light::BORDER,
@@ -186,6 +205,22 @@ pub fn PANEL() -> Color32 {
 #[allow(non_snake_case)]
 pub fn PANEL_HI() -> Color32 {
     PALETTE.with(|p| p.get().panel_hi)
+}
+#[allow(non_snake_case)]
+pub fn SIDEBAR() -> Color32 {
+    PALETTE.with(|p| p.get().sidebar)
+}
+#[allow(non_snake_case)]
+pub fn SIDEBAR_FG() -> Color32 {
+    PALETTE.with(|p| p.get().sidebar_fg)
+}
+#[allow(non_snake_case)]
+pub fn SIDEBAR_ACCENT() -> Color32 {
+    PALETTE.with(|p| p.get().sidebar_accent)
+}
+#[allow(non_snake_case)]
+pub fn SIDEBAR_ACCENT_FG() -> Color32 {
+    PALETTE.with(|p| p.get().sidebar_accent_fg)
 }
 #[allow(non_snake_case)]
 pub fn INPUT() -> Color32 {
@@ -767,15 +802,17 @@ pub fn status_dot(ui: &mut Ui, color: Color32, animate: bool) {
     p.circle_filled(rect.center(), 3.5, color.gamma_multiply(a.max(0.6)));
 }
 
-/// A pill badge: tinted background, leading dot, label. Used for connection
-/// state and per-file upload status.
+/// A status badge: tinted background, leading dot, label. Same rounded-rect
+/// profile and height as [`ghost_button`] / the Test connection control (32px).
 pub fn status_badge(ui: &mut Ui, text: &str, color: Color32) -> Response {
     egui::Frame::new()
         .fill(tint(color, 28))
-        .corner_radius(CornerRadius::same(255))
-        .inner_margin(egui::Margin::symmetric(11, 5))
+        .corner_radius(CornerRadius::same(tokens::radius::LG))
+        .inner_margin(egui::Margin::symmetric(11, 0))
         .show(ui, |ui| {
-            ui.horizontal(|ui| {
+            ui.set_height(32.0);
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                ui.set_height(32.0);
                 ui.spacing_mut().item_spacing.x = 7.0;
                 let (r, _) = ui.allocate_exact_size(Vec2::splat(6.0), Sense::hover());
                 ui.painter().circle_filled(r.center(), 3.0, color);
@@ -973,28 +1010,25 @@ pub fn segment(ui: &mut Ui, text: &str, selected: bool) -> bool {
 
 // ── Sidebar nav item ──────────────────────────────────────────────────────--
 
-/// A sidebar navigation entry: leading accent chip, title + subtitle, active
-/// background and left accent bar. Returns true when clicked.
+/// A sidebar navigation entry matching CI-Common / shadcn `SidebarMenuButton`
+/// (same pattern Companion Planning uses): `sidebar-foreground` ink on the rail,
+/// `sidebar-accent` + `sidebar-accent-foreground` when selected or hovered.
+/// Returns true when clicked.
 pub fn nav_item(ui: &mut Ui, accent: Color32, title: &str, subtitle: &str, selected: bool) -> bool {
     let desired = Vec2::new(ui.available_width(), 46.0);
     let (rect, resp) = ui.allocate_exact_size(desired, Sense::click());
     let painter = ui.painter();
+    let active = selected || resp.hovered();
 
+    if active {
+        painter.rect_filled(rect, CornerRadius::same(tokens::radius::LG), SIDEBAR_ACCENT());
+    }
     if selected {
-        painter.rect_filled(rect, CornerRadius::same(10), tint(TEAL(), 22));
-        painter.rect_stroke(
-            rect,
-            CornerRadius::same(10),
-            Stroke::new(1.0, tint(TEAL(), 60)),
-            StrokeKind::Inside,
-        );
         let bar = egui::Rect::from_min_size(
             egui::pos2(rect.left() + 2.0, rect.center().y - 11.0),
             Vec2::new(3.0, 22.0),
         );
         painter.rect_filled(bar, CornerRadius::same(2), TEAL());
-    } else if resp.hovered() {
-        painter.rect_filled(rect, CornerRadius::same(10), tint(Color32::WHITE, 12));
     }
 
     // Accent chip.
@@ -1004,16 +1038,12 @@ pub fn nav_item(ui: &mut Ui, accent: Color32, title: &str, subtitle: &str, selec
     );
     painter.rect_filled(
         chip,
-        CornerRadius::same(6),
+        CornerRadius::same(tokens::radius::SM),
         tint(accent, if selected { 70 } else { 40 }),
     );
     painter.circle_filled(chip.center(), 3.0, accent);
 
-    let title_color = if selected {
-        TEXT()
-    } else {
-        Color32::from_rgb(0xc4, 0xcb, 0xd8)
-    };
+    let title_color = if active { SIDEBAR_ACCENT_FG() } else { SIDEBAR_FG() };
     painter.text(
         egui::pos2(rect.left() + 46.0, rect.center().y - 8.0),
         Align2::LEFT_CENTER,

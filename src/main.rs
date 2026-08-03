@@ -19,6 +19,7 @@ mod server_check;
 mod server_common;
 mod server_ingest;
 mod server_upload;
+mod helper_window;
 mod settings_ui;
 mod svg_icon;
 mod telemetry;
@@ -1069,7 +1070,7 @@ fn is_first_run(config: &AppConfig) -> bool {
     !config.onboarding_completed && !server_ingest::is_configured(config)
 }
 
-fn login_with_portal() -> Result<String> {
+pub(crate) fn login_with_portal() -> Result<String> {
     let manager = ConfigManager::new().context("loading config manager for sign-in")?;
     let oidc_config = manager
         .load_or_default()
@@ -1215,7 +1216,7 @@ fn resolve_core_url(runtime: &Runtime, config: &mut AppConfig, access_token: &st
             match portal_apps::select_memory(&candidates, prior.as_deref()) {
                 MemorySelection::None => t!("tray.discovery.none").into_owned(),
                 MemorySelection::Chosen(core) => {
-                    apply_discovered_memory(config, &core);
+                    portal_apps::apply_discovered_memory(config, &core);
                     log::info!(
                         "discovered Companion Memory at {} (device={:?})",
                         core.url,
@@ -1253,14 +1254,6 @@ fn resolve_core_url(runtime: &Runtime, config: &mut AppConfig, access_token: &st
             t!("tray.discovery.error").into_owned()
         }
     }
-}
-
-/// Apply a Portal-discovered Memory choice to config (URL + device bind).
-fn apply_discovered_memory(config: &mut AppConfig, core: &portal_apps::PortalApp) {
-    config.server.portal_url = core.url.clone();
-    config.server.url_source = config::ServerUrlSource::Discovered;
-    config.server.bound_device_slug = core.device_slug.clone();
-    config.server.bound_device_name = core.device_name.clone();
 }
 
 /// After `--login`, print the stored identity and the id_token's audience +

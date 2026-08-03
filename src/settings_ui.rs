@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
+use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 use eframe::{NativeOptions, egui};
@@ -11,9 +12,20 @@ use uuid::Uuid;
 
 use crate::config::{AppConfig, ConfigManager, MinioConfig, PostgresConfig};
 use crate::connection_test;
+use crate::portal_apps::{self, PortalApp};
 use crate::server_common::normalize_server_url;
 use crate::theme;
 use crate::tokens;
+
+/// Guided Connection-tab phase (Portal-first).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ConnectPhase {
+    SignedOut,
+    SigningIn,
+    ChooseMemory,
+    NeedsMemory,
+    Connected,
+}
 
 /// Result of an inline connection test for one tab.
 #[derive(Clone)]
@@ -47,7 +59,9 @@ pub fn run_settings_ui() -> Result<()> {
     native_options.viewport = egui::ViewportBuilder::default()
         .with_title(rust_i18n::t!("settings.window_title").to_string())
         .with_inner_size([1000.0, 700.0])
-        .with_min_inner_size([820.0, 600.0]);
+        .with_min_inner_size([820.0, 600.0])
+        .with_active(true);
+    crate::helper_window::configure_helper_window(&mut native_options);
 
     eframe::run_native(
         // Not the visible title (`with_title` above owns that) — eframe uses
@@ -88,6 +102,8 @@ pub struct SettingsFormState {
     pub oidc_redirect_uri: String,
     pub applet_auth_token: String,
     pub screenshot_interval_secs: u64,
+    /// Draft text for the interval field while the user is typing.
+    pub screenshot_interval_edit: String,
     pub diff_threshold_percent: f32,
     /// Folders the file-tracking lane watches. The lane stays idle while this
     /// is empty (`file_tracker::is_runnable`), so this is the control that
@@ -170,6 +186,7 @@ impl From<&AppConfig> for SettingsFormState {
             oidc_redirect_uri: config.oidc.redirect_uri.clone(),
             applet_auth_token: config.server.applet_auth_token.clone().unwrap_or_default(),
             screenshot_interval_secs: config.capture.screenshot_interval_secs,
+            screenshot_interval_edit: config.capture.screenshot_interval_secs.to_string(),
             diff_threshold_percent: config.capture.diff_threshold_percent,
             watched_paths: config.file_tracker.watched_paths.clone(),
             file_tracking_enabled: config.file_tracker.enabled,
@@ -256,7 +273,7 @@ impl SettingsTab {
         match self {
             SettingsTab::Connection => theme::TEAL(),
             SettingsTab::Capture => theme::LANE_ACTIVITY(),
-            SettingsTab::Advanced => theme::MUTED(),
+            SettingsTab::Advanced => theme::TEAL_DIM(),
             #[cfg(feature = "legacy-minio")]
             SettingsTab::Minio => theme::AMBER(),
             #[cfg(feature = "legacy-postgres")]
@@ -264,9 +281,13 @@ impl SettingsTab {
         }
     }
 
-    /// Whether this tab configures a remote service that can be test-probed.
+    /// Whether this tab shows the legacy footer Test connection row.
+    /// Connection probes live in the guided hero CTA instead.
     fn has_connection(&self) -> bool {
-        !matches!(self, SettingsTab::Capture | SettingsTab::Advanced)
+        !matches!(
+            self,
+            SettingsTab::Connection | SettingsTab::Capture | SettingsTab::Advanced
+        )
     }
 
     fn all() -> Vec<SettingsTab> {
@@ -296,9 +317,15 @@ struct SettingsApp {
     tests: HashMap<SettingsTab, TestState>,
     discover_tx: Sender<Result<Vec<crate::portal_apps::PortalApp>, String>>,
     discover_rx: Receiver<Result<Vec<crate::portal_apps::PortalApp>, String>>,
-    memory_choices: Vec<crate::portal_apps::PortalApp>,
+    memory_choices: Vec<PortalApp>,
     memory_status: Option<String>,
     discovering: bool,
+    /// Force the Memory picker even when a URL is already set (Switch Memory).
+    switching_memory: bool,
+    login_tx: Sender<Result<String, String>>,
+    login_rx: Receiver<Result<String, String>>,
+    login_busy: bool,
+    login_status: Option<Result<String, String>>,
     /// One-shot latch for [`theme::center_once`].
     centered: bool,
 }
@@ -321,6 +348,7 @@ impl SettingsApp {
             .expect("failed to create settings runtime");
         let (test_tx, test_rx) = channel();
         let (discover_tx, discover_rx) = channel();
+        let (login_tx, login_rx) = channel();
         Self {
             manager,
             base_config,
@@ -338,6 +366,11 @@ impl SettingsApp {
             memory_choices: Vec::new(),
             memory_status: None,
             discovering: false,
+            switching_memory: false,
+            login_tx,
+            login_rx,
+            login_busy: false,
+            login_status: None,
             centered: false,
         }
     }
@@ -443,19 +476,34 @@ impl SettingsApp {
         });
     }
 
-    fn drain_discoveries(&mut self) {
+    fn drain_discoveries(&mut self, ctx: &egui::Context) {
         while let Ok(result) = self.discover_rx.try_recv() {
             self.discovering = false;
             match result {
                 Ok(apps) => {
-                    let candidates = crate::portal_apps::memory_candidates(&apps);
+                    let candidates = portal_apps::memory_candidates(&apps);
                     if candidates.is_empty() {
                         self.memory_status =
                             Some(rust_i18n::t!("settings.connection.memory_pick.empty").to_string());
+                        self.memory_choices = candidates;
                     } else {
                         self.memory_status = None;
+                        let prior = self.form.bound_device_slug.clone();
+                        match portal_apps::select_memory(&candidates, Some(prior.as_str()).filter(|s| !s.is_empty()))
+                        {
+                            portal_apps::MemorySelection::Chosen(core)
+                                if self.form.portal_url.trim().is_empty() && !self.switching_memory =>
+                            {
+                                self.memory_choices = candidates;
+                                self.apply_memory_choice(&core, ctx);
+                            }
+                            portal_apps::MemorySelection::NeedsChoice(_)
+                            | portal_apps::MemorySelection::Chosen(_)
+                            | portal_apps::MemorySelection::None => {
+                                self.memory_choices = candidates;
+                            }
+                        }
                     }
-                    self.memory_choices = candidates;
                 }
                 Err(err) => {
                     self.memory_status = Some(
@@ -495,25 +543,185 @@ impl SettingsApp {
         let tx = self.discover_tx.clone();
         let ctx = ctx.clone();
         self.runtime.spawn(async move {
-            let result = match crate::portal_apps::fetch_portal_apps(
+            let result = match portal_apps::fetch_portal_apps(
                 &portal,
                 &token,
-                crate::portal_apps::MEMORY_APP_SLUG,
+                portal_apps::MEMORY_APP_SLUG,
             )
             .await
             {
-                crate::portal_apps::Discovery::Ok(apps) => Ok(apps),
-                crate::portal_apps::Discovery::Unsupported => {
-                    Err("Portal has no app discovery".into())
-                }
-                crate::portal_apps::Discovery::Unauthorized => {
-                    Err("Portal refused the session".into())
-                }
-                crate::portal_apps::Discovery::Error(e) => Err(e),
+                portal_apps::Discovery::Ok(apps) => Ok(apps),
+                portal_apps::Discovery::Unsupported => Err("Portal has no app discovery".into()),
+                portal_apps::Discovery::Unauthorized => Err("Portal refused the session".into()),
+                portal_apps::Discovery::Error(e) => Err(e),
             };
             let _ = tx.send(result);
             ctx.request_repaint();
         });
+    }
+
+    fn start_portal_login(&mut self, ctx: &egui::Context) {
+        if self.login_busy {
+            return;
+        }
+        // Persist issuer edits from Advanced before the browser flow reads disk.
+        if let Err(err) = self.manager.save(&self.build_config()) {
+            self.login_status = Some(Err(
+                rust_i18n::t!("settings.error.save_failed", error = err.to_string()).to_string(),
+            ));
+            return;
+        }
+        self.login_busy = true;
+        self.login_status = Some(Ok(
+            rust_i18n::t!("settings.connection.signing_in").to_string()
+        ));
+        let tx = self.login_tx.clone();
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let result = crate::login_with_portal().map_err(|e| format!("{e:#}"));
+            let _ = tx.send(result);
+            ctx.request_repaint();
+        });
+    }
+
+    fn drain_login(&mut self, ctx: &egui::Context) {
+        match self.login_rx.try_recv() {
+            Ok(result) => {
+                self.login_busy = false;
+                match &result {
+                    Ok(_) => {
+                        self.reload_from_disk();
+                        self.switching_memory = false;
+                        self.login_status = Some(result);
+                        if self.form.portal_url.trim().is_empty() {
+                            self.refresh_memories(ctx);
+                        } else {
+                            self.run_test(SettingsTab::Connection, ctx);
+                        }
+                    }
+                    Err(_) => self.login_status = Some(result),
+                }
+            }
+            Err(TryRecvError::Empty) => {
+                if self.login_busy {
+                    ctx.request_repaint_after(Duration::from_millis(200));
+                }
+            }
+            Err(TryRecvError::Disconnected) => self.login_busy = false,
+        }
+    }
+
+    fn reload_from_disk(&mut self) {
+        if let Ok(fresh) = self.manager.load_or_default() {
+            self.form = SettingsFormState::from(&fresh);
+            *self.base_config.lock() = fresh;
+        }
+    }
+
+    fn sign_out_local(&mut self) {
+        let mut config = match self.manager.load_or_default() {
+            Ok(c) => c,
+            Err(err) => {
+                self.error = Some(
+                    rust_i18n::t!("settings.error.save_failed", error = err.to_string()).to_string(),
+                );
+                return;
+            }
+        };
+        config.oidc_session = None;
+        config.server.applet_auth_token = None;
+        config.identity.user_id = None;
+        config.identity.device_id = None;
+        if config.server.url_source == crate::config::ServerUrlSource::Discovered {
+            config.server.portal_url.clear();
+            config.server.bound_device_slug = None;
+            config.server.bound_device_name = None;
+            config.server.url_source = crate::config::ServerUrlSource::Manual;
+        }
+        if let Err(err) = self.manager.save(&config) {
+            self.error = Some(
+                rust_i18n::t!("settings.error.save_failed", error = err.to_string()).to_string(),
+            );
+            return;
+        }
+        *self.base_config.lock() = config.clone();
+        self.form = SettingsFormState::from(&config);
+        self.memory_choices.clear();
+        self.memory_status = None;
+        self.switching_memory = false;
+        self.login_status = None;
+        self.tests.remove(&SettingsTab::Connection);
+    }
+
+    fn apply_memory_choice(&mut self, choice: &PortalApp, ctx: &egui::Context) {
+        let mut config = match self.manager.load_or_default() {
+            Ok(c) => c,
+            Err(err) => {
+                self.error = Some(
+                    rust_i18n::t!("settings.error.save_failed", error = err.to_string()).to_string(),
+                );
+                return;
+            }
+        };
+        portal_apps::apply_discovered_memory(&mut config, choice);
+        if let Err(err) = self.manager.save(&config) {
+            self.error = Some(
+                rust_i18n::t!("settings.error.save_failed", error = err.to_string()).to_string(),
+            );
+            return;
+        }
+        *self.base_config.lock() = config.clone();
+        self.form = SettingsFormState::from(&config);
+        self.switching_memory = false;
+        self.run_test(SettingsTab::Connection, ctx);
+    }
+
+    fn signed_in_oidc(&self) -> bool {
+        self.base_config.lock().oidc_session.is_some()
+    }
+
+    fn account_who(&self) -> Option<String> {
+        let cfg = self.base_config.lock();
+        let session = cfg.oidc_session.as_ref()?;
+        session
+            .name
+            .clone()
+            .or_else(|| session.email.clone())
+            .or_else(|| session.subject.clone())
+    }
+
+    /// Portal email for the This device card. Prefer the OIDC claim over the
+    /// UUID `user_id` — users recognise their address, not a random id.
+    fn account_email(&self) -> Option<String> {
+        let cfg = self.base_config.lock();
+        cfg.oidc_session
+            .as_ref()
+            .and_then(|s| s.email.clone())
+            .filter(|e| !e.trim().is_empty())
+    }
+
+    fn connect_phase(&self) -> ConnectPhase {
+        if self.login_busy {
+            return ConnectPhase::SigningIn;
+        }
+        let has_url = !self.form.portal_url.trim().is_empty();
+        let signed_in = self.signed_in_oidc();
+        let has_api_key = self.form.auth_mode == AuthMode::ApiKey
+            && !self.form.applet_auth_token.trim().is_empty();
+
+        if !signed_in && !(has_api_key && has_url) {
+            return ConnectPhase::SignedOut;
+        }
+        if self.switching_memory
+            || (signed_in && !has_url && !self.memory_choices.is_empty())
+            || (signed_in && !has_url && self.discovering)
+        {
+            return ConnectPhase::ChooseMemory;
+        }
+        if signed_in && !has_url {
+            return ConnectPhase::NeedsMemory;
+        }
+        ConnectPhase::Connected
     }
 
     /// Apply any finished test results.
@@ -681,7 +889,8 @@ impl eframe::App for SettingsApp {
         theme::sync(ctx);
         theme::center_once(ctx, &mut self.centered);
         self.drain_tests();
-        self.drain_discoveries();
+        self.drain_login(ctx);
+        self.drain_discoveries(ctx);
         self.render_sidebar(ctx);
         self.render_footer(ctx);
 
@@ -737,7 +946,7 @@ impl SettingsApp {
             .resizable(false)
             .frame(
                 egui::Frame::new()
-                    .fill(theme::PANEL_HI())
+                    .fill(theme::SIDEBAR())
                     .inner_margin(egui::Margin::same(14)),
             )
             .show(ctx, |ui| {
@@ -750,7 +959,7 @@ impl SettingsApp {
                         ui.label(
                             egui::RichText::new("Companion Capture")
                                 .font(theme::light(18.0))
-                                .color(theme::TEXT()),
+                                .color(theme::SIDEBAR_FG()),
                         );
                         ui.label(
                             egui::RichText::new(
@@ -925,165 +1134,463 @@ fn render_connection_tab(
     app: &mut SettingsApp,
     ctx: &egui::Context,
 ) -> bool {
-    let mut changed = false;
     page_header(
         ui,
         &SettingsTab::Connection.label(),
         &rust_i18n::t!("settings.connection.subtitle"),
     );
 
-    // Memory picker — Portal discovery by Hub device (many Captures may share one).
-    theme::field_label(ui, &rust_i18n::t!("settings.connection.memory_pick.label"));
-    ui.add_space(4.0);
-    theme::caption(ui, &rust_i18n::t!("settings.connection.memory_pick.help"));
-    ui.add_space(8.0);
-    if !app.form.bound_device_name.trim().is_empty() {
-        ui.label(
-            egui::RichText::new(
-                rust_i18n::t!(
-                    "settings.connection.memory_pick.bound",
-                    device = app.form.bound_device_name.as_str()
-                )
-                .to_string(),
-            )
-            .color(theme::TEAL()),
-        );
-        ui.add_space(6.0);
-    }
-    let refresh_label = if app.discovering {
-        rust_i18n::t!("settings.connection.memory_pick.refreshing").to_string()
-    } else {
-        rust_i18n::t!("settings.connection.memory_pick.refresh").to_string()
-    };
-    if ui
-        .add_enabled(!app.discovering, egui::Button::new(refresh_label))
-        .clicked()
-    {
-        app.refresh_memories(ctx);
-    }
-    if let Some(status) = &app.memory_status {
-        ui.add_space(4.0);
-        theme::caption(ui, status);
-    }
-    let choices = app.memory_choices.clone();
-    for choice in &choices {
-        let label = choice
-            .device_name
-            .clone()
-            .or_else(|| choice.device_slug.clone())
-            .unwrap_or_else(|| choice.url.clone());
-        let selected = app.form.bound_device_slug.as_str()
-            == choice.device_slug.as_deref().unwrap_or("")
-            || (!app.form.portal_url.is_empty() && app.form.portal_url == choice.url);
-        if ui.selectable_label(selected, &label).clicked() {
-            app.form.portal_url = choice.url.clone();
-            app.form.bound_device_slug = choice.device_slug.clone().unwrap_or_default();
-            app.form.bound_device_name = choice.device_name.clone().unwrap_or_default();
-            app.form.memory_from_discovery = true;
-            changed = true;
+    let phase = app.connect_phase();
+    let (status_title, status_detail, status_color) = match phase {
+        ConnectPhase::SignedOut => (
+            rust_i18n::t!("settings.status.unset.title").to_string(),
+            rust_i18n::t!("settings.status.unset.detail").to_string(),
+            theme::RED(),
+        ),
+        ConnectPhase::SigningIn => (
+            rust_i18n::t!("settings.connection.signing_in").to_string(),
+            String::new(),
+            theme::AMBER(),
+        ),
+        ConnectPhase::ChooseMemory => (
+            rust_i18n::t!("settings.status.choose_memory.title").to_string(),
+            rust_i18n::t!("settings.status.choose_memory.detail").to_string(),
+            theme::AMBER(),
+        ),
+        ConnectPhase::NeedsMemory => (
+            rust_i18n::t!("settings.status.needs_memory.title").to_string(),
+            rust_i18n::t!("settings.status.needs_memory.detail").to_string(),
+            theme::AMBER(),
+        ),
+        ConnectPhase::Connected => {
+            let (t, d, c) = app.connection_status();
+            (t, d, c)
         }
-    }
-    ui.add_space(16.0);
+    };
 
-    let url_before = app.form.portal_url.clone();
-    let form = &mut app.form;
-    let url_edited = field(
-        ui,
-        &rust_i18n::t!("settings.connection.server.label"),
-        &mut form.portal_url,
-        &rust_i18n::t!("settings.connection.server.hint"),
-        theme::FieldOpts::monospace(),
-    );
-    // Typing over a discovered URL → manual provenance on save.
-    if url_edited && form.portal_url != url_before {
-        form.memory_from_discovery = false;
-        form.bound_device_slug.clear();
-        form.bound_device_name.clear();
-    }
-    changed |= url_edited;
-    theme::caption(ui, &rust_i18n::t!("settings.connection.server.help"));
-    ui.add_space(6.0);
-
-    // A plain-http origin that isn't loopback means captures cross the network
-    // in the clear. Not a blocker — a LAN server has no cert — but never silent.
-    let target = form.portal_url.trim();
-    if target.starts_with("http://")
-        && !target.contains("//localhost")
-        && !target.contains("//127.0.0.1")
-    {
-        ui.horizontal_wrapped(|ui| {
-            ui.label(
-                egui::RichText::new(
-                    rust_i18n::t!("settings.connection.insecure_warning").to_string(),
-                )
-                .font(theme::body(tokens::text::SMALL))
-                .color(theme::AMBER()),
-            );
-        });
-        ui.add_space(10.0);
-    }
-
-    theme::field_label(ui, &rust_i18n::t!("settings.connection.auth.label"));
-    ui.add_space(6.0);
-    egui::Frame::new()
-        .fill(theme::INPUT())
-        .stroke(egui::Stroke::new(1.0, theme::BORDER()))
-        .corner_radius(egui::CornerRadius::same(10))
-        .inner_margin(egui::Margin::same(3))
-        .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 3.0;
-                if theme::segment(
-                    ui,
-                    &rust_i18n::t!("settings.connection.auth.api_key"),
-                    form.auth_mode == AuthMode::ApiKey,
-                ) {
-                    form.auth_mode = AuthMode::ApiKey;
-                    changed = true;
+    theme::card(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.horizontal(|ui| {
+            theme::status_dot(ui, status_color, phase == ConnectPhase::Connected);
+            ui.add_space(8.0);
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 3.0;
+                ui.label(
+                    egui::RichText::new(status_title)
+                        .font(theme::semibold(tokens::text::BODY))
+                        .color(theme::TEXT()),
+                );
+                if !status_detail.is_empty() {
+                    theme::caption(ui, &status_detail);
                 }
-                if theme::segment(
-                    ui,
-                    &rust_i18n::t!("settings.connection.auth.oidc"),
-                    form.auth_mode == AuthMode::Oidc,
-                ) {
-                    form.auth_mode = AuthMode::Oidc;
-                    changed = true;
+                if let Some(who) = app.account_who() {
+                    ui.add_space(2.0);
+                    theme::caption(
+                        ui,
+                        &format!(
+                            "{} {}",
+                            rust_i18n::t!("settings.connection.account_label"),
+                            who
+                        ),
+                    );
                 }
             });
         });
-    ui.add_space(16.0);
+    });
+    ui.add_space(14.0);
 
-    match form.auth_mode {
-        AuthMode::ApiKey => {
-            changed |= field(
-                ui,
-                &rust_i18n::t!("settings.connection.api_key.label"),
-                &mut form.applet_auth_token,
-                &rust_i18n::t!("settings.connection.api_key.hint"),
-                theme::FieldOpts::password(),
-            );
-            theme::caption(ui, &rust_i18n::t!("settings.connection.api_key.help"));
-            ui.add_space(15.0);
+    match phase {
+        ConnectPhase::SignedOut => {
+            if theme::primary_button(ui, &rust_i18n::t!("settings.connection.sign_in")).clicked() {
+                app.start_portal_login(ctx);
+            }
+            ui.add_space(8.0);
+            theme::caption(ui, &rust_i18n::t!("settings.connection.sign_in_help"));
         }
-        AuthMode::Oidc => {
-            theme::caption(ui, &rust_i18n::t!("settings.connection.oidc.help"));
-            ui.add_space(10.0);
-
-            // OIDC wiring. Correct out of the box for the production Portal, so
-            // this is collapsed: a working install should never need to open it,
-            // and four monospace URLs on the main pane read as "you must
-            // configure this" when you must not.
-            egui::CollapsingHeader::new(
-                egui::RichText::new(rust_i18n::t!("settings.connection.oidc.details").to_string())
-                    .font(theme::body(tokens::text::SMALL))
-                    .color(theme::MUTED()),
-            )
-            .id_salt("settings_oidc_details")
-            .show(ui, |ui| {
+        ConnectPhase::SigningIn => {
+            ui.horizontal(|ui| {
+                ui.spinner();
                 ui.add_space(6.0);
-                // The hints below are literal protocol values (a URL, the
-                // frozen `ci-applet` client id, OIDC scope tokens) — not prose,
-                // and not translatable.
+                theme::caption(ui, &rust_i18n::t!("settings.connection.signing_in"));
+            });
+        }
+        ConnectPhase::ChooseMemory => {
+            theme::field_label(ui, &rust_i18n::t!("settings.connection.memory_pick.label"));
+            ui.add_space(4.0);
+            theme::caption(ui, &rust_i18n::t!("settings.connection.memory_pick.help"));
+            ui.add_space(10.0);
+            if app.discovering {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.add_space(6.0);
+                    theme::caption(
+                        ui,
+                        &rust_i18n::t!("settings.connection.memory_pick.refreshing"),
+                    );
+                });
+            } else if app.memory_choices.is_empty() {
+                if theme::primary_button(
+                    ui,
+                    &rust_i18n::t!("settings.connection.memory_pick.refresh"),
+                )
+                .clicked()
+                {
+                    app.refresh_memories(ctx);
+                }
+            } else {
+                let choices = app.memory_choices.clone();
+                for choice in &choices {
+                    let label = choice
+                        .device_name
+                        .clone()
+                        .or_else(|| choice.device_slug.clone())
+                        .unwrap_or_else(|| choice.url.clone());
+                    let selected = app.form.bound_device_slug.as_str()
+                        == choice.device_slug.as_deref().unwrap_or("")
+                        || (!app.form.portal_url.is_empty() && app.form.portal_url == choice.url);
+                    ui.add_space(4.0);
+                    theme::card(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.horizontal(|ui| {
+                            theme::status_dot(
+                                ui,
+                                if selected {
+                                    theme::GREEN()
+                                } else {
+                                    theme::TEAL()
+                                },
+                                selected,
+                            );
+                            ui.add_space(8.0);
+                            ui.vertical(|ui| {
+                                ui.label(
+                                    egui::RichText::new(label)
+                                        .font(theme::semibold(tokens::text::LABEL))
+                                        .color(theme::TEXT()),
+                                );
+                                theme::mono_label(ui, &choice.url, theme::MUTED());
+                            });
+                        });
+                        ui.add_space(8.0);
+                        if theme::primary_button(
+                            ui,
+                            &rust_i18n::t!("settings.connection.pick_cta"),
+                        )
+                        .clicked()
+                        {
+                            app.apply_memory_choice(choice, ctx);
+                        }
+                    });
+                }
+            }
+            if let Some(status) = &app.memory_status {
+                ui.add_space(8.0);
+                theme::caption(ui, status);
+            }
+        }
+        ConnectPhase::NeedsMemory => {
+            if theme::primary_button(
+                ui,
+                &rust_i18n::t!("settings.connection.memory_pick.refresh"),
+            )
+            .clicked()
+            {
+                app.refresh_memories(ctx);
+            }
+            ui.add_space(8.0);
+            let empty_msg = rust_i18n::t!("settings.connection.memory_pick.empty").to_string();
+            let status = app.memory_status.as_deref().unwrap_or(empty_msg.as_str());
+            theme::caption(ui, status);
+            ui.add_space(10.0);
+            if theme::ghost_button(ui, &rust_i18n::t!("settings.connection.sign_in")).clicked() {
+                app.start_portal_login(ctx);
+            }
+        }
+        ConnectPhase::Connected => {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 10.0;
+                let testing = matches!(
+                    app.tests.get(&SettingsTab::Connection),
+                    Some(TestState::Running)
+                );
+                ui.add_enabled_ui(!testing, |ui| {
+                    if theme::primary_button(ui, &rust_i18n::t!("settings.connection.check"))
+                        .clicked()
+                    {
+                        app.run_test(SettingsTab::Connection, ctx);
+                    }
+                });
+                match app.tests.get(&SettingsTab::Connection) {
+                    Some(TestState::Running) => {
+                        ui.add(egui::Spinner::new().size(16.0).color(theme::AMBER()));
+                        ui.label(
+                            egui::RichText::new(
+                                rust_i18n::t!("settings.test.running").to_string(),
+                            )
+                            .font(theme::body(13.0))
+                            .color(theme::AMBER()),
+                        );
+                    }
+                    Some(TestState::Ok(_)) => {
+                        theme::status_badge(
+                            ui,
+                            &rust_i18n::t!("settings.test.ok"),
+                            theme::GREEN(),
+                        );
+                    }
+                    Some(TestState::Err(_)) => {
+                        theme::status_badge(
+                            ui,
+                            &rust_i18n::t!("settings.test.failed"),
+                            theme::RED(),
+                        );
+                    }
+                    None => {}
+                }
+            });
+            if let Some(TestState::Ok(detail) | TestState::Err(detail)) =
+                app.tests.get(&SettingsTab::Connection)
+            {
+                ui.add_space(8.0);
+                theme::mono_label(ui, detail, theme::MUTED());
+                if matches!(
+                    app.tests.get(&SettingsTab::Connection),
+                    Some(TestState::Err(_))
+                ) {
+                    ui.add_space(6.0);
+                    let hint = if detail.to_ascii_lowercase().contains("401")
+                        || detail.to_ascii_lowercase().contains("403")
+                        || detail.to_ascii_lowercase().contains("credential")
+                        || detail.to_ascii_lowercase().contains("refused")
+                    {
+                        rust_i18n::t!("settings.connection.retry_hint_auth").to_string()
+                    } else {
+                        rust_i18n::t!("settings.connection.retry_hint_unreachable").to_string()
+                    };
+                    theme::caption(ui, &hint);
+                }
+            }
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 10.0;
+                if app.signed_in_oidc()
+                    && theme::ghost_button(ui, &rust_i18n::t!("settings.connection.switch_memory"))
+                        .clicked()
+                {
+                    app.switching_memory = true;
+                    app.refresh_memories(ctx);
+                }
+                if theme::ghost_button(ui, &rust_i18n::t!("settings.connection.sign_out")).clicked()
+                {
+                    app.sign_out_local();
+                }
+            });
+        }
+    }
+
+    if let Some(Ok(msg) | Err(msg)) = &app.login_status {
+        if phase != ConnectPhase::SigningIn {
+            ui.add_space(10.0);
+            theme::caption(ui, msg);
+        }
+    }
+
+    if phase == ConnectPhase::Connected {
+        ui.add_space(12.0);
+        theme::card(ui, |ui| {
+            ui.set_width(ui.available_width());
+            // One size for labels + values — readable, not billboard.
+            let feature = 14.0;
+            ui.spacing_mut().item_spacing.y = 4.0;
+
+            if !app.form.portal_url.trim().is_empty() {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    ui.label(
+                        egui::RichText::new(
+                            rust_i18n::t!("settings.connection.memory_card.label").to_string(),
+                        )
+                        .font(theme::body(feature))
+                        .color(theme::FAINT()),
+                    );
+                    if !app.form.bound_device_name.trim().is_empty() {
+                        ui.label(
+                            egui::RichText::new(app.form.bound_device_name.trim())
+                                .font(theme::body(feature))
+                                .color(theme::TEXT()),
+                        );
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    egui::RichText::new(
+                                        rust_i18n::t!("settings.connection.memory_card.open")
+                                            .to_string(),
+                                    )
+                                    .font(theme::body(feature))
+                                    .color(theme::TEAL()),
+                                )
+                                .frame(false),
+                            )
+                            .clicked()
+                        {
+                            let _ = crate::open_url(app.form.portal_url.trim());
+                        }
+                    });
+                });
+                let mut memory_url = app.form.portal_url.clone();
+                ui.add(
+                    egui::TextEdit::singleline(&mut memory_url)
+                        .font(egui::FontSelection::FontId(theme::mono(feature)))
+                        .desired_width(ui.available_width())
+                        .interactive(false)
+                        .frame(false)
+                        .margin(egui::Margin::ZERO)
+                        .text_color(theme::MUTED()),
+                );
+            }
+
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                ui.label(
+                    egui::RichText::new(
+                        rust_i18n::t!("settings.connection.device.user").to_string(),
+                    )
+                    .font(theme::body(feature))
+                    .color(theme::FAINT()),
+                );
+                let user = app
+                    .account_email()
+                    .or_else(|| (!app.form.user_id.is_empty()).then(|| app.form.user_id.clone()))
+                    .unwrap_or_else(|| {
+                        rust_i18n::t!("settings.connection.device.user_placeholder").to_string()
+                    });
+                ui.label(
+                    egui::RichText::new(user)
+                        .font(theme::mono(feature))
+                        .color(theme::MUTED()),
+                );
+            });
+
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                ui.label(
+                    egui::RichText::new(
+                        rust_i18n::t!("settings.connection.device.device").to_string(),
+                    )
+                    .font(theme::body(feature))
+                    .color(theme::FAINT()),
+                );
+                let device = if app.form.device_id.is_empty() {
+                    rust_i18n::t!("settings.connection.device.device_placeholder").to_string()
+                } else {
+                    app.form.device_id.clone()
+                };
+                ui.label(
+                    egui::RichText::new(device)
+                        .font(theme::mono(feature))
+                        .color(theme::MUTED()),
+                );
+            });
+        });
+    }
+
+    false
+}
+
+/// Manual URL / API key / OIDC wiring — power-user path on Advanced.
+fn render_manual_connection_fields(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bool {
+    let mut changed = false;
+    egui::CollapsingHeader::new(
+        egui::RichText::new(rust_i18n::t!("settings.advanced.manual_header").to_string())
+            .font(theme::body(tokens::text::SMALL))
+            .color(theme::MUTED()),
+    )
+    .id_salt("settings_manual_connection")
+    .show(ui, |ui| {
+        ui.add_space(6.0);
+        theme::caption(ui, &rust_i18n::t!("settings.advanced.manual_help"));
+        ui.add_space(10.0);
+
+        let url_before = form.portal_url.clone();
+        let url_edited = field(
+            ui,
+            &rust_i18n::t!("settings.connection.server.label"),
+            &mut form.portal_url,
+            &rust_i18n::t!("settings.connection.server.hint"),
+            theme::FieldOpts::monospace(),
+        );
+        if url_edited && form.portal_url != url_before {
+            form.memory_from_discovery = false;
+            form.bound_device_slug.clear();
+            form.bound_device_name.clear();
+        }
+        changed |= url_edited;
+        theme::caption(ui, &rust_i18n::t!("settings.connection.server.help"));
+        ui.add_space(6.0);
+
+        let target = form.portal_url.trim();
+        if target.starts_with("http://")
+            && !target.contains("//localhost")
+            && !target.contains("//127.0.0.1")
+        {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(
+                    egui::RichText::new(
+                        rust_i18n::t!("settings.connection.insecure_warning").to_string(),
+                    )
+                    .font(theme::body(tokens::text::SMALL))
+                    .color(theme::AMBER()),
+                );
+            });
+            ui.add_space(10.0);
+        }
+
+        theme::field_label(ui, &rust_i18n::t!("settings.connection.auth.label"));
+        ui.add_space(6.0);
+        egui::Frame::new()
+            .fill(theme::INPUT())
+            .stroke(egui::Stroke::new(1.0, theme::BORDER()))
+            .corner_radius(egui::CornerRadius::same(10))
+            .inner_margin(egui::Margin::same(3))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 3.0;
+                    if theme::segment(
+                        ui,
+                        &rust_i18n::t!("settings.connection.auth.api_key"),
+                        form.auth_mode == AuthMode::ApiKey,
+                    ) {
+                        form.auth_mode = AuthMode::ApiKey;
+                        changed = true;
+                    }
+                    if theme::segment(
+                        ui,
+                        &rust_i18n::t!("settings.connection.auth.oidc"),
+                        form.auth_mode == AuthMode::Oidc,
+                    ) {
+                        form.auth_mode = AuthMode::Oidc;
+                        changed = true;
+                    }
+                });
+            });
+        ui.add_space(12.0);
+
+        match form.auth_mode {
+            AuthMode::ApiKey => {
+                changed |= field(
+                    ui,
+                    &rust_i18n::t!("settings.connection.api_key.label"),
+                    &mut form.applet_auth_token,
+                    &rust_i18n::t!("settings.connection.api_key.hint"),
+                    theme::FieldOpts::password(),
+                );
+                theme::caption(ui, &rust_i18n::t!("settings.connection.api_key.help"));
+            }
+            AuthMode::Oidc => {
+                theme::caption(ui, &rust_i18n::t!("settings.connection.oidc.help"));
+                ui.add_space(8.0);
                 changed |= field(
                     ui,
                     &rust_i18n::t!("settings.connection.oidc.issuer.label"),
@@ -1114,46 +1621,8 @@ fn render_connection_tab(
                     "http://127.0.0.1:0/callback",
                     theme::FieldOpts::monospace(),
                 );
-            });
+            }
         }
-    }
-
-    ui.add_space(14.0);
-    theme::field_label(ui, &rust_i18n::t!("settings.connection.device.label"));
-    ui.add_space(8.0);
-    theme::card(ui, |ui| {
-        ui.set_width(ui.available_width());
-        ui.columns(2, |cols| {
-            theme::caption(
-                &mut cols[0],
-                &rust_i18n::t!("settings.connection.device.user"),
-            );
-            cols[0].add_space(4.0);
-            if form.user_id.is_empty() {
-                theme::mono_label(
-                    &mut cols[0],
-                    &rust_i18n::t!("settings.connection.device.user_placeholder"),
-                    theme::FAINT(),
-                );
-            } else {
-                theme::mono_label(&mut cols[0], &form.user_id, theme::MUTED());
-            }
-
-            theme::caption(
-                &mut cols[1],
-                &rust_i18n::t!("settings.connection.device.device"),
-            );
-            cols[1].add_space(4.0);
-            if form.device_id.is_empty() {
-                theme::mono_label(
-                    &mut cols[1],
-                    &rust_i18n::t!("settings.connection.device.device_placeholder"),
-                    theme::FAINT(),
-                );
-            } else {
-                theme::mono_label(&mut cols[1], &form.device_id, theme::MUTED());
-            }
-        });
     });
     changed
 }
@@ -1167,6 +1636,9 @@ fn render_advanced_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bool 
         &SettingsTab::Advanced.label(),
         &rust_i18n::t!("settings.advanced.subtitle"),
     );
+
+    changed |= render_manual_connection_fields(ui, form);
+    ui.add_space(18.0);
 
     theme::field_label(ui, &rust_i18n::t!("settings.advanced.vision.label"));
     ui.add_space(8.0);
@@ -1402,45 +1874,63 @@ fn render_capture_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bool {
     );
 
     ui.columns(2, |cols| {
-        // Screenshot interval stepper.
+        // Screenshot interval: +/- steppers around a click-to-type seconds field.
         theme::card(&mut cols[0], |ui| {
             ui.set_width(ui.available_width());
             theme::field_label(ui, &rust_i18n::t!("settings.capture.interval.label"));
-            ui.add_space(12.0);
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 12.0;
-                if stepper_button(ui, "\u{2212}") {
-                    form.screenshot_interval_secs =
-                        form.screenshot_interval_secs.saturating_sub(30).max(30);
-                    changed = true;
-                }
-                ui.with_layout(
-                    egui::Layout::top_down(egui::Align::Center).with_main_justify(true),
-                    |ui| {
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                egui::RichText::new(form.screenshot_interval_secs.to_string())
-                                    .font(theme::light(34.0))
-                                    .color(theme::TEXT()),
-                            );
-                            ui.label(
-                                egui::RichText::new("s")
-                                    .font(theme::body(16.0))
-                                    .color(theme::MUTED()),
-                            );
-                        });
-                    },
-                );
-                if stepper_button(ui, "+") {
-                    form.screenshot_interval_secs =
-                        (form.screenshot_interval_secs + 30).min(86_400);
-                    changed = true;
-                }
-            });
-            ui.add_space(12.0);
-            ui.vertical_centered(|ui| {
-                theme::caption(ui, &rust_i18n::t!("settings.capture.interval.help"))
-            });
+            ui.add_space(6.0);
+            // Pin the row height — a bare left_to_right(Center) layout inside
+            // `columns` expands to the column's full available height.
+            let row_h = 36.0;
+            ui.allocate_ui_with_layout(
+                egui::vec2(ui.available_width(), row_h),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| {
+                    ui.spacing_mut().item_spacing.x = 12.0;
+                    if stepper_button(ui, "\u{2212}") {
+                        form.screenshot_interval_secs =
+                            form.screenshot_interval_secs.saturating_sub(30).max(30);
+                        form.screenshot_interval_edit = form.screenshot_interval_secs.to_string();
+                        changed = true;
+                    }
+                    let edit_id = ui.make_persistent_id("settings_screenshot_interval");
+                    let edit = egui::TextEdit::singleline(&mut form.screenshot_interval_edit)
+                        .id(edit_id)
+                        .font(egui::FontSelection::FontId(theme::light(34.0)))
+                        .horizontal_align(egui::Align::Center)
+                        .vertical_align(egui::Align::Center)
+                        .desired_width(96.0)
+                        .margin(egui::Margin::symmetric(6, 0))
+                        .frame(false)
+                        .text_color(theme::TEXT());
+                    let response = ui.add(edit);
+                    if response.changed() {
+                        form.screenshot_interval_edit.retain(|c| c.is_ascii_digit());
+                        if let Ok(v) = form.screenshot_interval_edit.parse::<u64>()
+                            && (1..=86_400).contains(&v)
+                        {
+                            form.screenshot_interval_secs = v;
+                            changed = true;
+                        }
+                    }
+                    if response.lost_focus() {
+                        changed |= commit_screenshot_interval_edit(form);
+                    }
+                    ui.label(
+                        egui::RichText::new("s")
+                            .font(theme::body(16.0))
+                            .color(theme::MUTED()),
+                    );
+                    if stepper_button(ui, "+") {
+                        form.screenshot_interval_secs =
+                            (form.screenshot_interval_secs + 30).min(86_400);
+                        form.screenshot_interval_edit = form.screenshot_interval_secs.to_string();
+                        changed = true;
+                    }
+                },
+            );
+            ui.add_space(4.0);
+            theme::caption(ui, &rust_i18n::t!("settings.capture.interval.help"));
         });
 
         // Diff threshold slider.
@@ -1637,6 +2127,24 @@ fn render_watched_folders(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bo
     }
 
     changed
+}
+
+/// Parse the interval draft into `screenshot_interval_secs`, clamping to a day.
+/// Restores the prior value if the draft is empty or not a number.
+fn commit_screenshot_interval_edit(form: &mut SettingsFormState) -> bool {
+    match form.screenshot_interval_edit.trim().parse::<u64>() {
+        Ok(v) if v > 0 => {
+            let clamped = v.min(86_400);
+            let changed = clamped != form.screenshot_interval_secs;
+            form.screenshot_interval_secs = clamped;
+            form.screenshot_interval_edit = clamped.to_string();
+            changed
+        }
+        _ => {
+            form.screenshot_interval_edit = form.screenshot_interval_secs.to_string();
+            false
+        }
+    }
 }
 
 /// A small square +/- button for the interval stepper.

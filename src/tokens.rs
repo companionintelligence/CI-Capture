@@ -62,9 +62,11 @@ pub mod dark {
     pub const SIDEBAR: Color32 = hex(0x041620);
     pub const SIDEBAR_FOREGROUND: Color32 = hex(0xf5f8fa);
     pub const SIDEBAR_PRIMARY: Color32 = hex(0xabd4d8);
+    pub const SIDEBAR_PRIMARY_FOREGROUND: Color32 = hex(0x041620);
     pub const SIDEBAR_ACCENT: Color32 = hex(0x1d293d);
+    pub const SIDEBAR_ACCENT_FOREGROUND: Color32 = hex(0xf5f8fa);
     pub const SIDEBAR_BORDER: Color32 = hex(0x2c676d);
-    pub const SIDEBAR_RING: Color32 = hex(0x58ebbf);
+    pub const SIDEBAR_RING: Color32 = hex(0xabd4d8);
 
     // Status (tokens.json → status.dark).
     pub const SUCCESS: Color32 = hex(0x4ade80);
@@ -103,6 +105,15 @@ pub mod light {
     pub const CHART_3: Color32 = hex(0x104e64);
     pub const CHART_4: Color32 = hex(0xffb900);
     pub const CHART_5: Color32 = hex(0xfe9a00);
+
+    pub const SIDEBAR: Color32 = hex(0xf8fafc);
+    pub const SIDEBAR_FOREGROUND: Color32 = hex(0x020618);
+    pub const SIDEBAR_PRIMARY: Color32 = hex(0x0f172b);
+    pub const SIDEBAR_PRIMARY_FOREGROUND: Color32 = hex(0xf8fafc);
+    pub const SIDEBAR_ACCENT: Color32 = hex(0xf1f5f9);
+    pub const SIDEBAR_ACCENT_FOREGROUND: Color32 = hex(0x0a222e);
+    pub const SIDEBAR_BORDER: Color32 = hex(0xe2e8f0);
+    pub const SIDEBAR_RING: Color32 = hex(0x70a6af);
 }
 
 /// Brand teal ramp — mode-independent.
