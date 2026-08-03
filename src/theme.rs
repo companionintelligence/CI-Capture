@@ -802,15 +802,17 @@ pub fn status_dot(ui: &mut Ui, color: Color32, animate: bool) {
     p.circle_filled(rect.center(), 3.5, color.gamma_multiply(a.max(0.6)));
 }
 
-/// A pill badge: tinted background, leading dot, label. Used for connection
-/// state and per-file upload status.
+/// A status badge: tinted background, leading dot, label. Same rounded-rect
+/// profile and height as [`ghost_button`] / the Test connection control (32px).
 pub fn status_badge(ui: &mut Ui, text: &str, color: Color32) -> Response {
     egui::Frame::new()
         .fill(tint(color, 28))
-        .corner_radius(CornerRadius::same(255))
-        .inner_margin(egui::Margin::symmetric(11, 5))
+        .corner_radius(CornerRadius::same(tokens::radius::LG))
+        .inner_margin(egui::Margin::symmetric(11, 0))
         .show(ui, |ui| {
-            ui.horizontal(|ui| {
+            ui.set_height(32.0);
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                ui.set_height(32.0);
                 ui.spacing_mut().item_spacing.x = 7.0;
                 let (r, _) = ui.allocate_exact_size(Vec2::splat(6.0), Sense::hover());
                 ui.painter().circle_filled(r.center(), 3.0, color);

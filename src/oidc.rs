@@ -271,9 +271,16 @@ async fn bind_loopback(redirect_uri: &str) -> Result<(TcpListener, String)> {
 
 /// Branded success/error page for the loopback OIDC callback (Capture dark tokens).
 fn oidc_callback_page(ok: bool) -> String {
-    // Compact CI mark (white paths) — full `ci-mark-white.svg` is too large for
-    // an inline success page; this keeps the product silhouette.
-    const MARK: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="56" height="56" aria-hidden="true"><rect width="64" height="64" rx="14" fill="#0a222e"/><path fill="#abd4d8" d="M18 34c2 8 8 14 16 16 9-1 16-8 17-17h-6c-1 6-5 11-11 12-6-1-10-5-12-11zm28-4c0-7-4-13-10-16l1-5c8 3 14 11 14 21h-5zm-20-9c4-3 9-4 14-2l2-5c-7-3-15-2-21 3l5 4zm8 21c5 0 10-2 13-6l4 3c-5 5-11 8-17 8v-5z"/></svg>"##;
+    // Canonical Companion logo (same asset as Hub / Portal `public/logo.svg`).
+    const LOGO_SVG: &str = include_str!("../assets/logo.svg");
+    // Logo CSS classes use `{…}`; escape so `format!` does not treat them as args.
+    let mark = LOGO_SVG
+        .trim()
+        .strip_prefix("<?xml version=\"1.0\" encoding=\"UTF-8\"?>")
+        .unwrap_or(LOGO_SVG)
+        .trim()
+        .replace('{', "{{")
+        .replace('}', "}}");
 
     let (title, lead, detail, accent) = if ok {
         (
@@ -322,6 +329,7 @@ fn oidc_callback_page(ok: bool) -> String {
     box-shadow: 0 12px 40px rgba(0,0,0,0.35);
   }}
   .mark {{ margin: 0 auto 1.25rem; width: 56px; height: 56px; }}
+  .mark svg {{ display: block; width: 56px; height: 56px; }}
   h1 {{ margin: 0 0 0.5rem; font-size: 1.35rem; font-weight: 600; color: var(--primary); }}
   .lead {{ margin: 0 0 0.35rem; color: var(--text); font-size: 0.95rem; }}
   .detail {{ margin: 0; color: var(--muted); font-size: 0.85rem; line-height: 1.45; }}
@@ -330,7 +338,7 @@ fn oidc_callback_page(ok: bool) -> String {
 </head>
 <body>
 <main>
-  <div class="mark">{MARK}</div>
+  <div class="mark" aria-hidden="true">{mark}</div>
   <h1>{title}</h1>
   <p class="lead">{lead}</p>
   <p class="detail">{detail}</p>
@@ -585,7 +593,9 @@ mod tests {
         let (code, state) = server.await.unwrap().unwrap();
         assert_eq!(code, "abc123");
         assert_eq!(state.as_deref(), Some("xyz789"));
-        assert!(String::from_utf8_lossy(&resp).contains("Signed in"));
+        let body = String::from_utf8_lossy(&resp);
+        assert!(body.contains("Signed in"));
+        assert!(body.contains("Layer_1"), "callback page should embed brand logo.svg");
     }
 
     #[tokio::test]

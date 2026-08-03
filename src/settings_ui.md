@@ -1,7 +1,7 @@
 # settings_ui.rs
 
 ## Purpose
-Provides the standalone egui settings window for Companion Capture configuration, including CI-Server URL, API-key/OIDC auth mode, manual identity overrides, and infrastructure settings. Styled with the Companion Intelligence design system via [`theme`](theme.md): a left sidebar nav (Identity / Capture / Storage / Database / Vision) + connection card, a scrollable themed content pane, and a bottom footer showing the config path with Close/Save.
+Provides the standalone egui settings window for Companion Capture configuration. **Connection** is Portal-first (sign in → discover/pick Memory → Check connection). Manual Memory URL, API key, and OIDC client wiring live under **Advanced**. Styled with the Companion Intelligence design system via [`theme`](theme.md): left sidebar nav, scrollable content, footer with Close/Save.
 
 ## Components
 

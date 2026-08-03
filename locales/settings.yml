@@ -125,8 +125,16 @@ settings.status.unset.title:
   es: Sin configurar
 
 settings.status.unset.detail:
-  en: Add your Companion Memory server
-  es: Añade tu servidor de Companion Memory
+  en: Sign in with Companion to connect
+  es: Inicia sesión con Companion para conectar
+
+settings.status.needs_memory.title:
+  en: Find your Memory
+  es: Busca tu Memory
+
+settings.status.needs_memory.detail:
+  en: Signed in — we couldn't find a Companion Memory on your account yet
+  es: Sesión iniciada — aún no encontramos un Companion Memory en tu cuenta
 
 settings.connection.memory_pick.label:
   en: Companion Memory on your devices
@@ -137,8 +145,8 @@ settings.connection.memory_pick.help:
   es: Varias instalaciones de Capture pueden compartir un Memory. Elige a qué equipo Hub debe enviar este ordenador.
 
 settings.connection.memory_pick.refresh:
-  en: Find my Memories…
-  es: Buscar mis Memories…
+  en: Find my Memory
+  es: Buscar mi Memory
 
 settings.connection.memory_pick.refreshing:
   en: Looking up Memories…
@@ -149,16 +157,72 @@ settings.connection.memory_pick.bound:
   es: "Este equipo → %{device}"
 
 settings.connection.memory_pick.need_signin:
-  en: Sign in with Portal first, then find your Memories.
-  es: Primero inicia sesión en el Portal y luego busca tus Memories.
+  en: Sign in with Companion first, then find your Memory.
+  es: Primero inicia sesión con Companion y luego busca tu Memory.
 
 settings.connection.memory_pick.empty:
-  en: No Companion Memory found on your account yet.
-  es: Aún no hay Companion Memory en tu cuenta.
+  en: No Companion Memory found on your account yet. Install Companion Memory on a Hub, then try again.
+  es: Aún no hay Companion Memory en tu cuenta. Instálalo en un Hub y vuelve a intentarlo.
 
 settings.connection.memory_pick.error:
   en: "Couldn't list Memories: %{error}"
   es: "No se pudieron listar Memories: %{error}"
+
+settings.connection.sign_in:
+  en: Sign in with Companion
+  es: Iniciar sesión con Companion
+
+settings.connection.sign_in_help:
+  en: Opens your browser to sign in. We never see your password.
+  es: Se abrirá tu navegador para iniciar sesión. Nunca vemos tu contraseña.
+
+settings.connection.signing_in:
+  en: Opening your browser to sign in…
+  es: Abriendo tu navegador para iniciar sesión…
+
+settings.connection.check:
+  en: Check connection
+  es: Comprobar conexión
+
+settings.connection.switch_memory:
+  en: Switch Memory
+  es: Cambiar Memory
+
+settings.connection.sign_out:
+  en: Sign out
+  es: Cerrar sesión
+
+settings.connection.retry_hint_auth:
+  en: Your session was refused. Sign in again.
+  es: Tu sesión fue rechazada. Inicia sesión de nuevo.
+
+settings.connection.retry_hint_unreachable:
+  en: Memory didn't answer. Check that Companion Memory is running on your Hub, then try again.
+  es: Memory no respondió. Comprueba que Companion Memory esté en marcha en tu Hub e inténtalo de nuevo.
+
+settings.connection.account_label:
+  en: Signed in as
+  es: Sesión de
+
+settings.connection.memory_label:
+  en: Sending to
+  es: Enviando a
+
+settings.connection.memory_card.label:
+  en: Memory
+  es: Memory
+
+settings.connection.memory_card.url:
+  en: URL
+  es: URL
+
+settings.connection.memory_card.open:
+  en: Open
+  es: Abrir
+
+settings.connection.pick_cta:
+  en: Use this Memory
+  es: Usar este Memory
 
 # ── Inline connection test ────────────────────────────────────────────────
 
@@ -231,8 +295,16 @@ settings.error.diff_range:
 # ── Connection tab ────────────────────────────────────────────────────────
 
 settings.connection.subtitle:
-  en: Where your Companion Memory server is, and how this computer signs in to it.
-  es: Dónde está tu servidor de Companion Memory y cómo inicia sesión este equipo.
+  en: Sign in with Companion and we'll connect this computer to your Memory.
+  es: Inicia sesión con Companion y conectaremos este equipo a tu Memory.
+
+settings.advanced.manual_header:
+  en: Manual connection
+  es: Conexión manual
+
+settings.advanced.manual_help:
+  en: For unusual setups. Most people should use Sign in with Companion on the Connection tab.
+  es: Para configuraciones especiales. La mayoría debería usar Iniciar sesión con Companion en Conexión.
 
 settings.connection.server.label:
   en: Your Companion Memory server

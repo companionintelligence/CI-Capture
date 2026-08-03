@@ -22,6 +22,7 @@ use std::time::Duration;
 use reqwest::{Client, StatusCode, Url};
 use serde::Deserialize;
 
+use crate::config::{AppConfig, ServerUrlSource};
 use crate::server_common::normalize_server_url;
 
 /// The marketplace slug for Companion Memory (CI-Server).
@@ -180,6 +181,14 @@ pub fn memory_candidates(apps: &[PortalApp]) -> Vec<PortalApp> {
         });
     }
     out
+}
+
+/// Apply a Portal-discovered Memory choice to config (URL + device bind).
+pub fn apply_discovered_memory(config: &mut AppConfig, core: &PortalApp) {
+    config.server.portal_url = core.url.clone();
+    config.server.url_source = ServerUrlSource::Discovered;
+    config.server.bound_device_slug = core.device_slug.clone();
+    config.server.bound_device_name = core.device_name.clone();
 }
 
 /// Pick a Memory for this install from discovery candidates.

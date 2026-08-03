@@ -422,39 +422,30 @@ test result ([settings_ui.rs:544-548](../src/settings_ui.rs)).
 
 ### 4.2 Connection tab (default)
 
-Header: "Connection" / "Where your Companion Memory server is, and how this
-computer signs in to it."
+Header: "Connection" / "Sign in with Companion and we'll connect this computer
+to your Memory." Portal-first guided state machine (mirrors onboarding Connect).
+Manual URL / API key / OIDC client wiring live under **Advanced → Manual
+connection**.
 
 | Control | What it does | Gating |
 |---------|--------------|--------|
-| **Your Companion Memory server** (mono) | The ingest origin for all three lanes. Caption: everything captured here goes there and nowhere else | Always |
-| Amber cleartext warning | "⚠ This address isn't encrypted…" | Shown when the trimmed value starts with `http://` and contains neither `//localhost` nor `//127.0.0.1`. **Advisory — does not block Save** ([settings_ui.rs:773-791](../src/settings_ui.rs)) |
-| **Authentication** segmented control | Two pills: "API key" / "OIDC browser login". Clicking either counts as a change | Always. Initial mode inferred: OIDC if `oidc_session` exists → API key if a non-blank token exists → OIDC if an issuer is set → API key ([settings_ui.rs:100-119](../src/settings_ui.rs)) |
-| **API Key** (password) | The credential itself. Caption: "Sent as x-api-key. Pasting a key clears any OIDC session." | API-key mode only |
-| **Sign-in details** disclosure | Collapsed (`id_salt("settings_oidc_details")`); holds **Portal sign-in URL**, **Client ID** (hint `ci-applet`), **Scopes**, **Redirect URI** | OIDC mode only. In this mode the API-key field is absent entirely and `build_config` preserves the login-managed bearer from disk ([settings_ui.rs:329-331](../src/settings_ui.rs)) |
-| **This device** card | Two read-only columns: **User** (UUID or faint "set on sign-in") and **Device** (UUID or "registered on sign-in") | No control edits either from this pane |
-| **Test connection** | `connection_test::test_ci_server` — a `{ __typename }` GraphQL probe with the credential attached | Present (`has_connection()` is true). Refuses with "Add your Companion Memory server address first." when the address is blank ([src/connection_test.rs:27-32](../src/connection_test.rs)) |
+| **Status hero** | Live card: Not set up / Signing in / Choose a Memory / Find your Memory / Connected (plus account + Memory target when known) | Always |
+| **Sign in with Companion** | Primary CTA — runs `login_with_portal` (browser OIDC), reloads config, auto-discovers Memory when possible | Signed out |
+| **Memory cards** + **Use this Memory** | One-click bind via `portal_apps::apply_discovered_memory`, then probes | Signed in and multiple Memories, or Switch Memory |
+| **Find my Memory** | Retries Portal `/api/users/me/apps` discovery | Signed in, no Memory URL yet / empty list |
+| **Check connection** | `connection_test::test_ci_server` with Connected/Failed badge (same rect radius as ghost buttons) + actionable hint | Connected |
+| **Switch Memory** / **Sign out** | Ghost actions — re-open picker, or clear session (discovered URL cleared; manual URL kept) | Connected + OIDC for Switch |
+| **This device** card | Read-only User / Device UUIDs | Connected only |
 
-**Use case.** Two things had to be true at once here: a signed-in user must
-never see their raw `id_token` rendered into an "API Key" field, and a
-background token rotation must never be mistaken for the user changing their
-credential. The mode inference handles the first — a present `oidc_session`
-implies the stored token is an id_token, so OIDC is checked before the token
-shape. The second is handled by `build_config` re-reading `oidc_session` and
-`device_id` from disk before layering the form on top, and by `save` clearing
-the session only when the mode is API-key *and* the token actually changed
-([settings_ui.rs:434-444](../src/settings_ui.rs)).
-
-The cleartext warning is advisory on purpose: a LAN Companion Memory server has
-no certificate, so `http://` is the normal case — but it should never be
-silent.
+Footer **Test connection** is **not** shown on Connection (`has_connection()` is
+false for this tab); the probe is the hero CTA.
 
 | ID | Story |
 |----|-------|
-| **SET-4** | As a **self-hoster**, I want to move my Companion Memory server to a new host and repoint the applet, so that a hardware change doesn't mean a reinstall. |
-| **SET-5** | As a **privacy-minded user**, I want to be told when my server address sends captures over the network unencrypted, so that I can choose the Tailscale `https://` name instead. |
-| **SET-6** | As a **signed-in daily user**, I want Settings to show me as using OIDC rather than rendering my JWT into an API-key box, so that my session token isn't displayed as an editable secret. |
-| **SET-7** | As a **support-seeking user**, I want a Test connection button that distinguishes "unreachable" from "credential rejected", so that I know whether to fix the address or the key. |
+| **SET-4** | As a **daily user**, I want one Sign in with Companion button on Connection, so that I never have to type a Memory hostname. |
+| **SET-5** | As a **multi-Hub user**, I want one-click Memory cards after sign-in, so that I can pick which device this Capture sends to. |
+| **SET-6** | As a **signed-in daily user**, I want Settings never to render my JWT into an API-key box on Connection (manual key stays under Advanced). |
+| **SET-7** | As a **support-seeking user**, I want Check connection with a Failed/Connected badge and a hint that distinguishes credential rejection from unreachable Memory. |
 
 ### 4.3 Capture tab
 
