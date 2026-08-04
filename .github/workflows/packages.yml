@@ -1,8 +1,9 @@
 name: Packages
 
 # Builds the Linux container image and publishes it to GitHub Packages
-# (ghcr.io/companionintelligence/ci-capture) on pushes to main, on version
-# tags, and on manual dispatch. Pull requests build the image but don't push.
+# (ghcr.io/companionintelligence/ci-capture) on version tags and on manual
+# dispatch. Version tags must publish automatically so the GHCR image always
+# matches the desktop release built by release.yml from the same tag.
 
 # >>> ci-local:gated original triggers below, restore with `ci-local restore`
 # on:
@@ -13,6 +14,8 @@ name: Packages
 #   workflow_dispatch:
 # <<< ci-local:gated
 on:
+  push:
+    tags: ['v*']
   workflow_dispatch:
 
 permissions:
