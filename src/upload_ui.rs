@@ -23,13 +23,15 @@ pub fn run_upload_ui() -> Result<()> {
     // English fallback instead of the user's language.
     let window_title = rust_i18n::t!("upload.window_title").to_string();
 
-    let mut native_options = NativeOptions::default();
-    native_options.centered = true;
-    native_options.viewport = egui::ViewportBuilder::default()
-        .with_title(window_title.clone())
-        .with_inner_size([700.0, 600.0])
-        .with_min_inner_size([560.0, 440.0])
-        .with_active(true);
+    let mut native_options = NativeOptions {
+        centered: true,
+        viewport: egui::ViewportBuilder::default()
+            .with_title(window_title.clone())
+            .with_inner_size([700.0, 600.0])
+            .with_min_inner_size([560.0, 440.0])
+            .with_active(true),
+        ..Default::default()
+    };
     crate::helper_window::configure_helper_window(&mut native_options);
 
     eframe::run_native(

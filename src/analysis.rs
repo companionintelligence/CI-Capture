@@ -314,10 +314,10 @@ fn sanitize_json_block(raw: &str) -> String {
         let mut lines: Vec<&str> = trimmed.lines().collect();
         if lines.len() >= 2 {
             lines.remove(0);
-            if let Some(last) = lines.last() {
-                if last.trim().starts_with("```") {
-                    lines.pop();
-                }
+            if let Some(last) = lines.last()
+                && last.trim().starts_with("```")
+            {
+                lines.pop();
             }
         }
         return lines.join("\n").trim().to_string();

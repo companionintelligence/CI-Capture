@@ -54,13 +54,15 @@ pub fn run_settings_ui() -> Result<()> {
     let saved_clone = shared_saved.clone();
     let base_clone = base_config.clone();
 
-    let mut native_options = NativeOptions::default();
-    native_options.centered = true;
-    native_options.viewport = egui::ViewportBuilder::default()
-        .with_title(rust_i18n::t!("settings.window_title").to_string())
-        .with_inner_size([1000.0, 700.0])
-        .with_min_inner_size([820.0, 600.0])
-        .with_active(true);
+    let mut native_options = NativeOptions {
+        centered: true,
+        viewport: egui::ViewportBuilder::default()
+            .with_title(rust_i18n::t!("settings.window_title").to_string())
+            .with_inner_size([1000.0, 700.0])
+            .with_min_inner_size([820.0, 600.0])
+            .with_active(true),
+        ..Default::default()
+    };
     crate::helper_window::configure_helper_window(&mut native_options);
 
     eframe::run_native(
@@ -709,7 +711,7 @@ impl SettingsApp {
         let has_api_key = self.form.auth_mode == AuthMode::ApiKey
             && !self.form.applet_auth_token.trim().is_empty();
 
-        if !signed_in && !(has_api_key && has_url) {
+        if !(signed_in || has_api_key && has_url) {
             return ConnectPhase::SignedOut;
         }
         if self.switching_memory
@@ -1388,11 +1390,11 @@ fn render_connection_tab(
         }
     }
 
-    if let Some(Ok(msg) | Err(msg)) = &app.login_status {
-        if phase != ConnectPhase::SigningIn {
-            ui.add_space(10.0);
-            theme::caption(ui, msg);
-        }
+    if let Some(Ok(msg) | Err(msg)) = &app.login_status
+        && phase != ConnectPhase::SigningIn
+    {
+        ui.add_space(10.0);
+        theme::caption(ui, msg);
     }
 
     if phase == ConnectPhase::Connected {
@@ -1810,61 +1812,6 @@ fn render_advanced_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bool 
     changed
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{AuthMode, SettingsFormState};
-    use crate::config::{AppConfig, OidcSession};
-    use crate::server_common::normalize_server_url;
-
-    #[test]
-    fn oidc_session_infers_oidc_mode_not_api_key() {
-        // Post-login state: the id_token lives in applet_auth_token AND an
-        // oidc_session is present. Must read as OIDC, not API key (which would
-        // render the raw JWT in the key field).
-        let mut config = AppConfig::default();
-        config.server.applet_auth_token = Some("eyJhbGciOi.header.sig".to_string());
-        config.oidc_session = Some(OidcSession {
-            id_token: Some("eyJhbGciOi.header.sig".to_string()),
-            ..OidcSession::default()
-        });
-        assert_eq!(SettingsFormState::from(&config).auth_mode, AuthMode::Oidc);
-    }
-
-    #[test]
-    fn pasted_key_without_session_infers_api_key_mode() {
-        let mut config = AppConfig::default();
-        config.server.applet_auth_token = Some("deadbeef".repeat(8)); // 64-hex-ish key
-        assert_eq!(SettingsFormState::from(&config).auth_mode, AuthMode::ApiKey);
-    }
-
-    #[test]
-    fn issuer_only_infers_oidc_mode() {
-        let mut config = AppConfig::default();
-        config.oidc.issuer = "https://hub.example.com/api/auth".to_string();
-        assert_eq!(SettingsFormState::from(&config).auth_mode, AuthMode::Oidc);
-    }
-
-    #[test]
-    fn feed_page_url_normalizes_to_origin() {
-        assert_eq!(
-            normalize_server_url("https://ci-server.localhost/feed").unwrap(),
-            "https://ci-server.localhost/"
-        );
-        assert_eq!(
-            normalize_server_url("https://ci.example.com/feed?cursor=abc").unwrap(),
-            "https://ci.example.com/"
-        );
-    }
-
-    #[test]
-    fn api_base_path_is_preserved() {
-        assert_eq!(
-            normalize_server_url("https://ci.example.com/api").unwrap(),
-            "https://ci.example.com/api"
-        );
-    }
-}
-
 fn render_capture_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bool {
     let mut changed = false;
     page_header(
@@ -2280,4 +2227,59 @@ fn render_postgres_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bool 
         &rust_i18n::t!("settings.database.ssl.detail"),
     );
     changed
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AuthMode, SettingsFormState};
+    use crate::config::{AppConfig, OidcSession};
+    use crate::server_common::normalize_server_url;
+
+    #[test]
+    fn oidc_session_infers_oidc_mode_not_api_key() {
+        // Post-login state: the id_token lives in applet_auth_token AND an
+        // oidc_session is present. Must read as OIDC, not API key (which would
+        // render the raw JWT in the key field).
+        let mut config = AppConfig::default();
+        config.server.applet_auth_token = Some("eyJhbGciOi.header.sig".to_string());
+        config.oidc_session = Some(OidcSession {
+            id_token: Some("eyJhbGciOi.header.sig".to_string()),
+            ..OidcSession::default()
+        });
+        assert_eq!(SettingsFormState::from(&config).auth_mode, AuthMode::Oidc);
+    }
+
+    #[test]
+    fn pasted_key_without_session_infers_api_key_mode() {
+        let mut config = AppConfig::default();
+        config.server.applet_auth_token = Some("deadbeef".repeat(8)); // 64-hex-ish key
+        assert_eq!(SettingsFormState::from(&config).auth_mode, AuthMode::ApiKey);
+    }
+
+    #[test]
+    fn issuer_only_infers_oidc_mode() {
+        let mut config = AppConfig::default();
+        config.oidc.issuer = "https://hub.example.com/api/auth".to_string();
+        assert_eq!(SettingsFormState::from(&config).auth_mode, AuthMode::Oidc);
+    }
+
+    #[test]
+    fn feed_page_url_normalizes_to_origin() {
+        assert_eq!(
+            normalize_server_url("https://ci-server.localhost/feed").unwrap(),
+            "https://ci-server.localhost/"
+        );
+        assert_eq!(
+            normalize_server_url("https://ci.example.com/feed?cursor=abc").unwrap(),
+            "https://ci.example.com/"
+        );
+    }
+
+    #[test]
+    fn api_base_path_is_preserved() {
+        assert_eq!(
+            normalize_server_url("https://ci.example.com/api").unwrap(),
+            "https://ci.example.com/api"
+        );
+    }
 }
