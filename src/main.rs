@@ -54,7 +54,6 @@ use tokio::runtime::Runtime;
 use tray_icon::menu::{MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use uuid::Uuid;
-use whoami;
 
 use crate::worker::WorkerHandle;
 use onboarding_ui::run_onboarding_ui;

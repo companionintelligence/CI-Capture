@@ -23,6 +23,7 @@ use std::fmt;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PermissionStatus {
     /// Confirmed granted.
+    #[allow(dead_code)]
     Granted,
     /// Confirmed missing — capture will silently fail until the user grants it.
     Denied,

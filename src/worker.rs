@@ -1,4 +1,3 @@
-use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -61,7 +60,7 @@ impl WorkerHandle {
     }
 
     pub fn update_config(&self, config: AppConfig) {
-        let _ = self.tx.send(WorkerCommand::UpdateConfig(config));
+        let _ = self.tx.send(WorkerCommand::UpdateConfig(Box::new(config)));
     }
 
     pub fn pause(&self) {
@@ -86,7 +85,7 @@ impl WorkerHandle {
 }
 
 enum WorkerCommand {
-    UpdateConfig(AppConfig),
+    UpdateConfig(Box<AppConfig>),
     Pause,
     Resume,
     CaptureNow,
@@ -506,7 +505,7 @@ impl WorkerState {
                     || self.config.identity != config.identity
                     || self.config.server != config.server;
 
-                self.config = config;
+                self.config = *config;
                 self.publish_sweep_context();
                 *interval = build_interval(self.config.capture.screenshot_interval_secs);
 

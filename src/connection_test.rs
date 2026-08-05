@@ -99,28 +99,28 @@ pub async fn test_ci_server(config: &AppConfig) -> Result<String, String> {
 
     // Fall back to the health endpoint so a GraphQL route miss still confirms
     // basic reachability — but still refuse redirects / HTML login pages.
-    if let Ok(health) = origin.join("/health") {
-        if let Ok(resp) = client.get(health).send().await {
-            let status = resp.status();
-            if status.is_redirection() {
-                return Err(rust_i18n::t!("status.check.edge_sso_intercept").to_string());
-            }
-            let ct = resp
-                .headers()
-                .get(reqwest::header::CONTENT_TYPE)
-                .and_then(|v| v.to_str().ok())
-                .map(|s| s.to_string());
-            let body = resp.text().await.unwrap_or_default();
-            if looks_like_html(&body, ct.as_deref()) {
-                return Err(rust_i18n::t!("status.check.edge_sso_intercept").to_string());
-            }
-            if status.is_success() {
-                return Ok(rust_i18n::t!(
-                    "status.check.health_fallback",
-                    status = status.as_u16()
-                )
-                .to_string());
-            }
+    if let Ok(health) = origin.join("/health")
+        && let Ok(resp) = client.get(health).send().await
+    {
+        let status = resp.status();
+        if status.is_redirection() {
+            return Err(rust_i18n::t!("status.check.edge_sso_intercept").to_string());
+        }
+        let ct = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
+        let body = resp.text().await.unwrap_or_default();
+        if looks_like_html(&body, ct.as_deref()) {
+            return Err(rust_i18n::t!("status.check.edge_sso_intercept").to_string());
+        }
+        if status.is_success() {
+            return Ok(rust_i18n::t!(
+                "status.check.health_fallback",
+                status = status.as_u16()
+            )
+            .to_string());
         }
     }
 
