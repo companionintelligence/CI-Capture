@@ -870,6 +870,8 @@ fn is_capture_blocked() -> bool {
 
 #[cfg(target_os = "macos")]
 fn is_macos_screensaver_running() -> bool {
+    use std::process::Command;
+
     Command::new("pgrep")
         .args(["-x", "ScreenSaverEngine"])
         .status()
