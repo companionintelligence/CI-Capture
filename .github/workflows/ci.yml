@@ -1,13 +1,9 @@
 name: CI
 
-# >>> ci-local:gated original triggers below, restore with `ci-local restore`
-# on:
-#   push:
-#     branches: [main]
-#   pull_request:
-# <<< ci-local:gated
 on:
-  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
 
 concurrency:
   group: ci-${{ github.ref }}
