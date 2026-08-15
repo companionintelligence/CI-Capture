@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
 use eframe::{NativeOptions, egui};
@@ -330,6 +330,8 @@ struct SettingsApp {
     login_status: Option<Result<String, String>>,
     /// One-shot latch for [`theme::center_once`].
     centered: bool,
+    local_backlog: crate::backlog::LocalBacklog,
+    backlog_scanned_at: Instant,
 }
 
 impl SettingsApp {
@@ -374,7 +376,27 @@ impl SettingsApp {
             login_busy: false,
             login_status: None,
             centered: false,
+            local_backlog: crate::backlog::LocalBacklog::default(),
+            backlog_scanned_at: Instant::now() - Duration::from_secs(60),
         }
+    }
+
+    fn refresh_backlog(&mut self) {
+        let config = self.base_config.lock().clone();
+        self.local_backlog = crate::backlog::collect(&config);
+        self.backlog_scanned_at = Instant::now();
+    }
+
+    fn memory_looks_disconnected(&self) -> bool {
+        !matches!(self.connect_phase(), ConnectPhase::Connected)
+            || matches!(
+                self.tests.get(&SettingsTab::Connection),
+                Some(TestState::Err(_))
+            )
+    }
+
+    fn should_show_backlog_warning(&self) -> bool {
+        crate::backlog::should_warn(&self.local_backlog, self.memory_looks_disconnected())
     }
 
     /// Build an `AppConfig` from the current form, layered onto the last saved
@@ -893,6 +915,10 @@ impl eframe::App for SettingsApp {
         self.drain_tests();
         self.drain_login(ctx);
         self.drain_discoveries(ctx);
+        if self.backlog_scanned_at.elapsed() >= Duration::from_secs(15) {
+            self.refresh_backlog();
+        }
+        ctx.request_repaint_after(Duration::from_secs(15));
         self.render_sidebar(ctx);
         self.render_footer(ctx);
 
@@ -1002,6 +1028,17 @@ impl SettingsApp {
                         });
                         ui.add_space(5.0);
                         theme::caption(ui, &sub);
+                        if self.should_show_backlog_warning() {
+                            ui.add_space(4.0);
+                            theme::caption(
+                                ui,
+                                &rust_i18n::t!(
+                                    "settings.backlog.sidebar",
+                                    count = self.local_backlog.waiting_count()
+                                )
+                                .to_string(),
+                            );
+                        }
                         ui.add_space(10.0);
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 6.0;
@@ -1123,6 +1160,71 @@ fn render_test_row(ui: &mut egui::Ui, state: Option<&TestState>) -> bool {
     clicked
 }
 
+fn format_bytes(bytes: u64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = KB * 1024.0;
+    const GB: f64 = MB * 1024.0;
+    let n = bytes as f64;
+    if n >= GB {
+        format!("{:.1} GB", n / GB)
+    } else if n >= MB {
+        format!("{:.1} MB", n / MB)
+    } else if n >= KB {
+        format!("{:.0} KB", n / KB)
+    } else {
+        format!("{bytes} B")
+    }
+}
+
+fn backlog_warning_copy(app: &SettingsApp) -> (String, String) {
+    let disconnected = app.memory_looks_disconnected();
+    let shots = &app.local_backlog.screenshots;
+    let files = app.local_backlog.file_events;
+    let activity = app.local_backlog.activity.count as u64;
+    if shots.is_empty() {
+        let waiting = files + activity;
+        let detail = if disconnected {
+            rust_i18n::t!("settings.backlog.files_only.disconnected", count = waiting)
+        } else {
+            rust_i18n::t!("settings.backlog.files_only.stuck", count = waiting)
+        };
+        let title = if disconnected {
+            rust_i18n::t!("settings.backlog.files_only.disconnected.title")
+        } else {
+            rust_i18n::t!("settings.backlog.files_only.stuck.title")
+        };
+        return (title.to_string(), detail.to_string());
+    }
+    let size = format_bytes(shots.bytes);
+    let (title, mut detail) = if disconnected {
+        (
+            rust_i18n::t!("settings.backlog.disconnected.title").to_string(),
+            rust_i18n::t!(
+                "settings.backlog.disconnected.detail",
+                count = shots.count,
+                size = size.as_str()
+            )
+            .to_string(),
+        )
+    } else {
+        (
+            rust_i18n::t!("settings.backlog.stuck.title").to_string(),
+            rust_i18n::t!(
+                "settings.backlog.stuck.detail",
+                count = shots.count,
+                size = size.as_str()
+            )
+            .to_string(),
+        )
+    };
+    let extras = files + activity;
+    if extras > 0 {
+        detail.push(' ');
+        detail.push_str(&rust_i18n::t!("settings.backlog.files", count = extras).to_string());
+    }
+    (title, detail)
+}
+
 /// Page title + descriptive subtitle.
 fn page_header(ui: &mut egui::Ui, title: &str, subtitle: &str) {
     theme::heading(ui, title);
@@ -1200,6 +1302,27 @@ fn render_connection_tab(
         });
     });
     ui.add_space(14.0);
+
+    if app.should_show_backlog_warning() {
+        let (title, detail) = backlog_warning_copy(app);
+        theme::card(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                theme::status_dot(ui, theme::AMBER(), true);
+                ui.add_space(8.0);
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 3.0;
+                    ui.label(
+                        egui::RichText::new(title)
+                            .font(theme::semibold(tokens::text::BODY))
+                            .color(theme::TEXT()),
+                    );
+                    theme::caption(ui, &detail);
+                });
+            });
+        });
+        ui.add_space(14.0);
+    }
 
     match phase {
         ConnectPhase::SignedOut => {

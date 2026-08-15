@@ -136,6 +136,46 @@ settings.status.needs_memory.detail:
   en: Signed in — we couldn't find a Companion Memory on your account yet
   es: Sesión iniciada — aún no encontramos un Companion Memory en tu cuenta
 
+settings.backlog.disconnected.title:
+  en: Screenshots are waiting on this Mac
+  es: Hay capturas esperando en este Mac
+
+settings.backlog.disconnected.detail:
+  en: "%{count} screenshots (%{size}) have not reached Memory. They stay here until the connection works, then they upload and this folder empties."
+  es: "%{count} capturas (%{size}) no han llegado a Memory. Se quedan aquí hasta que la conexión funcione; luego se suben y esta carpeta se vacía."
+
+settings.backlog.stuck.title:
+  en: Screenshots are not reaching Memory
+  es: Las capturas no están llegando a Memory
+
+settings.backlog.stuck.detail:
+  en: "%{count} screenshots (%{size}) are still on this Mac. Check the connection above."
+  es: "%{count} capturas (%{size}) siguen en este Mac. Comprueba la conexión arriba."
+
+settings.backlog.files:
+  en: "%{count} file edits are also waiting."
+  es: "También hay %{count} ediciones de archivos esperando."
+
+settings.backlog.files_only.disconnected.title:
+  en: File edits are waiting on this Mac
+  es: Hay ediciones de archivos esperando en este Mac
+
+settings.backlog.files_only.disconnected:
+  en: "%{count} file edits are sitting on this Mac and will not reach Memory until you reconnect."
+  es: "%{count} ediciones de archivos están en este Mac y no llegarán a Memory hasta que vuelvas a conectar."
+
+settings.backlog.files_only.stuck.title:
+  en: File edits are not reaching Memory
+  es: Las ediciones de archivos no están llegando a Memory
+
+settings.backlog.files_only.stuck:
+  en: "%{count} file edits have not reached Memory yet."
+  es: "%{count} ediciones de archivos aún no han llegado a Memory."
+
+settings.backlog.sidebar:
+  en: "%{count} waiting locally"
+  es: "%{count} esperando aquí"
+
 settings.connection.memory_pick.label:
   en: Companion Memory on your devices
   es: Companion Memory en tus equipos

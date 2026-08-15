@@ -18,7 +18,7 @@ Runs Companion Capture background capture loops. It manages screenshot capture/a
 - **Does**: Captures a `vizier` snapshot, turns later snapshots into diff envelopes, and records them through CI-Server when paired, otherwise through the legacy Postgres writer.
 - **Interacts with**: `vizier::observer`, `vizier::diff`, `server_ingest.rs`, and `db.rs`.
 - **Rationale**: Embeds the observation pipeline directly instead of shelling out to `vz`, which avoids subprocess/PATH issues.
-- **Resilience**: Skips payloads larger than `MAX_VIZIER_PAYLOAD_BYTES` (under CI-Server's body limit) and treats send failures as non-fatal — `vizier_previous` advances regardless, so a rejected baseline becomes a small diff next tick instead of re-sending forever.
+- **Resilience**: Skips payloads larger than `MAX_VIZIER_PAYLOAD_BYTES`. Failed or disconnected sends are parked as `vizier_*.json` next to screenshots and drained on reconnect, same delete-on-ack rule as the screenshot store.
 
 ### `WorkerState::capture_once`
 - **Does**: Preserves the existing screenshot path and analysis queue behavior while snapshotting the current config into each queued capture so later config changes apply without a restart.

@@ -1,4 +1,5 @@
 mod analysis;
+mod backlog;
 mod capture;
 mod capture_store;
 mod config;
@@ -52,7 +53,7 @@ use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy, EventLoopWi
 use tinyfiledialogs::{self as dialogs, MessageBoxIcon};
 use tokio::runtime::Runtime;
 use tray_icon::menu::{MenuEvent, MenuItem, PredefinedMenuItem};
-use tray_icon::{Icon, TrayIcon, TrayIconBuilder, TrayIconEvent};
+use tray_icon::{ClickType, Icon, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use uuid::Uuid;
 
 use crate::worker::WorkerHandle;
@@ -164,6 +165,7 @@ fn main() -> Result<()> {
     let tray_menu = menu_state.menu.clone();
     let tray_icon = TrayIconBuilder::new()
         .with_menu(Box::new(tray_menu))
+        .with_menu_on_left_click(false)
         .with_tooltip("Companion Capture")
         .with_icon(icon)
         .with_icon_as_template(true)
@@ -316,6 +318,9 @@ impl AppController {
 
     fn handle_tray_event(&mut self, event: TrayIconEvent) {
         log::debug!("tray event: {event:?}");
+        if tray_click_opens_settings(event.click_type) {
+            self.open_settings_window();
+        }
     }
 
     fn handle_app_event(&mut self, event: AppEvent, _target: &EventLoopWindowTarget<AppEvent>) {
@@ -689,24 +694,30 @@ impl MenuState {
         // Truthful status: missing sign-in, missing Memory, or blocked
         // permissions must not read as "Monitoring".
         let connection = tray_connection(config);
-        let status = match connection {
-            TrayConnection::NeedsSignIn => t!("tray.state_sign_in_needed"),
-            TrayConnection::NeedsMemory => t!("tray.state_memory_disconnected"),
-            TrayConnection::Ready
-                if permissions::permissions_relevant()
-                    && permissions::status().needs_attention() =>
-            {
-                t!("tray.state_permissions_needed")
+        let backlog = crate::backlog::collect(config);
+        let disconnected = !matches!(connection, TrayConnection::Ready);
+        let status = if crate::backlog::should_warn(&backlog, disconnected) {
+            t!("tray.state_backlog", count = backlog.waiting_count())
+        } else {
+            match connection {
+                TrayConnection::NeedsSignIn => t!("tray.state_sign_in_needed"),
+                TrayConnection::NeedsMemory => t!("tray.state_memory_disconnected"),
+                TrayConnection::Ready
+                    if permissions::permissions_relevant()
+                        && permissions::status().needs_attention() =>
+                {
+                    t!("tray.state_permissions_needed")
+                }
+                // Signed in with a Memory URL but device registration hasn't landed
+                // (often Hub edge blocked POST /devices). Don't claim Monitoring.
+                TrayConnection::Ready
+                    if config.oidc_session.is_some() && config.identity.device_id.is_none() =>
+                {
+                    t!("tray.state_device_pending")
+                }
+                TrayConnection::Ready if running => t!("tray.state_monitoring"),
+                TrayConnection::Ready => t!("tray.state_paused"),
             }
-            // Signed in with a Memory URL but device registration hasn't landed
-            // (often Hub edge blocked POST /devices). Don't claim Monitoring.
-            TrayConnection::Ready
-                if config.oidc_session.is_some() && config.identity.device_id.is_none() =>
-            {
-                t!("tray.state_device_pending")
-            }
-            TrayConnection::Ready if running => t!("tray.state_monitoring"),
-            TrayConnection::Ready => t!("tray.state_paused"),
         };
         self.status_item
             .set_text(&*t!("tray.status", state = status));
@@ -838,6 +849,11 @@ enum TrayConnection {
     NeedsSignIn,
     NeedsMemory,
     Ready,
+}
+
+/// Left-click (and double-click) open Settings. Right-click keeps the menu.
+fn tray_click_opens_settings(click: ClickType) -> bool {
+    matches!(click, ClickType::Left | ClickType::Double)
 }
 
 fn tray_connection(config: &AppConfig) -> TrayConnection {
@@ -1778,6 +1794,18 @@ fn apply_refreshed_tokens(
         }
     }
     config.oidc_session = Some(session);
+}
+
+#[cfg(test)]
+mod tray_click_tests {
+    use super::*;
+
+    #[test]
+    fn left_and_double_open_settings_right_does_not() {
+        assert!(tray_click_opens_settings(ClickType::Left));
+        assert!(tray_click_opens_settings(ClickType::Double));
+        assert!(!tray_click_opens_settings(ClickType::Right));
+    }
 }
 
 #[cfg(test)]
