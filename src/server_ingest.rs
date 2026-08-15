@@ -354,8 +354,8 @@ pub async fn ingest_vizier_event(
         },
     )
     .await
-    // The vizier lane is fire-and-forget (no durable queue), so the
-    // permanent/transient distinction has no consumer — flatten to anyhow.
+    // The worker parks a failed send on disk and retries from the store
+    // sweep, so flatten to anyhow the same way screenshot ingest does.
     .map_err(anyhow::Error::from)
 }
 

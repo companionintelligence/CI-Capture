@@ -6,7 +6,7 @@ Owns the tray application lifecycle, menu actions, configuration reloads, worker
 ## Components
 
 ### `AppController`
-- **Does**: Handles tray actions, settings reloads, worker state, and portal pairing completion events.
+- **Does**: Handles tray actions, settings reloads, worker state, and portal pairing completion events. Left-click (and double-click) on the tray icon opens Settings; right-click still shows the menu.
 - **Interacts with**: `WorkerHandle`, `ConfigManager`, `oidc.rs`, and `settings_ui.rs`.
 
 ### `launch_portal_login`

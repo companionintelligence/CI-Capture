@@ -165,17 +165,18 @@ async fn run_worker(
     Ok(())
 }
 
-/// How often the analysis loop sweeps `storage_dir` for retention pruning
+/// How often the analysis loop sweeps local stores for retention pruning
 /// and backlog re-upload.
-const STORE_SWEEP_INTERVAL: Duration = Duration::from_secs(5 * 60);
+const STORE_SWEEP_INTERVAL: Duration = Duration::from_secs(60);
 
 async fn run_analysis_loop(
     rx: &mut Receiver<PendingCapture>,
-    config_watch: tokio::sync::watch::Receiver<SweepContext>,
+    mut config_watch: tokio::sync::watch::Receiver<SweepContext>,
 ) {
     let analyzer = VisionAnalyzer::default();
     let mut sweep_tick = time::interval(STORE_SWEEP_INTERVAL);
     sweep_tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let mut was_configured = server_ingest::is_configured(&config_watch.borrow().config);
 
     loop {
         tokio::select! {
@@ -185,7 +186,18 @@ async fn run_analysis_loop(
             }
             _ = sweep_tick.tick() => {
                 let ctx = config_watch.borrow().clone();
-                sweep_capture_store(&analyzer, &ctx).await;
+                sweep_capture_store(&analyzer, &ctx, false).await;
+                sweep_activity_store(&ctx, false).await;
+            }
+            Ok(()) = config_watch.changed() => {
+                let ctx = config_watch.borrow().clone();
+                let now_configured = server_ingest::is_configured(&ctx.config);
+                if now_configured && !was_configured {
+                    log::info!("Memory connected; draining local capture backlog");
+                    sweep_capture_store(&analyzer, &ctx, true).await;
+                    sweep_activity_store(&ctx, true).await;
+                }
+                was_configured = now_configured;
             }
         }
     }
@@ -232,7 +244,7 @@ async fn handle_fresh_capture(analyzer: &VisionAnalyzer, capture: &PendingCaptur
 /// definition unacked — successful ingest deletes it — so this is what makes
 /// the screenshot lane durable across outages, auth expiry, dropped analysis
 /// slots, and restarts.
-async fn sweep_capture_store(analyzer: &VisionAnalyzer, ctx: &SweepContext) {
+async fn sweep_capture_store(analyzer: &VisionAnalyzer, ctx: &SweepContext, force: bool) {
     let config = &ctx.config;
     let storage_dir = config.capture.storage_dir.clone();
     let entries = tokio::task::spawn_blocking(move || crate::capture_store::scan(&storage_dir))
@@ -242,8 +254,12 @@ async fn sweep_capture_store(analyzer: &VisionAnalyzer, ctx: &SweepContext) {
         return;
     }
 
-    let plan =
-        crate::capture_store::plan_sweep(entries, &config.capture, std::time::SystemTime::now());
+    let now = std::time::SystemTime::now();
+    let plan = if force {
+        crate::capture_store::plan_reconnect_sweep(entries, &config.capture, now)
+    } else {
+        crate::capture_store::plan_sweep(entries, &config.capture, now)
+    };
 
     for path in &plan.prune {
         match std::fs::remove_file(path) {
@@ -278,6 +294,87 @@ async fn sweep_capture_store(analyzer: &VisionAnalyzer, ctx: &SweepContext) {
         // Same path as a fresh capture — deletes the file on server ack.
         ingest_capture_to_server(analyzer, config, &filename, &png_bytes).await;
     }
+}
+
+async fn sweep_activity_store(ctx: &SweepContext, force: bool) {
+    let config = &ctx.config;
+    let dir = crate::capture_store::activity_dir(&config.capture.storage_dir);
+    let scan_dir = dir.clone();
+    let entries =
+        tokio::task::spawn_blocking(move || crate::capture_store::scan_activity(&scan_dir))
+            .await
+            .unwrap_or_default();
+    if entries.is_empty() {
+        return;
+    }
+
+    let now = std::time::SystemTime::now();
+    let plan = if force {
+        crate::capture_store::plan_reconnect_sweep(entries, &config.capture, now)
+    } else {
+        crate::capture_store::plan_sweep(entries, &config.capture, now)
+    };
+
+    for path in &plan.prune {
+        match std::fs::remove_file(path) {
+            Ok(()) => log::info!("retention: pruned {}", path.display()),
+            Err(err) => log::warn!("retention: failed to prune {}: {err}", path.display()),
+        }
+    }
+
+    if !ctx.active || !server_ingest::is_configured(config) {
+        return;
+    }
+
+    for path in &plan.retry {
+        let read_path = path.clone();
+        let bytes = match tokio::task::spawn_blocking(move || std::fs::read(read_path)).await {
+            Ok(Ok(b)) => b,
+            Ok(Err(err)) => {
+                log::warn!("activity retry: cannot read {}: {err}", path.display());
+                continue;
+            }
+            Err(err) => {
+                log::warn!("activity retry: read task failed: {err}");
+                continue;
+            }
+        };
+        let event: VizierEventRecord = match serde_json::from_slice(&bytes) {
+            Ok(e) => e,
+            Err(err) => {
+                log::warn!("activity retry: bad payload {}: {err}", path.display());
+                continue;
+            }
+        };
+        log::info!("activity retry: re-sending {}", path.display());
+        match server_ingest::ingest_vizier_event(config, event.device_id, &event).await {
+            Ok(()) => {
+                if let Err(err) = std::fs::remove_file(path)
+                    && err.kind() != std::io::ErrorKind::NotFound
+                {
+                    log::warn!("failed to remove acked activity {}: {err}", path.display());
+                }
+            }
+            Err(err) => log::warn!("activity retry failed (will keep on disk): {err:?}"),
+        }
+    }
+}
+
+fn persist_vizier_event(config: &AppConfig, event: &VizierEventRecord) -> Result<()> {
+    let dir = crate::capture_store::activity_dir(&config.capture.storage_dir);
+    std::fs::create_dir_all(&dir)
+        .with_context(|| format!("creating activity dir {}", dir.display()))?;
+    let slug = event.observed_at.format("%Y%m%dT%H%M%S");
+    let path = dir.join(format!(
+        "vizier_{}_{}_{}.json",
+        slug,
+        event.monotonic_ms,
+        Uuid::new_v4()
+    ));
+    let bytes = serde_json::to_vec(event).context("serializing vizier event")?;
+    std::fs::write(&path, bytes)
+        .with_context(|| format!("writing activity event {}", path.display()))?;
+    Ok(())
 }
 
 /// Upload a capture to CI-Server. When the applet has its own vision endpoint
@@ -461,15 +558,15 @@ impl WorkerState {
 
     /// (Re)start the file-tracking lane to match the current config. No-op
     /// (after stopping any prior task) when the lane isn't runnable —
-    /// identity unset, no watched folders, or no server token.
+    /// disabled or no watched folders. A missing Memory token still runs
+    /// the watcher so edits queue for reconnect.
     async fn restart_file_tracker(&mut self) {
         self.stop_file_tracker().await;
         if !file_tracker::is_runnable(&self.config) {
             log::debug!(
-                "file tracker idle (enabled={}, folders={}, server={})",
+                "file tracker idle (enabled={}, folders={})",
                 self.config.file_tracker.enabled,
                 self.config.file_tracker.watched_paths.len(),
-                server_ingest::is_configured(&self.config),
             );
             return;
         }
@@ -676,16 +773,15 @@ impl WorkerState {
             } else if let Err(err) =
                 server_ingest::ingest_vizier_event(&self.config, device_id, &event).await
             {
-                // Same reasoning as the oversize path. This lane is
-                // fire-and-forget with no durable queue, so an unacknowledged
-                // send is simply lost — and advancing the baseline anyway would
-                // make every subsequent tick a patch against a state the server
-                // never received, desyncing its view of the activity timeline
-                // permanently. On a laptop (sleep/wake, changing networks) that
-                // is routine, not rare. Resetting costs one larger snapshot on
-                // the next tick and self-heals on the first reconnect.
+                // Keep the event on disk and reset the baseline so the next
+                // live tick is a snapshot, not a patch against state Memory
+                // never held. The store sweep sends the parked event on
+                // reconnect.
+                if let Err(persist_err) = persist_vizier_event(&self.config, &event) {
+                    log::warn!("failed to park vizier event: {persist_err:?}");
+                }
                 log::warn!(
-                    "failed to write vizier event via CI-Server, resetting baseline: {err:?}"
+                    "failed to write vizier event via CI-Server, parked for retry: {err:?}"
                 );
                 self.vizier_previous = None;
                 self.vizier_session_id = Uuid::new_v4();
@@ -694,21 +790,20 @@ impl WorkerState {
         } else {
             #[cfg(feature = "legacy-postgres")]
             if let Some(recorder) = build_legacy_recorder(&self.config) {
-                if let Err(err) = recorder.record_vizier_event(event).await {
+                if let Err(err) = recorder.record_vizier_event(event.clone()).await {
                     log::warn!("failed to write vizier event to postgres: {err:?}");
                 }
             }
-            // Default build: there is deliberately no fallback. Writing activity
-            // data — window titles, terminal cwd, filesystem deltas — from the
-            // client straight into a plaintext database is precisely what the
-            // server-relay model exists to prevent. Say so once per tick at
-            // debug, and let the tray's "⚠︎ Setup needed" status carry the
-            // user-visible signal.
-            #[cfg(not(feature = "legacy-postgres"))]
-            log::debug!(
-                "no server credential; dropping vizier {} (activity capture needs a Companion Memory server)",
-                event.event_kind
-            );
+            // No Memory yet: park the event the same way screenshots stay on
+            // disk. The sweep drains it after sign-in.
+            if let Err(err) = persist_vizier_event(&self.config, &event) {
+                log::warn!("failed to park vizier event while disconnected: {err:?}");
+            } else {
+                log::debug!(
+                    "no server credential; parked vizier {} for reconnect",
+                    event.event_kind
+                );
+            }
         }
 
         // Advance the baseline only on a successful send (every failure path

@@ -55,12 +55,10 @@ const TICK_BUDGET: Duration = Duration::from_secs(20);
 /// to notice before more events park.
 const MAX_PARKS_PER_TICK: usize = 5;
 
-/// True if the lane has everything it needs to run: enabled, an identity to
-/// attribute events to, a place to send them, and at least one folder.
+/// True if the lane should watch and queue. A missing Memory credential
+/// does **not** idle the watcher — events stay in SQLite until reconnect.
 pub fn is_runnable(config: &AppConfig) -> bool {
-    config.file_tracker.enabled
-        && !config.file_tracker.watched_paths.is_empty()
-        && server_ingest::is_configured(config)
+    config.file_tracker.enabled && !config.file_tracker.watched_paths.is_empty()
 }
 
 /// Run the file-tracking lane until the watcher stops (or the task is
@@ -124,6 +122,9 @@ pub async fn run(config: AppConfig, queue_path: PathBuf) -> Result<()> {
                 }
             }
             _ = sync_tick.tick() => {
+                if !server_ingest::is_configured(&config) {
+                    continue; // keep queueing; drain when Memory is back
+                }
                 if let Some(until) = backoff_until
                     && Instant::now() < until
                 {
@@ -367,6 +368,17 @@ mod tests {
     #[test]
     fn short_string_is_untouched() {
         assert_eq!(truncate_on_char_boundary("hi", 100), "hi");
+    }
+
+    #[test]
+    fn runnable_without_a_server_so_outages_still_queue() {
+        let mut config = AppConfig::default();
+        config.file_tracker.enabled = true;
+        config.file_tracker.watched_paths = vec![PathBuf::from("/tmp")];
+        config.server.applet_auth_token = None;
+        assert!(is_runnable(&config));
+        config.file_tracker.watched_paths.clear();
+        assert!(!is_runnable(&config));
     }
 }
 

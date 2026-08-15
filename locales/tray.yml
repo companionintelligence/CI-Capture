@@ -37,6 +37,10 @@ tray.state_memory_disconnected:
   en: "⚠︎ Memory not connected"
   es: "⚠︎ Memory no conectada"
 
+tray.state_backlog:
+  en: "⚠︎ %{count} waiting to reach Memory"
+  es: "⚠︎ %{count} esperando a Memory"
+
 tray.state_device_pending:
   en: "⚠︎ Finishing device setup"
   es: "⚠︎ Terminando el dispositivo"

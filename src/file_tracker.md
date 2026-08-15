@@ -6,9 +6,9 @@ Runs the file-activity capture lane. It watches configured folders, stores norma
 ## Components
 
 ### `is_runnable`
-- **Does**: Determines whether file tracking can run from current config.
-- **Interacts with**: `worker.rs` and `server_ingest::is_configured`.
-- **Rationale**: API-key auth lets CI-Server derive the user, so local identity IDs are no longer required for server ingest mode.
+- **Does**: Determines whether the watcher should run and queue events. Enabled plus at least one watched folder. A missing Memory credential does not idle the lane.
+- **Interacts with**: `worker.rs`. Sync still checks `server_ingest::is_configured` before POSTing.
+- **Rationale**: Outages must still record edits; the SQLite queue is the backfill.
 
 ### `run`
 - **Does**: Owns the watcher, SQLite queue, conversion, and sync loop for file events.
@@ -18,5 +18,5 @@ Runs the file-activity capture lane. It watches configured folders, stores norma
 
 | Dependent | Expects | Breaking changes |
 |-----------|---------|------------------|
-| `worker.rs` | Runnable means enabled, has watched folders, and has a server credential | Requiring local user/device IDs for API-key mode |
+| `worker.rs` | Runnable means enabled and has watched folders | Requiring a live Memory credential to watch |
 | `server_ingest.rs` | File events include stable event IDs and payload metadata | Dropping `event_id` or content payloads |

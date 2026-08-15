@@ -6,7 +6,7 @@ Provides the standalone egui settings window for Companion Capture configuration
 ## Components
 
 ### `SettingsApp::render_sidebar` / `render_footer`
-- **Does**: Draw the left nav (`theme::nav_item` per tab, logo header, bottom connection card) and the bottom footer (config path or current error, plus `theme::ghost_button`/`primary_button`). `connection_status` derives a coarse Configured/Incomplete/Not-configured hint from config presence (no network probe).
+- **Does**: Draw the left nav (`theme::nav_item` per tab, logo header, bottom connection card) and the bottom footer (config path or current error, plus `theme::ghost_button`/`primary_button`). `connection_status` derives a coarse Configured/Incomplete/Not-configured hint from config presence (no network probe). The Connection tab warns when local screenshots or file events are sitting and Memory is disconnected, or when screenshots have been unacked longer than the in-flight window.
 - **Interacts with**: `theme`, `ConfigManager::path`.
 - **Advanced toggle**: Storage (MinIO) and Database (Postgres) are legacy direct-write connections (`SettingsTab::is_advanced`) — the supported path streams everything through CI-Server, so they're hidden behind a sidebar "Advanced" toggle (`show_advanced`, default off). Toggling off while viewing one falls back to Identity. See [connection_test.md](connection_test.md) and the worker's `server_ingest` vs `build_legacy_recorder` branch.
 
