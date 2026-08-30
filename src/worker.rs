@@ -108,14 +108,6 @@ struct PendingCapture {
     #[cfg_attr(not(feature = "legacy-minio"), allow(dead_code))]
     timestamp: chrono::DateTime<Utc>,
     config: AppConfig,
-    /// The SAME (source_type, source_system, source_id) triple the vizier
-    /// event from this tick sent, if any — see `WorkerState::capture_vizier`.
-    /// Threaded through to `ingest_capture_to_server` so CI-Server can link
-    /// this screenshot to that event. `None` for a manual capture with vizier
-    /// disabled/blocked, or for a disk-backed retry (`sweep_capture_store`),
-    /// which only ever recovers a filename + bytes and has no identity to
-    /// offer.
-    identity: Option<server_ingest::CaptureIdentity>,
 }
 
 async fn run_worker(
@@ -151,34 +143,28 @@ async fn run_worker(
                 if !state.is_active() {
                     continue;
                 }
-                state.refresh_capture_blocked();
-
-                // Desktop-activity (vizier) capture runs FIRST, before the
-                // screenshot: its (source_type, source_system, source_id)
-                // triple is threaded into THIS tick's screenshot upload (see
-                // capture_once / PendingCapture) so CI-Server can link
-                // ci.files.event_id to the matching ci.events row — the two
+                // Minted once per tick and threaded into both captures below,
+                // so CI-Server can correlate the screenshot with the
+                // desktop-activity event taken in the same tick — the two
                 // otherwise carry no shared identifier (they upload via
-                // separate, independently-retried requests). Runs every
-                // active tick, independent of whether the screenshot changed
-                // — a static screen (reading, a call) still has focus/
-                // window/fs activity worth timelining, and vizier's own diff
-                // keeps the sent payload small. Still suppressed while the
-                // screen is locked, so we don't timeline the lock screen.
-                let vizier_identity = if state.config.vizier.enabled && !state.capture_blocked {
-                    match state.capture_vizier().await {
-                        Ok(identity) => identity,
-                        Err(err) => {
-                            log::error!("vizier worker error: {err:?}");
-                            None
-                        }
-                    }
-                } else {
-                    None
-                };
-
-                if let Err(err) = state.capture_once(vizier_identity).await {
+                // completely separate, independently-retried paths). See
+                // CI-Server's ci.events.capture_tick_id / ci.files.capture_tick_id
+                // (migration 20260830042159_add_capture_correlation_to_files_and_events).
+                let capture_tick_id = Uuid::new_v4();
+                if let Err(err) = state.capture_once(capture_tick_id).await {
                     log::error!("screenshot worker error: {err:?}");
+                }
+                // Activity (vizier) capture runs every active tick, independent
+                // of whether the screenshot changed — a static screen (reading,
+                // a call) still has focus/window/fs activity worth timelining,
+                // and vizier's own diff keeps the sent payload small. Still
+                // suppressed while the screen is locked (capture_once sets
+                // capture_blocked), so we don't timeline the lock screen.
+                if state.config.vizier.enabled
+                    && !state.capture_blocked
+                    && let Err(err) = state.capture_vizier(capture_tick_id).await
+                {
+                    log::error!("vizier worker error: {err:?}");
                 }
             }
         }
@@ -235,14 +221,7 @@ async fn handle_fresh_capture(analyzer: &VisionAnalyzer, capture: &PendingCaptur
     };
 
     if server_ingest::is_configured(&capture.config) {
-        ingest_capture_to_server(
-            analyzer,
-            &capture.config,
-            &capture.filename,
-            &png_bytes,
-            capture.identity.as_ref(),
-        )
-        .await;
+        ingest_capture_to_server(analyzer, &capture.config, &capture.filename, &png_bytes).await;
         return;
     }
 
@@ -320,12 +299,8 @@ async fn sweep_capture_store(analyzer: &VisionAnalyzer, ctx: &SweepContext, forc
             }
         };
         log::info!("backlog retry: re-uploading {filename}");
-        // Same path as a fresh capture — deletes the file on server ack. No
-        // identity to offer: the disk only ever recovers a filename + bytes,
-        // not the vizier triple this frame's tick may have sent alongside it
-        // (see `PendingCapture::identity`), so a sweep-retried upload lands
-        // with `event_id` null — same as before this feature existed.
-        ingest_capture_to_server(analyzer, config, &filename, &png_bytes, None).await;
+        // Same path as a fresh capture — deletes the file on server ack.
+        ingest_capture_to_server(analyzer, config, &filename, &png_bytes).await;
     }
 }
 
@@ -419,7 +394,6 @@ async fn ingest_capture_to_server(
     config: &AppConfig,
     filename: &str,
     png_bytes: &[u8],
-    identity: Option<&server_ingest::CaptureIdentity>,
 ) {
     let has_endpoint = !config.analysis.endpoint.trim().is_empty();
 
@@ -461,7 +435,6 @@ async fn ingest_capture_to_server(
         false,
         analysed_locally,
         None,
-        identity,
     )
     .await
     {
@@ -666,24 +639,15 @@ impl WorkerState {
                 self.restart_file_tracker().await;
             }
             WorkerCommand::CaptureNow => {
-                self.refresh_capture_blocked();
-
-                // Vizier first — see the identical ordering/rationale in the
-                // tick handler in `run_worker`.
-                let vizier_identity = if self.config.vizier.enabled && !self.capture_blocked {
-                    match self.capture_vizier().await {
-                        Ok(identity) => identity,
-                        Err(err) => {
-                            log::error!("manual vizier capture failed: {err:?}");
-                            None
-                        }
-                    }
-                } else {
-                    None
-                };
-
-                if let Err(err) = self.capture_once(vizier_identity).await {
+                let capture_tick_id = Uuid::new_v4();
+                if let Err(err) = self.capture_once(capture_tick_id).await {
                     log::error!("manual capture failed: {err:?}");
+                }
+                if self.config.vizier.enabled
+                    && !self.capture_blocked
+                    && let Err(err) = self.capture_vizier(capture_tick_id).await
+                {
+                    log::error!("manual vizier capture failed: {err:?}");
                 }
             }
             WorkerCommand::Shutdown => {
@@ -711,18 +675,7 @@ impl WorkerState {
         self.vizier_session_id = Uuid::new_v4();
     }
 
-    /// Captures + sends this tick's desktop-activity (vizier) event, and
-    /// returns the (source_type, source_system, source_id) triple it was sent
-    /// under — see [`server_ingest::CaptureIdentity`] — so the caller can
-    /// thread the SAME triple into this tick's screenshot upload
-    /// (`capture_once`). Returns `Ok(None)` when no event was built at all
-    /// (identity not configured, awaiting device registration) or when one
-    /// was built but deliberately abandoned (oversized payload — see below).
-    /// Every other outcome — sent immediately, or parked on disk for retry
-    /// (offline, or the request failed) — returns `Ok(Some(identity))`: the
-    /// triple is deterministic from the event's own fields, so it is exactly
-    /// what CI-Server will eventually see once the retry lands.
-    async fn capture_vizier(&mut self) -> Result<Option<server_ingest::CaptureIdentity>> {
+    async fn capture_vizier(&mut self, capture_tick_id: Uuid) -> Result<()> {
         let server_configured = server_ingest::is_configured(&self.config);
         let (user_id, device_id) = match (
             self.config.identity.user_id,
@@ -735,7 +688,7 @@ impl WorkerState {
             // device and the next tick sends properly.
             _ if self.config.oidc_session.is_some() && self.config.identity.device_id.is_none() => {
                 log::debug!("vizier: awaiting device registration; skipping tick");
-                return Ok(None);
+                return Ok(());
             }
             // API-key installs may legitimately have no local device id (the
             // server attributes by credential) — fall back rather than starve
@@ -748,7 +701,7 @@ impl WorkerState {
                 log::warn!(
                     "identity not configured; skipping vizier capture (set user and device IDs in settings)"
                 );
-                return Ok(None);
+                return Ok(());
             }
         };
 
@@ -804,10 +757,8 @@ impl WorkerState {
             focus_title,
             cwd,
             fs_event_count,
+            capture_tick_id: Some(capture_tick_id),
         };
-        // Deterministic from the event's own fields — the SAME triple
-        // `ingest_vizier_event` sends this event's CaptureEvent under.
-        let identity = server_ingest::vizier_capture_identity(&event);
 
         if server_configured {
             // Guard against payloads CI-Server's JSON body limit will reject.
@@ -825,27 +776,24 @@ impl WorkerState {
                 // baseline must not advance to it. Drop back to None so the next
                 // tick sends a full snapshot, and start a new session so the
                 // server sees an explicit discontinuity rather than silently
-                // applying a patch to a state it never held. This event is
-                // abandoned outright (never sent, never parked), so its
-                // triple is never valid — nothing to hand back.
+                // applying a patch to a state it never held.
                 self.vizier_previous = None;
                 self.vizier_session_id = Uuid::new_v4();
-                return Ok(None);
+                return Ok(());
             } else if let Err(err) =
                 server_ingest::ingest_vizier_event(&self.config, device_id, &event).await
             {
                 // Keep the event on disk and reset the baseline so the next
                 // live tick is a snapshot, not a patch against state Memory
                 // never held. The store sweep sends the parked event on
-                // reconnect — under the SAME triple, since it re-sends this
-                // exact persisted `event`.
+                // reconnect.
                 if let Err(persist_err) = persist_vizier_event(&self.config, &event) {
                     log::warn!("failed to park vizier event: {persist_err:?}");
                 }
                 log::warn!("failed to write vizier event via CI-Server, parked for retry: {err:?}");
                 self.vizier_previous = None;
                 self.vizier_session_id = Uuid::new_v4();
-                return Ok(Some(identity));
+                return Ok(());
             }
         } else {
             #[cfg(feature = "legacy-postgres")]
@@ -870,34 +818,21 @@ impl WorkerState {
         // above returns early after resetting it). The server and the applet now
         // agree on what state the next diff is relative to.
         self.vizier_previous = Some(current);
-        Ok(Some(identity))
+        Ok(())
     }
 
-    /// Refresh `self.capture_blocked` from the live OS screensaver state,
-    /// logging the transition. Called once per tick (and once per manual
-    /// `CaptureNow`) before either capture, so `capture_vizier`'s gate and
-    /// `capture_once`'s own check agree on the SAME tick's blocked state —
-    /// previously `capture_once` alone refreshed it (as a side effect of its
-    /// own blocked-check), and the vizier gate downstream read whatever that
-    /// left behind.
-    fn refresh_capture_blocked(&mut self) {
-        let blocked = is_capture_blocked();
-        if blocked && !self.capture_blocked {
-            log::info!("screensaver active; skipping capture ticks until desktop is unlocked");
-        } else if !blocked && self.capture_blocked {
-            log::info!("desktop unlocked; resuming capture ticks");
-        }
-        self.capture_blocked = blocked;
-    }
-
-    async fn capture_once(
-        &mut self,
-        identity: Option<server_ingest::CaptureIdentity>,
-    ) -> Result<bool> {
-        // The blocked check itself already ran this tick — see
-        // `refresh_capture_blocked`, called once before either capture.
-        if self.capture_blocked {
+    async fn capture_once(&mut self, capture_tick_id: Uuid) -> Result<bool> {
+        if is_capture_blocked() {
+            if !self.capture_blocked {
+                log::info!("screensaver active; skipping capture ticks until desktop is unlocked");
+                self.capture_blocked = true;
+            }
             return Ok(false);
+        }
+
+        if self.capture_blocked {
+            log::info!("desktop unlocked; resuming capture ticks");
+            self.capture_blocked = false;
         }
 
         if !server_ingest::is_configured(&self.config)
@@ -933,7 +868,12 @@ impl WorkerState {
 
         let timestamp = Utc::now();
         let slug = timestamp.format("%Y%m%dT%H%M%S");
-        let filename = format!("capture_{}_{}.png", slug, Uuid::new_v4());
+        // The trailing UUID is `capture_tick_id`, not a fresh random one — the
+        // disk-backed retry sweep (capture_store::scan) only ever recovers a
+        // filename + bytes, so this is how the correlator survives a deferred
+        // upload or a process restart without a new sidecar file. See
+        // server_ingest::capture_upload_form, which parses it back out.
+        let filename = format!("capture_{}_{}.png", slug, capture_tick_id);
         let local_path = self.config.capture.storage_dir.join(&filename);
 
         let capture_clone = capture.clone();
@@ -947,7 +887,6 @@ impl WorkerState {
             filename,
             timestamp,
             config: self.config.clone(),
-            identity,
         };
 
         if let Err(e) = self.analysis_tx.try_send(pending) {
