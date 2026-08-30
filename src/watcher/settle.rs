@@ -118,10 +118,13 @@ mod tests {
     #[tokio::test]
     async fn static_file_settles_on_first_pair() {
         let f = write_tmp(b"already stable");
-        let status =
-            wait_for_settle_with(f.path(), TokioDuration::from_millis(10), TokioDuration::from_secs(1))
-                .await
-                .unwrap();
+        let status = wait_for_settle_with(
+            f.path(),
+            TokioDuration::from_millis(10),
+            TokioDuration::from_secs(1),
+        )
+        .await
+        .unwrap();
         assert_eq!(status, SettleStatus::Settled);
     }
 
@@ -153,10 +156,7 @@ mod tests {
         let writer = tokio::spawn(async move {
             use std::fs::OpenOptions;
             for i in 0..200u32 {
-                if let Ok(mut h) = OpenOptions::new()
-                    .append(true)
-                    .open(&path_for_writer)
-                {
+                if let Ok(mut h) = OpenOptions::new().append(true).open(&path_for_writer) {
                     let _ = h.write_all(format!("chunk {i} ").as_bytes());
                     let _ = h.flush();
                 }
@@ -176,7 +176,10 @@ mod tests {
         // within max_wait → Timeout". On a busy CI box the writer may
         // skip a beat. So accept either Timeout (the common path) or
         // Settled (if scheduling left us a window).
-        assert!(matches!(status, SettleStatus::Timeout | SettleStatus::Settled));
+        assert!(matches!(
+            status,
+            SettleStatus::Timeout | SettleStatus::Settled
+        ));
 
         writer.abort();
         let _ = writer.await;

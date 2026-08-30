@@ -128,7 +128,9 @@ mod tests {
     fn create_maps_to_created() {
         let obs = to_raw_observations(&ev(EventKind::Create(CreateKind::File), vec!["/a/b.txt"]));
         assert_eq!(obs.len(), 1);
-        assert!(matches!(&obs[0], RawObservation::Created { path, .. } if path == &PathBuf::from("/a/b.txt")));
+        assert!(
+            matches!(&obs[0], RawObservation::Created { path, .. } if path == &PathBuf::from("/a/b.txt"))
+        );
     }
 
     #[test]
@@ -145,7 +147,10 @@ mod tests {
     fn remove_maps_to_deleted_without_inode() {
         let obs = to_raw_observations(&ev(EventKind::Remove(RemoveKind::File), vec!["/a/b.txt"]));
         assert_eq!(obs.len(), 1);
-        assert!(matches!(&obs[0], RawObservation::Deleted { inode: None, .. }));
+        assert!(matches!(
+            &obs[0],
+            RawObservation::Deleted { inode: None, .. }
+        ));
     }
 
     #[test]

@@ -115,15 +115,14 @@ pub fn start_watcher(cfg: WatcherConfig) -> Result<WatcherHandle> {
 
     // The notify callback runs on notify's own thread; forward every event
     // into the async driver via the unbounded channel.
-    let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-        match res {
+    let mut watcher =
+        notify::recommended_watcher(move |res: notify::Result<notify::Event>| match res {
             Ok(event) => {
                 let _ = raw_tx.send(event);
             }
             Err(err) => log::warn!("notify watcher error: {err}"),
-        }
-    })
-    .context("creating filesystem watcher")?;
+        })
+        .context("creating filesystem watcher")?;
 
     let mut watched = 0usize;
     for path in &cfg.watched_paths {
@@ -221,7 +220,10 @@ fn dispatch(
         // Defensive privacy guard: never emit an event touching an
         // ignored/sensitive path. Observation-time gating already covers
         // this; this is belt-and-suspenders for the privacy boundary.
-        if decision_paths(&decision).iter().any(|p| ignore.is_ignored(p)) {
+        if decision_paths(&decision)
+            .iter()
+            .any(|p| ignore.is_ignored(p))
+        {
             return;
         }
 
@@ -272,7 +274,9 @@ fn dispatch(
                 // when the target settled cleanly.
                 let file = match settle_and_fingerprint(&new_path, &ignore).await {
                     SettleOutcome::Fingerprinted(fp) => {
-                        cache.lock().insert(new_path.clone(), fp.content_hash.clone());
+                        cache
+                            .lock()
+                            .insert(new_path.clone(), fp.content_hash.clone());
                         Some(fp)
                     }
                     _ => None,
@@ -351,7 +355,9 @@ fn obs_paths(obs: &normalizer::RawObservation) -> Vec<&Path> {
         normalizer::RawObservation::Created { path, .. }
         | normalizer::RawObservation::Modified { path, .. }
         | normalizer::RawObservation::Deleted { path, .. } => vec![path.as_path()],
-        normalizer::RawObservation::Renamed { old_path, new_path, .. } => {
+        normalizer::RawObservation::Renamed {
+            old_path, new_path, ..
+        } => {
             vec![old_path.as_path(), new_path.as_path()]
         }
     }

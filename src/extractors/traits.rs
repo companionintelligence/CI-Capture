@@ -51,9 +51,5 @@ pub struct ExtractOptions {
 
 pub trait Extractor: Send + Sync {
     fn name(&self) -> &'static str;
-    fn extract(
-        &self,
-        path: &Path,
-        opts: ExtractOptions,
-    ) -> Result<ExtractedDocument>;
+    fn extract(&self, path: &Path, opts: ExtractOptions) -> Result<ExtractedDocument>;
 }

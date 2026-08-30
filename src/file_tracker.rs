@@ -432,7 +432,11 @@ mod e2e {
                 if reader.read_line(&mut request_line).is_err() {
                     continue;
                 }
-                let path = request_line.split_whitespace().nth(1).unwrap_or("").to_string();
+                let path = request_line
+                    .split_whitespace()
+                    .nth(1)
+                    .unwrap_or("")
+                    .to_string();
 
                 let mut content_length = 0usize;
                 let mut api_key = None;
@@ -462,9 +466,7 @@ mod e2e {
                     let mut rules = rules.lock().unwrap();
                     rules
                         .iter_mut()
-                        .find(|(needle, statuses)| {
-                            !statuses.is_empty() && body.contains(needle)
-                        })
+                        .find(|(needle, statuses)| !statuses.is_empty() && body.contains(needle))
                         .map(|(_, statuses)| statuses.remove(0))
                         .unwrap_or(200)
                 };
@@ -626,7 +628,11 @@ mod e2e {
         tokio::time::sleep(Duration::from_millis(500)).await;
         std::fs::write(watched.join("opaque.bin"), b"\x00no extractor for this").unwrap();
         tokio::time::sleep(Duration::from_millis(1_500)).await;
-        std::fs::write(watched.join("notes.md"), "# Plan\n\nremember the tailscale rollout").unwrap();
+        std::fs::write(
+            watched.join("notes.md"),
+            "# Plan\n\nremember the tailscale rollout",
+        )
+        .unwrap();
 
         // So wait for the request carrying notes.md's extracted body, rather
         // than whichever `file_event` lands first. Failing here still means a
@@ -721,7 +727,9 @@ mod e2e {
                 .unwrap_or(false)
         };
         let parked = wait_until(Duration::from_secs(30), || {
-            Queue::open(&queue_path).map(|q| parked_is_poison(&q)).unwrap_or(false)
+            Queue::open(&queue_path)
+                .map(|q| parked_is_poison(&q))
+                .unwrap_or(false)
         })
         .await;
         assert!(
@@ -739,7 +747,9 @@ mod e2e {
                 .unwrap()
                 .iter()
                 .any(|(_, _, b)| b.contains("survives the outage"))
-                && Queue::open(&queue_path).map(|q| q.depth().unwrap_or(99) == 0).unwrap_or(false)
+                && Queue::open(&queue_path)
+                    .map(|q| q.depth().unwrap_or(99) == 0)
+                    .unwrap_or(false)
         })
         .await;
         lane.abort();
@@ -752,10 +762,8 @@ mod e2e {
         // The poison event — and only it — is still parked, recoverable on disk.
         let queue = Queue::open(&queue_path).unwrap();
         let parked_rows = queue.dead_letters().unwrap();
-        let parked_paths: Vec<String> = parked_rows
-            .iter()
-            .map(|row| describe(&row.event))
-            .collect();
+        let parked_paths: Vec<String> =
+            parked_rows.iter().map(|row| describe(&row.event)).collect();
         assert_eq!(
             parked_paths.len(),
             1,

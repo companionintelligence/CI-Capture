@@ -1021,7 +1021,11 @@ pub fn nav_item(ui: &mut Ui, accent: Color32, title: &str, subtitle: &str, selec
     let active = selected || resp.hovered();
 
     if active {
-        painter.rect_filled(rect, CornerRadius::same(tokens::radius::LG), SIDEBAR_ACCENT());
+        painter.rect_filled(
+            rect,
+            CornerRadius::same(tokens::radius::LG),
+            SIDEBAR_ACCENT(),
+        );
     }
     if selected {
         let bar = egui::Rect::from_min_size(
@@ -1043,7 +1047,11 @@ pub fn nav_item(ui: &mut Ui, accent: Color32, title: &str, subtitle: &str, selec
     );
     painter.circle_filled(chip.center(), 3.0, accent);
 
-    let title_color = if active { SIDEBAR_ACCENT_FG() } else { SIDEBAR_FG() };
+    let title_color = if active {
+        SIDEBAR_ACCENT_FG()
+    } else {
+        SIDEBAR_FG()
+    };
     painter.text(
         egui::pos2(rect.left() + 46.0, rect.center().y - 8.0),
         Align2::LEFT_CENTER,
