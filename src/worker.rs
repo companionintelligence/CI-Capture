@@ -143,7 +143,15 @@ async fn run_worker(
                 if !state.is_active() {
                     continue;
                 }
-                if let Err(err) = state.capture_once().await {
+                // Minted once per tick and threaded into both captures below,
+                // so CI-Server can correlate the screenshot with the
+                // desktop-activity event taken in the same tick — the two
+                // otherwise carry no shared identifier (they upload via
+                // completely separate, independently-retried paths). See
+                // CI-Server's ci.events.capture_tick_id / ci.files.capture_tick_id
+                // (migration 20260830042159_add_capture_correlation_to_files_and_events).
+                let capture_tick_id = Uuid::new_v4();
+                if let Err(err) = state.capture_once(capture_tick_id).await {
                     log::error!("screenshot worker error: {err:?}");
                 }
                 // Activity (vizier) capture runs every active tick, independent
@@ -154,7 +162,7 @@ async fn run_worker(
                 // capture_blocked), so we don't timeline the lock screen.
                 if state.config.vizier.enabled
                     && !state.capture_blocked
-                    && let Err(err) = state.capture_vizier().await
+                    && let Err(err) = state.capture_vizier(capture_tick_id).await
                 {
                     log::error!("vizier worker error: {err:?}");
                 }
@@ -631,12 +639,13 @@ impl WorkerState {
                 self.restart_file_tracker().await;
             }
             WorkerCommand::CaptureNow => {
-                if let Err(err) = self.capture_once().await {
+                let capture_tick_id = Uuid::new_v4();
+                if let Err(err) = self.capture_once(capture_tick_id).await {
                     log::error!("manual capture failed: {err:?}");
                 }
                 if self.config.vizier.enabled
                     && !self.capture_blocked
-                    && let Err(err) = self.capture_vizier().await
+                    && let Err(err) = self.capture_vizier(capture_tick_id).await
                 {
                     log::error!("manual vizier capture failed: {err:?}");
                 }
@@ -666,7 +675,7 @@ impl WorkerState {
         self.vizier_session_id = Uuid::new_v4();
     }
 
-    async fn capture_vizier(&mut self) -> Result<()> {
+    async fn capture_vizier(&mut self, capture_tick_id: Uuid) -> Result<()> {
         let server_configured = server_ingest::is_configured(&self.config);
         let (user_id, device_id) = match (
             self.config.identity.user_id,
@@ -748,6 +757,7 @@ impl WorkerState {
             focus_title,
             cwd,
             fs_event_count,
+            capture_tick_id: Some(capture_tick_id),
         };
 
         if server_configured {
@@ -780,9 +790,7 @@ impl WorkerState {
                 if let Err(persist_err) = persist_vizier_event(&self.config, &event) {
                     log::warn!("failed to park vizier event: {persist_err:?}");
                 }
-                log::warn!(
-                    "failed to write vizier event via CI-Server, parked for retry: {err:?}"
-                );
+                log::warn!("failed to write vizier event via CI-Server, parked for retry: {err:?}");
                 self.vizier_previous = None;
                 self.vizier_session_id = Uuid::new_v4();
                 return Ok(());
@@ -813,7 +821,7 @@ impl WorkerState {
         Ok(())
     }
 
-    async fn capture_once(&mut self) -> Result<bool> {
+    async fn capture_once(&mut self, capture_tick_id: Uuid) -> Result<bool> {
         if is_capture_blocked() {
             if !self.capture_blocked {
                 log::info!("screensaver active; skipping capture ticks until desktop is unlocked");
@@ -860,7 +868,12 @@ impl WorkerState {
 
         let timestamp = Utc::now();
         let slug = timestamp.format("%Y%m%dT%H%M%S");
-        let filename = format!("capture_{}_{}.png", slug, Uuid::new_v4());
+        // The trailing UUID is `capture_tick_id`, not a fresh random one — the
+        // disk-backed retry sweep (capture_store::scan) only ever recovers a
+        // filename + bytes, so this is how the correlator survives a deferred
+        // upload or a process restart without a new sidecar file. See
+        // server_ingest::capture_upload_form, which parses it back out.
+        let filename = format!("capture_{}_{}.png", slug, capture_tick_id);
         let local_path = self.config.capture.storage_dir.join(&filename);
 
         let capture_clone = capture.clone();
@@ -954,7 +967,7 @@ async fn record_capture_legacy(
 fn is_capture_blocked() -> bool {
     #[cfg(target_os = "macos")]
     {
-        return is_macos_screensaver_running();
+        is_macos_screensaver_running()
     }
 
     #[cfg(not(target_os = "macos"))]
