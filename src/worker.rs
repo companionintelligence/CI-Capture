@@ -1028,7 +1028,7 @@ async fn record_capture_legacy(
 fn is_capture_blocked() -> bool {
     #[cfg(target_os = "macos")]
     {
-        return is_macos_screensaver_running();
+        is_macos_screensaver_running()
     }
 
     #[cfg(not(target_os = "macos"))]

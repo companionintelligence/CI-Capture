@@ -1032,11 +1032,11 @@ impl SettingsApp {
                             ui.add_space(4.0);
                             theme::caption(
                                 ui,
-                                &rust_i18n::t!(
+                                rust_i18n::t!(
                                     "settings.backlog.sidebar",
                                     count = self.local_backlog.waiting_count()
                                 )
-                                .to_string(),
+                                .as_ref(),
                             );
                         }
                         ui.add_space(10.0);
@@ -1220,7 +1220,7 @@ fn backlog_warning_copy(app: &SettingsApp) -> (String, String) {
     let extras = files + activity;
     if extras > 0 {
         detail.push(' ');
-        detail.push_str(&rust_i18n::t!("settings.backlog.files", count = extras).to_string());
+        detail.push_str(rust_i18n::t!("settings.backlog.files", count = extras).as_ref());
     }
     (title, detail)
 }
