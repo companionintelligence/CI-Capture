@@ -62,6 +62,15 @@ pub struct VizierEventRecord {
     pub focus_title: Option<String>,
     pub cwd: Option<String>,
     pub fs_event_count: i32,
+    /// UUID minted once per worker tick and shared with the screenshot
+    /// captured in the same tick, so CI-Server can correlate the two
+    /// (`ci.events.capture_tick_id` / `ci.files.capture_tick_id`; see
+    /// CI-Server migration 20260830042159_add_capture_correlation_to_files_and_events).
+    /// `#[serde(default)]` so a parked sidecar JSON file written before this
+    /// field existed still deserializes (as `None`) instead of failing the
+    /// whole retry sweep.
+    #[serde(default)]
+    pub capture_tick_id: Option<Uuid>,
 }
 
 #[cfg(feature = "legacy-postgres")]

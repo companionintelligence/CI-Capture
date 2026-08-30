@@ -21,6 +21,15 @@ struct CaptureEvent {
     title: Option<String>,
     description: Option<String>,
     payload: Value,
+    /// Per-tick correlator shared with the screenshot uploaded via the same
+    /// worker tick (see `WorkerState::capture_once`'s `captureTickId` form
+    /// field) — lets CI-Server link `ci.events` back to the `ci.files` row it
+    /// was captured alongside (`ci.events.capture_tick_id` /
+    /// `ci.files.capture_tick_id`; CI-Server migration
+    /// 20260830042159_add_capture_correlation_to_files_and_events). Only
+    /// vizier events carry one today.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    capture_tick_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -273,6 +282,7 @@ pub async fn ingest_file_event(
             title: path,
             description: Some(file_event_description(event.event_type, content)),
             payload,
+            capture_tick_id: None,
         },
     )
     .await
@@ -351,6 +361,7 @@ pub async fn ingest_vizier_event(
                 .or_else(|| event.focus_app.clone()),
             description: event.focus_app.clone(),
             payload,
+            capture_tick_id: event.capture_tick_id.map(|id| id.to_string()),
         },
     )
     .await
@@ -465,7 +476,29 @@ fn capture_upload_form(
     if let Some(model) = model.filter(|m| !m.trim().is_empty()) {
         form = form.text("model", model.to_string());
     }
+    // The per-tick correlator rides as the UUID segment of `filename` (see
+    // `capture_once` in worker.rs) rather than as its own parameter threaded
+    // through every call site — that's what lets it survive the disk-backed
+    // retry sweep, which only ever recovers a filename and bytes. Shared with
+    // the vizier (desktop-activity) event sent via the same worker tick (see
+    // `ingest_vizier_event`'s `capture_tick_id`), so CI-Server can link this
+    // `ci.files` row back to the `ci.events` row it was captured alongside
+    // (CI-Server migration 20260830042159_add_capture_correlation_to_files_and_events
+    // / FilesController's `captureTickId` body field). Best effort: a
+    // filename that doesn't parse (e.g. one already on disk from before this
+    // field existed) just omits the correlator.
+    if let Some(tick_id) = capture_tick_id_from_filename(filename) {
+        form = form.text("captureTickId", tick_id.to_string());
+    }
     Ok(form)
+}
+
+/// Recovers the per-tick correlator UUID that `WorkerState::capture_once`
+/// (worker.rs) encodes as the trailing segment of `capture_{timestamp}_{uuid}.png`.
+fn capture_tick_id_from_filename(filename: &str) -> Option<Uuid> {
+    let stem = filename.strip_prefix("capture_")?.strip_suffix(".png")?;
+    let (_, uuid_part) = stem.rsplit_once('_')?;
+    Uuid::parse_str(uuid_part).ok()
 }
 
 /// Set the title and/or description on an uploaded file. Used when the applet
@@ -545,6 +578,37 @@ mod tests {
             markdown: markdown.map(|s| s.to_string()),
             ..FileEventContent::default()
         }
+    }
+
+    /// The exact filename shape `WorkerState::capture_once` (worker.rs)
+    /// writes: `capture_{timestamp}_{capture_tick_id}.png`. Round-tripping
+    /// this is what lets the correlator survive the disk-backed retry sweep,
+    /// which only ever recovers a filename and bytes.
+    #[test]
+    fn capture_tick_id_from_filename_recovers_the_trailing_uuid() {
+        let tick_id = Uuid::new_v4();
+        let filename = format!("capture_20260830T120000_{tick_id}.png");
+
+        assert_eq!(capture_tick_id_from_filename(&filename), Some(tick_id));
+    }
+
+    #[test]
+    fn capture_tick_id_from_filename_is_best_effort_on_malformed_input() {
+        // Missing prefix/suffix, or a non-UUID trailing segment — none of
+        // these should panic; the correlator is simply omitted.
+        assert_eq!(capture_tick_id_from_filename("not-a-capture.png"), None);
+        assert_eq!(
+            capture_tick_id_from_filename("capture_20260830T120000.png"),
+            None
+        );
+        assert_eq!(
+            capture_tick_id_from_filename("capture_20260830T120000_not-a-uuid.png"),
+            None
+        );
+        assert_eq!(
+            capture_tick_id_from_filename("capture_only_one_segment"),
+            None
+        );
     }
 
     #[test]
