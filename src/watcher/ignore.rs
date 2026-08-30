@@ -230,12 +230,8 @@ mod tests {
     #[test]
     fn keychain_is_sensitive() {
         let r = IgnoreRules::empty().unwrap();
-        assert!(r.is_ignored(
-            "/Users/x/Library/Keychains/login.keychain-db"
-        ));
-        assert!(r.is_sensitive(
-            "/Users/x/Library/Keychains/login.keychain-db"
-        ));
+        assert!(r.is_ignored("/Users/x/Library/Keychains/login.keychain-db"));
+        assert!(r.is_sensitive("/Users/x/Library/Keychains/login.keychain-db"));
     }
 
     #[test]
@@ -275,9 +271,7 @@ mod tests {
     #[test]
     fn browser_profiles_are_ignored_by_default() {
         let r = defaults();
-        assert!(r.is_ignored(
-            "/Users/x/Library/Application Support/Google/Chrome/Default/Cookies"
-        ));
+        assert!(r.is_ignored("/Users/x/Library/Application Support/Google/Chrome/Default/Cookies"));
         assert!(r.is_ignored(
             "/Users/x/Library/Application Support/Firefox/Profiles/default/places.sqlite"
         ));

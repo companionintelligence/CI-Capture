@@ -20,9 +20,7 @@ use std::time::Instant;
 use anyhow::{Result, anyhow};
 use uuid::Uuid;
 
-use super::traits::{
-    ExtractOptions, ExtractedDocument, ExtractionDiagnostics, Extractor, Section,
-};
+use super::traits::{ExtractOptions, ExtractedDocument, ExtractionDiagnostics, Extractor, Section};
 
 pub struct EpubExtractor;
 
@@ -293,8 +291,7 @@ mod tests {
 
     #[test]
     fn chapter_heading_prefers_h1() {
-        let xhtml =
-            "<html><body><h1>First Heading</h1><p>body</p><h2>Section</h2></body></html>";
+        let xhtml = "<html><body><h1>First Heading</h1><p>body</p><h2>Section</h2></body></html>";
         assert_eq!(chapter_heading(xhtml, 1), "First Heading");
     }
 

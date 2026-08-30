@@ -14,9 +14,7 @@ use std::time::Instant;
 use anyhow::{Context, Result};
 use uuid::Uuid;
 
-use super::traits::{
-    ExtractOptions, ExtractedDocument, ExtractionDiagnostics, Extractor, Section,
-};
+use super::traits::{ExtractOptions, ExtractedDocument, ExtractionDiagnostics, Extractor, Section};
 
 // ── Detect ────────────────────────────────────────────────────────────────────
 
@@ -170,8 +168,8 @@ impl Extractor for TextExtractor {
             return Ok(empty_doc(path, self.kind, title, metadata, started));
         }
 
-        let raw = fs::read_to_string(path)
-            .with_context(|| format!("reading {}", path.display()))?;
+        let raw =
+            fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
 
         let (markdown, sections) = match self.kind {
             TextKind::Txt => render_txt(&title, &raw),
@@ -258,8 +256,7 @@ fn render_json(title: &str, body: &str) -> (String, Vec<Section>) {
     // If parsing fails (malformed JSON), fall back to the raw body — we'd
     // rather ship "something" than refuse the file.
     let pretty = match serde_json::from_str::<serde_json::Value>(body) {
-        Ok(value) => serde_json::to_string_pretty(&value)
-            .unwrap_or_else(|_| body.to_string()),
+        Ok(value) => serde_json::to_string_pretty(&value).unwrap_or_else(|_| body.to_string()),
         Err(_) => body.to_string(),
     };
     let markdown = format!("# {title}\n\n```json\n{pretty}\n```\n");
@@ -310,7 +307,9 @@ fn render_csv(title: &str, body: &str, delim: u8) -> (String, Vec<Section>) {
 
     let total_rows = rows.len();
     let sampled = total_rows > CSV_MAX_RENDERED_ROWS;
-    let cols = headers.len().max(rows.iter().map(|r| r.len()).max().unwrap_or(0));
+    let cols = headers
+        .len()
+        .max(rows.iter().map(|r| r.len()).max().unwrap_or(0));
 
     // Synthesize column headers if the file had none.
     let header_cells: Vec<String> = if !headers.is_empty() {
@@ -346,7 +345,9 @@ fn render_csv(title: &str, body: &str, delim: u8) -> (String, Vec<Section>) {
         out.push('|');
         for i in 0..header_cells.len() {
             out.push(' ');
-            out.push_str(&escape_table_cell(row.get(i).map(String::as_str).unwrap_or("")));
+            out.push_str(&escape_table_cell(
+                row.get(i).map(String::as_str).unwrap_or(""),
+            ));
             out.push_str(" |");
         }
         out.push('\n');
@@ -395,10 +396,7 @@ fn filename_stem(path: &Path) -> String {
         .unwrap_or_else(|| "document".to_string())
 }
 
-fn base_metadata(
-    path: &Path,
-    kind: TextKind,
-) -> serde_json::Map<String, serde_json::Value> {
+fn base_metadata(path: &Path, kind: TextKind) -> serde_json::Map<String, serde_json::Value> {
     let mut m = serde_json::Map::new();
     m.insert(
         "title".to_string(),
@@ -491,7 +489,10 @@ mod tests {
         assert_eq!(TextKind::from_extension("TXT"), Some(TextKind::Txt));
         assert_eq!(TextKind::from_extension("log"), Some(TextKind::Txt));
         assert_eq!(TextKind::from_extension("md"), Some(TextKind::Markdown));
-        assert_eq!(TextKind::from_extension("markdown"), Some(TextKind::Markdown));
+        assert_eq!(
+            TextKind::from_extension("markdown"),
+            Some(TextKind::Markdown)
+        );
         assert_eq!(TextKind::from_extension("json"), Some(TextKind::Json));
         assert_eq!(TextKind::from_extension("jsonl"), Some(TextKind::Json));
         assert_eq!(TextKind::from_extension("csv"), Some(TextKind::Csv));
@@ -719,7 +720,11 @@ mod tests {
         assert_eq!(doc.sections.len(), 1);
         assert_eq!(doc.sections[0].markdown, "");
         // And we flagged it.
-        assert!(doc.diagnostics.warnings.contains(&"metadata_only".to_string()));
+        assert!(
+            doc.diagnostics
+                .warnings
+                .contains(&"metadata_only".to_string())
+        );
     }
 
     #[test]

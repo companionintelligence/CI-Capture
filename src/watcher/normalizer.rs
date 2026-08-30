@@ -40,9 +40,18 @@ pub const STORM_SUSTAIN: Duration = Duration::from_secs(5);
 /// glue translates `notify::EventKind` into one of these.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RawObservation {
-    Created { path: PathBuf, inode: Option<u64> },
-    Modified { path: PathBuf, inode: Option<u64> },
-    Deleted { path: PathBuf, inode: Option<u64> },
+    Created {
+        path: PathBuf,
+        inode: Option<u64>,
+    },
+    Modified {
+        path: PathBuf,
+        inode: Option<u64>,
+    },
+    Deleted {
+        path: PathBuf,
+        inode: Option<u64>,
+    },
     /// OS-level rename — both source and target known.
     Renamed {
         old_path: PathBuf,
@@ -56,10 +65,19 @@ pub enum RawObservation {
 /// fingerprint payload, ids, and timestamps.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NormalizedDecision {
-    Created { path: PathBuf },
-    Modified { path: PathBuf },
-    Deleted { path: PathBuf },
-    Renamed { old_path: PathBuf, new_path: PathBuf },
+    Created {
+        path: PathBuf,
+    },
+    Modified {
+        path: PathBuf,
+    },
+    Deleted {
+        path: PathBuf,
+    },
+    Renamed {
+        old_path: PathBuf,
+        new_path: PathBuf,
+    },
 }
 
 // ── Internal state ────────────────────────────────────────────────────────────
@@ -132,7 +150,11 @@ impl Normalizer {
             RawObservation::Created { path, inode } => self.on_created(path, inode, now),
             RawObservation::Modified { path, inode } => self.on_modified(path, inode, now),
             RawObservation::Deleted { path, inode } => self.on_deleted(path, inode, now),
-            RawObservation::Renamed { old_path, new_path, inode } => {
+            RawObservation::Renamed {
+                old_path,
+                new_path,
+                inode,
+            } => {
                 self.on_renamed(old_path, new_path, inode, now);
             }
         }
@@ -291,13 +313,7 @@ impl Normalizer {
             .push(NormalizedDecision::Renamed { old_path, new_path });
     }
 
-    fn upsert(
-        &mut self,
-        path: PathBuf,
-        kind: PendingKind,
-        inode: Option<u64>,
-        now: Instant,
-    ) {
+    fn upsert(&mut self, path: PathBuf, kind: PendingKind, inode: Option<u64>, now: Instant) {
         self.pending.insert(
             path,
             Pending {
@@ -338,7 +354,10 @@ mod tests {
         let t0 = fixed_now();
         for i in 0..10 {
             n.observe(
-                RawObservation::Modified { path: pb("/a"), inode: Some(7) },
+                RawObservation::Modified {
+                    path: pb("/a"),
+                    inode: Some(7),
+                },
                 t0 + Duration::from_millis(i * 5),
             );
         }
@@ -360,11 +379,17 @@ mod tests {
         let mut n = debounced();
         let t0 = fixed_now();
         n.observe(
-            RawObservation::Created { path: pb("/a"), inode: Some(7) },
+            RawObservation::Created {
+                path: pb("/a"),
+                inode: Some(7),
+            },
             t0,
         );
         n.observe(
-            RawObservation::Modified { path: pb("/a"), inode: Some(7) },
+            RawObservation::Modified {
+                path: pb("/a"),
+                inode: Some(7),
+            },
             t0 + Duration::from_millis(20),
         );
 
@@ -378,11 +403,17 @@ mod tests {
         let mut n = debounced();
         let t0 = fixed_now();
         n.observe(
-            RawObservation::Created { path: pb("/a"), inode: Some(7) },
+            RawObservation::Created {
+                path: pb("/a"),
+                inode: Some(7),
+            },
             t0,
         );
         n.observe(
-            RawObservation::Deleted { path: pb("/a"), inode: Some(7) },
+            RawObservation::Deleted {
+                path: pb("/a"),
+                inode: Some(7),
+            },
             t0 + Duration::from_millis(10),
         );
         let due = n.drain_due(t0 + Duration::from_millis(200));
@@ -395,11 +426,17 @@ mod tests {
         let mut n = debounced();
         let t0 = fixed_now();
         n.observe(
-            RawObservation::Modified { path: pb("/a"), inode: Some(7) },
+            RawObservation::Modified {
+                path: pb("/a"),
+                inode: Some(7),
+            },
             t0,
         );
         n.observe(
-            RawObservation::Deleted { path: pb("/a"), inode: Some(7) },
+            RawObservation::Deleted {
+                path: pb("/a"),
+                inode: Some(7),
+            },
             t0 + Duration::from_millis(10),
         );
         let due = n.drain_due(t0 + Duration::from_millis(700));
@@ -413,11 +450,17 @@ mod tests {
         let mut n = debounced();
         let t0 = fixed_now();
         n.observe(
-            RawObservation::Deleted { path: pb("/old"), inode: Some(42) },
+            RawObservation::Deleted {
+                path: pb("/old"),
+                inode: Some(42),
+            },
             t0,
         );
         n.observe(
-            RawObservation::Created { path: pb("/new"), inode: Some(42) },
+            RawObservation::Created {
+                path: pb("/new"),
+                inode: Some(42),
+            },
             t0 + Duration::from_millis(10),
         );
 
@@ -439,11 +482,17 @@ mod tests {
         let mut n = debounced();
         let t0 = fixed_now();
         n.observe(
-            RawObservation::Deleted { path: pb("/old"), inode: Some(1) },
+            RawObservation::Deleted {
+                path: pb("/old"),
+                inode: Some(1),
+            },
             t0,
         );
         n.observe(
-            RawObservation::Created { path: pb("/new"), inode: Some(2) },
+            RawObservation::Created {
+                path: pb("/new"),
+                inode: Some(2),
+            },
             t0 + Duration::from_millis(10),
         );
         let due = n.drain_due(t0 + Duration::from_millis(700));
@@ -464,23 +513,31 @@ mod tests {
         let mut n = debounced();
         let t0 = fixed_now();
         n.observe(
-            RawObservation::Deleted { path: pb("/old"), inode: Some(7) },
+            RawObservation::Deleted {
+                path: pb("/old"),
+                inode: Some(7),
+            },
             t0,
         );
         // Create arrives after rename_ttl has expired.
         n.observe(
-            RawObservation::Created { path: pb("/new"), inode: Some(7) },
+            RawObservation::Created {
+                path: pb("/new"),
+                inode: Some(7),
+            },
             t0 + Duration::from_millis(800),
         );
         let due = n.drain_due(t0 + Duration::from_millis(1500));
         // Both treated as separate events.
         assert_eq!(due.len(), 2);
-        assert!(due
-            .iter()
-            .any(|d| matches!(d, NormalizedDecision::Deleted { path } if path == &pb("/old"))));
-        assert!(due
-            .iter()
-            .any(|d| matches!(d, NormalizedDecision::Created { path } if path == &pb("/new"))));
+        assert!(
+            due.iter()
+                .any(|d| matches!(d, NormalizedDecision::Deleted { path } if path == &pb("/old")))
+        );
+        assert!(
+            due.iter()
+                .any(|d| matches!(d, NormalizedDecision::Created { path } if path == &pb("/new")))
+        );
     }
 
     #[test]
@@ -510,11 +567,17 @@ mod tests {
         let t0 = fixed_now();
         // Editor writes tmp file…
         n.observe(
-            RawObservation::Created { path: pb("/doc.tmp"), inode: Some(7) },
+            RawObservation::Created {
+                path: pb("/doc.tmp"),
+                inode: Some(7),
+            },
             t0,
         );
         n.observe(
-            RawObservation::Modified { path: pb("/doc.tmp"), inode: Some(7) },
+            RawObservation::Modified {
+                path: pb("/doc.tmp"),
+                inode: Some(7),
+            },
             t0 + Duration::from_millis(5),
         );
         // …then atomically renames into target.
@@ -543,11 +606,17 @@ mod tests {
         let mut n = debounced();
         let t0 = fixed_now();
         n.observe(
-            RawObservation::Modified { path: pb("/a"), inode: None },
+            RawObservation::Modified {
+                path: pb("/a"),
+                inode: None,
+            },
             t0,
         );
         n.observe(
-            RawObservation::Created { path: pb("/b"), inode: None },
+            RawObservation::Created {
+                path: pb("/b"),
+                inode: None,
+            },
             t0,
         );
         let out = n.flush();
@@ -560,7 +629,10 @@ mod tests {
         let mut n = debounced();
         let t0 = fixed_now();
         n.observe(
-            RawObservation::Modified { path: pb("/a"), inode: None },
+            RawObservation::Modified {
+                path: pb("/a"),
+                inode: None,
+            },
             t0,
         );
         // Slightly before the window — still pending.
@@ -575,11 +647,17 @@ mod tests {
         let mut n = debounced();
         let t0 = fixed_now();
         n.observe(
-            RawObservation::Deleted { path: pb("/x"), inode: None },
+            RawObservation::Deleted {
+                path: pb("/x"),
+                inode: None,
+            },
             t0,
         );
         n.observe(
-            RawObservation::Created { path: pb("/y"), inode: None },
+            RawObservation::Created {
+                path: pb("/y"),
+                inode: None,
+            },
             t0 + Duration::from_millis(10),
         );
         // Without inodes we can't pair them — both fire after debounce.

@@ -424,8 +424,14 @@ mod tests {
         let got = &batch[0].event;
         assert_eq!(got.correlation_id.as_deref(), Some("group-7"));
         assert_eq!(got.event_type, EventType::FileRenamed);
-        assert_eq!(got.old_path.as_deref().unwrap().to_str(), Some("/old/foo.txt"));
-        assert_eq!(got.new_path.as_deref().unwrap().to_str(), Some("/new/foo.txt"));
+        assert_eq!(
+            got.old_path.as_deref().unwrap().to_str(),
+            Some("/old/foo.txt")
+        );
+        assert_eq!(
+            got.new_path.as_deref().unwrap().to_str(),
+            Some("/new/foo.txt")
+        );
     }
 
     #[test]
@@ -469,7 +475,8 @@ mod dead_letter_tests {
     fn dead_letter_parks_event_without_deleting_it() {
         let q = Queue::open_in_memory().unwrap();
         q.enqueue(&evt("poison")).unwrap();
-        q.requeue("poison", Duration::from_secs(0), "HTTP 400").unwrap();
+        q.requeue("poison", Duration::from_secs(0), "HTTP 400")
+            .unwrap();
 
         q.dead_letter("poison", "event ingest rejected event 0: bad payload")
             .unwrap();

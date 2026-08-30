@@ -201,7 +201,8 @@ mod tests {
             c.record_failure();
             let got = c.backoff().as_secs();
             assert_eq!(
-                got, *want,
+                got,
+                *want,
                 "iter {i}: got {got}s want {want}s ({:?})",
                 c.backoff()
             );

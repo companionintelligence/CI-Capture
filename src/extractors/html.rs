@@ -17,9 +17,7 @@ use std::time::Instant;
 use anyhow::{Context, Result};
 use uuid::Uuid;
 
-use super::traits::{
-    ExtractOptions, ExtractedDocument, ExtractionDiagnostics, Extractor, Section,
-};
+use super::traits::{ExtractOptions, ExtractedDocument, ExtractionDiagnostics, Extractor, Section};
 
 pub struct HtmlExtractor;
 
@@ -58,8 +56,8 @@ impl Extractor for HtmlExtractor {
             return Ok(empty_doc(path, stem_title, metadata, started));
         }
 
-        let raw = fs::read_to_string(path)
-            .with_context(|| format!("reading {}", path.display()))?;
+        let raw =
+            fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
 
         let html_title = extract_title(&raw).unwrap_or_else(|| stem_title.clone());
         metadata.insert(
@@ -109,7 +107,9 @@ fn extract_title(html: &str) -> Option<String> {
     let start = lower.find(start_tag)?;
     // Walk past the opening tag's `>` (the tag may carry attributes).
     let after_open = lower[start..].find('>').map(|i| start + i + 1)?;
-    let end = lower[after_open..].find(close_tag).map(|i| after_open + i)?;
+    let end = lower[after_open..]
+        .find(close_tag)
+        .map(|i| after_open + i)?;
     let title = html[after_open..end].trim();
     if title.is_empty() {
         None
@@ -243,8 +243,7 @@ mod tests {
 
     #[test]
     fn decodes_basic_entities_in_title() {
-        let html =
-            b"<html><head><title>Cats &amp; Dogs &lt;3</title></head><body>x</body></html>";
+        let html = b"<html><head><title>Cats &amp; Dogs &lt;3</title></head><body>x</body></html>";
         let f = write_html(html);
         let doc = HtmlExtractor::new().extract(f.path(), opts()).unwrap();
         assert!(doc.markdown.contains("# Cats & Dogs <3"));
@@ -299,7 +298,11 @@ mod tests {
             )
             .unwrap();
         assert_eq!(doc.markdown, "");
-        assert!(doc.diagnostics.warnings.contains(&"metadata_only".to_string()));
+        assert!(
+            doc.diagnostics
+                .warnings
+                .contains(&"metadata_only".to_string())
+        );
         // Title falls back to filename stem in metadata-only mode — we
         // don't spend parse cycles when the folder is opt-out.
         let stem = f.path().file_stem().unwrap().to_str().unwrap();

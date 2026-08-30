@@ -323,7 +323,9 @@ mod tests {
             .expect("some chunk should contain BRAVO content");
         assert!(bravo_idx > 0, "BRAVO appeared in the very first chunk");
         assert!(
-            chunks[bravo_idx].markdown.contains("ALPHA_PARAGRAPH_FILLER"),
+            chunks[bravo_idx]
+                .markdown
+                .contains("ALPHA_PARAGRAPH_FILLER"),
             "overlap not carried into first BRAVO chunk = {:?}",
             chunks[bravo_idx].markdown
         );

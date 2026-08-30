@@ -9,6 +9,7 @@ mod db;
 mod error_body;
 mod extractors;
 mod file_tracker;
+mod helper_window;
 mod locale;
 #[cfg(feature = "legacy-minio")]
 mod minio;
@@ -21,11 +22,10 @@ mod server_check;
 mod server_common;
 mod server_ingest;
 mod server_upload;
-mod helper_window;
 mod settings_ui;
 mod svg_icon;
-mod telemetry;
 mod sync;
+mod telemetry;
 mod theme;
 mod tokens;
 mod upload_ui;
@@ -1446,8 +1446,7 @@ async fn mint_api_key(config: &AppConfig, bearer: &str) -> Result<String> {
         // name, or the create below trips the unique index.
         let existing = match client.get(url.clone()).bearer_auth(bearer).send().await {
             Ok(resp) if resp.status().is_success() => {
-                let keys: serde_json::Value =
-                    resp.json().await.context("decoding api-key list")?;
+                let keys: serde_json::Value = resp.json().await.context("decoding api-key list")?;
                 keys.as_array().and_then(|keys| {
                     keys.iter()
                         .find(|k| k.get("name").and_then(|n| n.as_str()) == Some(name.as_str()))

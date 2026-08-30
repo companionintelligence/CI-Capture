@@ -115,17 +115,7 @@ const SAFE_ROUTES: &[&str] = &[
 /// User-owned roots (`/Users`, `/home`, `/root`, `/Volumes`, `/tmp`, `/var`,
 /// `/mnt`, `/media`, `/opt`, …) are deliberately absent.
 const SAFE_SYSTEM_ROOTS: &[&str] = &[
-    "usr",
-    "bin",
-    "sbin",
-    "lib",
-    "lib64",
-    "etc",
-    "dev",
-    "proc",
-    "sys",
-    "System",
-    "Library",
+    "usr", "bin", "sbin", "lib", "lib64", "etc", "dev", "proc", "sys", "System", "Library",
 ];
 
 /// Relative roots that are this repository's own layout. Keeping them readable
@@ -439,8 +429,20 @@ fn match_secret(s: &str, i: usize) -> Option<(String, usize)> {
 /// for someone else's network. `eyJ` is a JWT's base64 `{"` and covers the OIDC
 /// access, refresh and id tokens this crate holds.
 const SECRET_PREFIXES: &[&str] = &[
-    "tskey-", "sk-", "sk_live_", "sk_test_", "ghp_", "gho_", "ghs_", "github_pat_", "xoxb-",
-    "xoxp-", "xapp-", "AKIA", "ASIA", "eyJ",
+    "tskey-",
+    "sk-",
+    "sk_live_",
+    "sk_test_",
+    "ghp_",
+    "gho_",
+    "ghs_",
+    "github_pat_",
+    "xoxb-",
+    "xoxp-",
+    "xapp-",
+    "AKIA",
+    "ASIA",
+    "eyJ",
 ];
 
 /// A labelled credential: `api_key=…`, `"token": "…"`, `Authorization: Bearer …`.
@@ -551,9 +553,10 @@ fn match_prefixed_secret(s: &str, i: usize) -> Option<usize> {
     let rest = &s[i..];
     // `get`, not indexing: `i` is a char boundary but `i + prefix.len()` need
     // not be, and `café/Users/…` is a real input.
-    let prefix = SECRET_PREFIXES
-        .iter()
-        .find(|p| rest.get(..p.len()).is_some_and(|head| head.eq_ignore_ascii_case(p)))?;
+    let prefix = SECRET_PREFIXES.iter().find(|p| {
+        rest.get(..p.len())
+            .is_some_and(|head| head.eq_ignore_ascii_case(p))
+    })?;
     let mut k = prefix.len();
     while let Some(c) = rest[k..].chars().next() {
         if !(c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '+' | '/' | '=')) {
@@ -693,7 +696,11 @@ fn url_tail_end(s: &str, from: usize) -> usize {
 }
 
 fn is_url_stop(c: char) -> bool {
-    c.is_whitespace() || matches!(c, '"' | '\'' | '<' | '>' | '`' | ',' | ';' | ')' | ']' | '}' | '\\')
+    c.is_whitespace()
+        || matches!(
+            c,
+            '"' | '\'' | '<' | '>' | '`' | ',' | ';' | ')' | ']' | '}' | '\\'
+        )
 }
 
 // ── Emails ──────────────────────────────────────────────────────────────────
@@ -859,8 +866,7 @@ fn match_path(s: &str, i: usize) -> Option<(String, usize)> {
     {
         let plain = path_end(rest, 3, true, false);
         let token = &rest[..plain];
-        let real_path =
-            token[2..].matches('\\').count() >= 2 || has_extension(last_segment(token));
+        let real_path = token[2..].matches('\\').count() >= 2 || has_extension(last_segment(token));
         if !real_path {
             return None;
         }
@@ -965,8 +971,23 @@ fn continues_path(c: char) -> bool {
     c.is_alphanumeric()
         || matches!(
             c,
-            '.' | '-' | '_' | '&' | '+' | '#' | '(' | '[' | '{' | '~' | '\'' | '!' | '@' | '$'
-                | '%' | '=' | '/' | '\\'
+            '.' | '-'
+                | '_'
+                | '&'
+                | '+'
+                | '#'
+                | '('
+                | '['
+                | '{'
+                | '~'
+                | '\''
+                | '!'
+                | '@'
+                | '$'
+                | '%'
+                | '='
+                | '/'
+                | '\\'
         )
 }
 
@@ -1163,7 +1184,9 @@ fn scrub_value_at(v: &mut Value, depth: u32) {
     }
     match v {
         Value::String(s) => *s = scrub_str(s),
-        Value::Array(a) => a.iter_mut().for_each(|item| scrub_value_at(item, depth + 1)),
+        Value::Array(a) => a
+            .iter_mut()
+            .for_each(|item| scrub_value_at(item, depth + 1)),
         Value::Object(o) => {
             let mut fresh = serde_json::Map::with_capacity(o.len());
             for (key, mut value) in std::mem::take(o) {
@@ -1291,7 +1314,10 @@ pub fn scrub(mut event: Event<'static>) -> Option<Event<'static>> {
     event.logger = event.logger.as_deref().map(scrub_str);
     event.release = event.release.as_deref().map(|v| Cow::Owned(scrub_str(v)));
     event.dist = event.dist.as_deref().map(|v| Cow::Owned(scrub_str(v)));
-    event.environment = event.environment.as_deref().map(|v| Cow::Owned(scrub_str(v)));
+    event.environment = event
+        .environment
+        .as_deref()
+        .map(|v| Cow::Owned(scrub_str(v)));
 
     // The grouping key is indexed and becomes the issue title in the UI.
     let fingerprint: Vec<Cow<'static, str>> = event
@@ -1395,7 +1421,10 @@ impl TransportFactory for ProxyFreeFactory {
             .expect("building a proxy-free blocking client cannot fail");
         Arc::new(ProxyFreeTransport {
             client,
-            dsn: options.dsn.clone().expect("guard checks the DSN before init"),
+            dsn: options
+                .dsn
+                .clone()
+                .expect("guard checks the DSN before init"),
         })
     }
 }
@@ -1581,7 +1610,14 @@ pub fn init(setting_on: bool) -> Option<sentry::ClientInitGuard> {
     options.release = sentry::release_name!();
     // Alpha builds are the point of this; separate them from any later stable
     // stream so one noisy prerelease cannot bury real reports.
-    options.environment = Some(if cfg!(debug_assertions) { "dev" } else { "release" }.into());
+    options.environment = Some(
+        if cfg!(debug_assertions) {
+            "dev"
+        } else {
+            "release"
+        }
+        .into(),
+    );
     // The contexts integration fills `server_name` from the hostname unless it
     // is already set. `scrub` clears the field too; setting it here means the
     // hostname is never read in the first place.
@@ -1606,13 +1642,7 @@ mod tests {
 
     /// Every string that must never appear in a report.
     const SECRETS: &[&str] = &[
-        "liam",
-        "broza",
-        "Broza",
-        "core-1",
-        "tail1234",
-        "taxes",
-        "passport",
+        "liam", "broza", "Broza", "core-1", "tail1234", "taxes", "passport",
     ];
 
     #[track_caller]
@@ -1742,20 +1772,29 @@ mod tests {
 
     #[test]
     fn a_document_folder_and_filename_go_with_the_path() {
-        let out = scrubbed("reading /Users/liam/Documents/Tax Returns 2025/ssn.pdf", SECRETS);
+        let out = scrubbed(
+            "reading /Users/liam/Documents/Tax Returns 2025/ssn.pdf",
+            SECRETS,
+        );
         assert!(!out.contains("Tax Returns"), "{out}");
         assert!(!out.contains("ssn"), "{out}");
     }
 
     #[test]
     fn a_surname_in_a_volume_name_is_removed() {
-        let out = scrubbed("backup at /Volumes/Liam Broza Backup/2026/passport.jpg", SECRETS);
+        let out = scrubbed(
+            "backup at /Volumes/Liam Broza Backup/2026/passport.jpg",
+            SECRETS,
+        );
         assert!(!out.contains("Backup"), "{out}");
     }
 
     #[test]
     fn windows_my_documents_is_removed() {
-        let out = scrubbed(r"opening C:\Users\liam\My Documents\Tax Returns\ssn.pdf", SECRETS);
+        let out = scrubbed(
+            r"opening C:\Users\liam\My Documents\Tax Returns\ssn.pdf",
+            SECRETS,
+        );
         assert!(!out.contains("Documents"), "{out}");
         assert!(!out.contains("ssn"), "{out}");
     }
@@ -1794,7 +1833,10 @@ mod tests {
             "`/Users/liam/out.png`",
             "liam@/Users/liam/notes.txt",
         ] {
-            scrubbed(input, &["/Users/liam", "/home/liam", "notes.txt", "out.png"]);
+            scrubbed(
+                input,
+                &["/Users/liam", "/home/liam", "notes.txt", "out.png"],
+            );
         }
     }
 
@@ -1805,7 +1847,11 @@ mod tests {
 
     #[test]
     fn a_leading_dot_or_underscore_segment_is_still_a_path() {
-        for input in ["at /.ssh/liam/id_rsa", "at /_private/liam/x", "at /Ünterlagen/liam/x"] {
+        for input in [
+            "at /.ssh/liam/id_rsa",
+            "at /_private/liam/x",
+            "at /Ünterlagen/liam/x",
+        ] {
             scrubbed(input, &["liam", "id_rsa", "Ünterlagen"]);
         }
     }
@@ -1836,7 +1882,10 @@ mod tests {
     #[test]
     fn json_escaped_and_percent_encoded_paths_are_removed() {
         scrubbed(r#"{"path":"\/Users\/liam\/x"}"#, &["Users", "liam"]);
-        scrubbed("opening %2FUsers%2Fliam%2Ftaxes.pdf", &["Users", "liam", "taxes"]);
+        scrubbed(
+            "opening %2FUsers%2Fliam%2Ftaxes.pdf",
+            &["Users", "liam", "taxes"],
+        );
     }
 
     // ── Hosts, with and without a scheme ────────────────────────────────────
@@ -1859,8 +1908,14 @@ mod tests {
 
     #[test]
     fn bare_ip_addresses_are_removed() {
-        scrubbed("dial tcp [2001:db8::dead:beef]:8642: refused", &["2001:db8", "dead:beef"]);
-        scrubbed("connecting to 192.168.1.47:8642 timed out", &["192.168.1.47"]);
+        scrubbed(
+            "dial tcp [2001:db8::dead:beef]:8642: refused",
+            &["2001:db8", "dead:beef"],
+        );
+        scrubbed(
+            "connecting to 192.168.1.47:8642 timed out",
+            &["192.168.1.47"],
+        );
     }
 
     #[test]
@@ -1877,7 +1932,10 @@ mod tests {
             "client error (Connect) for core-1.tail1234.ts.net:8642",
             "invalid peer certificate: NotValidForName for core-1.tail1234.ts.net",
         ] {
-            scrubbed(input, &["core-1", "tail1234", "liams-server", "example.com"]);
+            scrubbed(
+                input,
+                &["core-1", "tail1234", "liams-server", "example.com"],
+            );
         }
     }
 
@@ -1993,7 +2051,12 @@ mod tests {
              `{\"error\":\"invalid_grant\",\"error_description\":\"liam.broza@gmail.com no \
              pertenece a la organizacion Lifescope; dispositivo ci-applet-liams-macbook; ruta \
              /Users/liam/Library/Application Support/Companion Capture; reintente\"}`",
-            &["liam.broza", "gmail.com", "/Users/liam", "Application Support"],
+            &[
+                "liam.broza",
+                "gmail.com",
+                "/Users/liam",
+                "Application Support",
+            ],
         );
     }
 
@@ -2036,7 +2099,10 @@ mod tests {
         assert!(ids.is_empty(), "would shred prose: {ids:?}");
         // …and a real name is only matched on word boundaries.
         let ids = identifier_set(&[Some("ana".into())]);
-        assert_eq!(redact_identifiers("analysis of ana", &ids), "analysis of [redacted]");
+        assert_eq!(
+            redact_identifiers("analysis of ana", &ids),
+            "analysis of [redacted]"
+        );
     }
 
     // ── Over-scrubbing: a report nobody can read is its own failure ─────────
@@ -2096,7 +2162,10 @@ mod tests {
             "path:/api/v1/events",
         ] {
             let out = scrub_str(input);
-            assert!(out.contains("a:") || out.contains("Note:") || out.contains("path:"), "{out}");
+            assert!(
+                out.contains("a:") || out.contains("Note:") || out.contains("path:"),
+                "{out}"
+            );
             assert!(!out.starts_with("Not["), "mangled: {out}");
         }
         unchanged(r"regex a:\d+ did not match");
@@ -2119,8 +2188,13 @@ mod tests {
     #[test]
     fn panic_locations_and_causes_survive() {
         unchanged("thread 'main' panicked at src/main.rs:88:17");
-        let out = scrub_str("stat file /Users/liam/Documents/taxes.pdf: No such file or directory (os error 2)");
-        assert!(out.ends_with(": No such file or directory (os error 2)"), "{out}");
+        let out = scrub_str(
+            "stat file /Users/liam/Documents/taxes.pdf: No such file or directory (os error 2)",
+        );
+        assert!(
+            out.ends_with(": No such file or directory (os error 2)"),
+            "{out}"
+        );
         let out = scrub_str("Config {dir: /tmp/liam-cache}");
         assert!(out.ends_with("}"), "{out}");
         assert!(!out.contains("liam"), "{out}");
@@ -2442,7 +2516,11 @@ mod tests {
                      with HTTP 401 Unauthorized: {\"error\":\"unauthorized\",\
                      \"device\":\"ci-applet-liams-macbook\",\"user\":\"liam.broza@gmail.com\"}";
         let out = scrub_with(input, &ids);
-        assert_clean(input, &out, &["liam", "Liam", "macbook", "core-1", "tail1234", "gmail"]);
+        assert_clean(
+            input,
+            &out,
+            &["liam", "Liam", "macbook", "core-1", "tail1234", "gmail"],
+        );
         // …and still says what failed.
         assert!(out.contains("401 Unauthorized"), "{out}");
         assert!(out.contains("/api/v1/events"), "{out}");
@@ -2468,14 +2546,48 @@ mod tests {
         ]);
         let prod = |s: &str| scrub_with(s, &ids);
         let secrets = [
-            "liam", "Liam", "broza", "Broza", "core-1", "tail1234", "taxes", "Taxes", "passport",
-            "ssn", "kids", "Art of War", "Screen Shot", "Application Support",
-            "gmail", "macbook", "2001:db8", "192.168.1.47", "fileserver", "id_rsa", "notes.txt",
-            "notes.docx", "Backup", "OneDrive", "w2", "Documents", "192.168", "fe80",
-            "liams-server", "example.com", "mydomain", "lifescope",
+            "liam",
+            "Liam",
+            "broza",
+            "Broza",
+            "core-1",
+            "tail1234",
+            "taxes",
+            "Taxes",
+            "passport",
+            "ssn",
+            "kids",
+            "Art of War",
+            "Screen Shot",
+            "Application Support",
+            "gmail",
+            "macbook",
+            "2001:db8",
+            "192.168.1.47",
+            "fileserver",
+            "id_rsa",
+            "notes.txt",
+            "notes.docx",
+            "Backup",
+            "OneDrive",
+            "w2",
+            "Documents",
+            "192.168",
+            "fe80",
+            "liams-server",
+            "example.com",
+            "mydomain",
+            "lifescope",
             // Credentials and quoted document text — see the sections above.
-            "sk-live", "9f3a2b1c8d7e", "tskey-auth", "eyJhbGciOiJIUzI1NiJ9", "hunter2horse",
-            "AKIAIOSFODNN7EXAMPLE", "biopsy", "Alvarez", "term sheet",
+            "sk-live",
+            "9f3a2b1c8d7e",
+            "tskey-auth",
+            "eyJhbGciOiJIUzI1NiJ9",
+            "hunter2horse",
+            "AKIAIOSFODNN7EXAMPLE",
+            "biopsy",
+            "Alvarez",
+            "term sheet",
         ];
         let mut failures = Vec::new();
         for input in [
@@ -2571,7 +2683,10 @@ mod tests {
             ("api key rejected: api_key=sk-live-9f3a2b1c8d7e", "api_key="),
             ("x-api-key: 9f3a2b1c8d7e4f5a", "x-api-key:"),
             (r#"{"token":"9f3a2b1c8d7e","kind":"applet"}"#, r#""token":"#),
-            ("Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.e30.sig", "Bearer "),
+            (
+                "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.e30.sig",
+                "Bearer ",
+            ),
             // …and with no label in front of it, which is how a header value
             // looks once it has been logged on its own.
             ("Bearer 9f3a2b1c8d7e4f5a rejected", "Bearer "),
@@ -2608,7 +2723,10 @@ mod tests {
                 "decoding eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxIn0.abc failed",
                 "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9",
             ),
-            ("using AKIAIOSFODNN7EXAMPLE for upload", "AKIAIOSFODNN7EXAMPLE"),
+            (
+                "using AKIAIOSFODNN7EXAMPLE for upload",
+                "AKIAIOSFODNN7EXAMPLE",
+            ),
         ] {
             scrubbed(input, &[secret]);
         }
@@ -2670,7 +2788,9 @@ mod tests {
         let mut event = Event::default();
         event.tags.insert("token".into(), "9f3a2b1c8d7e".into());
         event.tags.insert("user".into(), "Liam Broza".into());
-        event.tags.insert("user-agent".into(), "companion-capture/1".into());
+        event
+            .tags
+            .insert("user-agent".into(), "companion-capture/1".into());
         event.extra.insert(
             "authorization".into(),
             Value::String("Bearer 9f3a2b1c8d7e".into()),
@@ -2714,7 +2834,11 @@ mod tests {
             ..Default::default()
         };
         let json = json_of(event);
-        assert_clean("request", &json, &["taxes", "core-1", "tail1234", "9f3a2b1c8d7e", "referer"]);
+        assert_clean(
+            "request",
+            &json,
+            &["taxes", "core-1", "tail1234", "9f3a2b1c8d7e", "referer"],
+        );
     }
 
     #[test]
@@ -2751,11 +2875,22 @@ mod tests {
         ] {
             let out = scrubbed(
                 input,
-                &["Alvarez", "biopsy", "Series B", "term sheet", "PATIENT", "Jane Doe", "1981-04-02"],
+                &[
+                    "Alvarez",
+                    "biopsy",
+                    "Series B",
+                    "term sheet",
+                    "PATIENT",
+                    "Jane Doe",
+                    "1981-04-02",
+                ],
             );
             // The diagnosis — index, char, byte range — is what makes it
             // actionable, and it stays.
-            assert!(out.contains("byte index") || out.contains("begin <= end"), "{out}");
+            assert!(
+                out.contains("byte index") || out.contains("begin <= end"),
+                "{out}"
+            );
         }
         // Ordinary prose with a backtick is not a slicing panic.
         unchanged("running `cargo test` first");
@@ -2854,7 +2989,13 @@ mod tests {
         // which is the only thing that makes "why is nothing arriving?"
         // answerable.
         for (setting, dsn, telemetry, local_only, expected) in [
-            (false, None, Some("off"), Some("1"), DisabledReason::LocalOnly),
+            (
+                false,
+                None,
+                Some("off"),
+                Some("1"),
+                DisabledReason::LocalOnly,
+            ),
             (false, None, Some("off"), None, DisabledReason::OptedOut),
             (false, None, None, None, DisabledReason::SettingOff),
             (true, None, None, None, DisabledReason::NoDsn),
@@ -2869,7 +3010,11 @@ mod tests {
     #[test]
     fn every_disabled_reason_has_a_wire_name_and_knows_its_variable() {
         for (reason, name, var) in [
-            (DisabledReason::LocalOnly, "local-only", Some(LOCAL_ONLY_VAR)),
+            (
+                DisabledReason::LocalOnly,
+                "local-only",
+                Some(LOCAL_ONLY_VAR),
+            ),
             (DisabledReason::OptedOut, "opt-out", Some(TELEMETRY_VAR)),
             (DisabledReason::SettingOff, "setting-off", None),
             (DisabledReason::NoDsn, "no-dsn", None),
