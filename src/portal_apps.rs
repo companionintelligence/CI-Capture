@@ -251,7 +251,12 @@ mod tests {
         // like `ci-memory2`; the Portal still returns it for `?slug=ci-memory`
         // (canonical-name match) and it must not be re-filtered away here.
         let apps = [
-            app("ci-memory", "http://core-1:8642", Some("Core"), Some("core-1")),
+            app(
+                "ci-memory",
+                "http://core-1:8642",
+                Some("Core"),
+                Some("core-1"),
+            ),
             app(
                 "my-custom-memory",
                 "https://my-custom-memory.example.com",
@@ -270,7 +275,12 @@ mod tests {
         // The same server advertised twice with cosmetic differences must not
         // present as a choice between two machines.
         let apps = [
-            app("ci-memory", "http://core-1:8642", Some("Core"), Some("core")),
+            app(
+                "ci-memory",
+                "http://core-1:8642",
+                Some("Core"),
+                Some("core"),
+            ),
             app(
                 "ci-memory",
                 "http://core-1:8642/",
@@ -284,7 +294,12 @@ mod tests {
     #[test]
     fn keeps_genuinely_distinct_cores_so_the_user_can_choose() {
         let apps = [
-            app("ci-memory", "http://core-1:8642", Some("Desk"), Some("desk")),
+            app(
+                "ci-memory",
+                "http://core-1:8642",
+                Some("Desk"),
+                Some("desk"),
+            ),
             app(
                 "ci-memory",
                 "http://core-2.tail.ts.net:8642",

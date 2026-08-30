@@ -33,8 +33,7 @@ const HASH_CHUNK_BYTES: usize = 64 * 1024;
 /// policy, only mechanics.
 pub fn fingerprint(path: impl AsRef<Path>) -> Result<FileFingerprint> {
     let path = path.as_ref();
-    let metadata = std::fs::metadata(path)
-        .with_context(|| format!("stat {}", path.display()))?;
+    let metadata = std::fs::metadata(path).with_context(|| format!("stat {}", path.display()))?;
     let size_bytes = metadata.len();
     let mtime = system_time_to_utc(metadata.modified().ok());
     let inode = file_id(&metadata);

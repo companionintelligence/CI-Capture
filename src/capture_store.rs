@@ -45,7 +45,11 @@ pub const RETRY_MIN_AGE: Duration = Duration::from_secs(2 * 60);
 pub const MAX_RETRIES_PER_SWEEP: usize = 8;
 
 /// Decide what to prune and what to retry. `entries` may be in any order.
-pub fn plan_sweep(entries: Vec<StoredCapture>, config: &CaptureConfig, now: SystemTime) -> SweepPlan {
+pub fn plan_sweep(
+    entries: Vec<StoredCapture>,
+    config: &CaptureConfig,
+    now: SystemTime,
+) -> SweepPlan {
     plan_sweep_ex(entries, config, now, false)
 }
 
@@ -101,8 +105,7 @@ fn plan_sweep_ex(
     plan.retry = kept
         .into_iter()
         .filter(|e| {
-            force_retry
-                || now.duration_since(e.modified).unwrap_or_default() >= RETRY_MIN_AGE
+            force_retry || now.duration_since(e.modified).unwrap_or_default() >= RETRY_MIN_AGE
         })
         .map(|e| e.path)
         .take(MAX_RETRIES_PER_SWEEP)
@@ -127,8 +130,7 @@ impl ScreenshotBacklog {
     /// Old enough that the fresh capture→upload path should already have
     /// deleted the file. Younger frames are presumed still in flight.
     pub fn is_stuck(&self) -> bool {
-        self.oldest
-            .is_some_and(|age| age >= RETRY_MIN_AGE)
+        self.oldest.is_some_and(|age| age >= RETRY_MIN_AGE)
     }
 }
 
@@ -235,7 +237,14 @@ mod tests {
     fn old_unsent_frames_are_retried_oldest_first_and_capped() {
         let now = SystemTime::now();
         let entries: Vec<_> = (0..20)
-            .map(|i| entry(&format!("f{i:02}.png"), 100, HOUR + Duration::from_secs(i), now))
+            .map(|i| {
+                entry(
+                    &format!("f{i:02}.png"),
+                    100,
+                    HOUR + Duration::from_secs(i),
+                    now,
+                )
+            })
             .collect();
         let plan = plan_sweep(entries, &cfg(14, 2048), now);
         assert!(plan.prune.is_empty());

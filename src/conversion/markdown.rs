@@ -130,10 +130,7 @@ where
     }
     out.push('\n');
     for row in rows {
-        let cells: Vec<String> = row
-            .into_iter()
-            .map(|c| escape_cell(c.as_ref()))
-            .collect();
+        let cells: Vec<String> = row.into_iter().map(|c| escape_cell(c.as_ref())).collect();
         out.push('|');
         for i in 0..headers.len() {
             let cell = cells.get(i).map(String::as_str).unwrap_or("");
@@ -310,10 +307,7 @@ mod tests {
 
     #[test]
     fn table_escapes_pipes_and_newlines_in_cells() {
-        let out = table(
-            ["Header"],
-            vec![vec!["has | pipe"], vec!["multi\nline"]],
-        );
+        let out = table(["Header"], vec![vec!["has | pipe"], vec!["multi\nline"]]);
         assert!(out.contains("has \\| pipe"));
         assert!(out.contains("multi line"));
         // No literal newline mid-cell.
@@ -396,10 +390,7 @@ mod tests {
     #[test]
     fn yaml_escapes_control_chars_in_strings() {
         let mut m = Map::new();
-        m.insert(
-            "messy".to_string(),
-            json!("line1\nline2\ttab\"quote"),
-        );
+        m.insert("messy".to_string(), json!("line1\nline2\ttab\"quote"));
         let out = yaml_frontmatter(&m);
         assert!(out.contains("messy: \"line1\\nline2\\ttab\\\"quote\""));
     }

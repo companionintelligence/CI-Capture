@@ -19,9 +19,7 @@ use anyhow::{Context, Result};
 use mail_parser::{HeaderName, HeaderValue, MessageParser};
 use uuid::Uuid;
 
-use super::traits::{
-    ExtractOptions, ExtractedDocument, ExtractionDiagnostics, Extractor, Section,
-};
+use super::traits::{ExtractOptions, ExtractedDocument, ExtractionDiagnostics, Extractor, Section};
 
 pub struct EmlExtractor;
 
@@ -316,18 +314,20 @@ Are you free for lunch on Friday?\r\n\
             doc.metadata.get("title"),
             Some(&serde_json::Value::String("Lunch?".to_string()))
         );
-        assert!(doc
-            .metadata
-            .get("from")
-            .and_then(|v| v.as_str())
-            .map(|s| s.contains("alice@example.com"))
-            .unwrap_or(false));
-        assert!(doc
-            .metadata
-            .get("to")
-            .and_then(|v| v.as_str())
-            .map(|s| s.contains("bob@example.com"))
-            .unwrap_or(false));
+        assert!(
+            doc.metadata
+                .get("from")
+                .and_then(|v| v.as_str())
+                .map(|s| s.contains("alice@example.com"))
+                .unwrap_or(false)
+        );
+        assert!(
+            doc.metadata
+                .get("to")
+                .and_then(|v| v.as_str())
+                .map(|s| s.contains("bob@example.com"))
+                .unwrap_or(false)
+        );
         // Date round-trips to RFC3339.
         let date = doc.metadata.get("date").and_then(|v| v.as_str()).unwrap();
         assert!(date.starts_with("2026-05-18"));
@@ -412,7 +412,11 @@ Content-Type: text/html\r\n\
             )
             .unwrap();
         assert_eq!(doc.markdown, "");
-        assert!(doc.diagnostics.warnings.contains(&"metadata_only".to_string()));
+        assert!(
+            doc.diagnostics
+                .warnings
+                .contains(&"metadata_only".to_string())
+        );
         // Title falls back to filename stem (we don't parse in metadata-only).
         let stem = f.path().file_stem().unwrap().to_str().unwrap();
         assert_eq!(

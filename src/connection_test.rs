@@ -116,11 +116,9 @@ pub async fn test_ci_server(config: &AppConfig) -> Result<String, String> {
             return Err(rust_i18n::t!("status.check.edge_sso_intercept").to_string());
         }
         if status.is_success() {
-            return Ok(rust_i18n::t!(
-                "status.check.health_fallback",
-                status = status.as_u16()
-            )
-            .to_string());
+            return Ok(
+                rust_i18n::t!("status.check.health_fallback", status = status.as_u16()).to_string(),
+            );
         }
     }
 
