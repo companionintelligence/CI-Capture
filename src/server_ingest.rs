@@ -23,6 +23,47 @@ struct CaptureEvent {
     payload: Value,
 }
 
+/// `source_type` CI-Server stamps on every `/v1/events` row that doesn't send
+/// one explicitly (see BulkIngestController's `e.source_type ?? 'capture'`).
+/// `CaptureEvent` never sends `source_type` (the struct has no such field) —
+/// it always resolves to this. Named here, rather than left implicit, because
+/// [`CaptureIdentity`] needs it spelled out: `/files/upload` has no such
+/// default, so a screenshot upload must send it to match.
+const CAPTURE_SOURCE_TYPE: &str = "capture";
+const VIZIER_SOURCE_SYSTEM: &str = "ci-applet";
+
+/// The (source_type, source_system, source_id) provenance triple a vizier
+/// (desktop-activity) event was sent under. Threaded from
+/// `WorkerState::capture_vizier` into the SAME tick's screenshot upload
+/// (`ingest_capture` / `capture_upload_form`) so CI-Server can auto-link
+/// `ci.files.event_id` to the matching `ci.events` row by triple
+/// (`FileService.resolveEventId`, which reuses `ContentService`'s
+/// provenance-triple resolver) — the screenshot and the vizier event
+/// otherwise carry no shared identifier: they upload via separate,
+/// independently-retried requests.
+#[derive(Debug, Clone)]
+pub struct CaptureIdentity {
+    pub source_type: &'static str,
+    pub source_system: &'static str,
+    pub source_id: String,
+}
+
+/// Builds the triple a vizier event sends under — shared by [`ingest_vizier_event`]
+/// (which sends it as this `CaptureEvent`'s `source_system`/`source_id`) and
+/// `WorkerState::capture_vizier` (which threads the SAME triple into that tick's
+/// screenshot upload). A pure function of the already-built `event`, so both call
+/// sites always agree — there is no separate correlator to keep in sync.
+pub fn vizier_capture_identity(event: &VizierEventRecord) -> CaptureIdentity {
+    CaptureIdentity {
+        source_type: CAPTURE_SOURCE_TYPE,
+        source_system: VIZIER_SOURCE_SYSTEM,
+        source_id: format!(
+            "vizier:{}:{}:{}",
+            event.session_id, event.monotonic_ms, event.event_kind
+        ),
+    }
+}
+
 #[derive(Debug, Serialize)]
 struct IngestEventsRequest {
     events: Vec<CaptureEvent>,
@@ -147,6 +188,7 @@ pub async fn ingest_capture(
     inventory: bool,
     skip_description: bool,
     model: Option<&str>,
+    identity: Option<&CaptureIdentity>,
 ) -> Result<String> {
     let credential = AuthCredential::from_config(config)?;
 
@@ -166,7 +208,14 @@ pub async fn ingest_capture(
 
     let mut last_error = None;
     for upload_url in upload_urls(&config.server.portal_url)? {
-        let form = capture_upload_form(filename, png_bytes, inventory, skip_description, model)?;
+        let form = capture_upload_form(
+            filename,
+            png_bytes,
+            inventory,
+            skip_description,
+            model,
+            identity,
+        )?;
         let response = credential
             .apply(client.post(upload_url.clone()))
             .multipart(form)
@@ -316,6 +365,7 @@ pub async fn ingest_vizier_event(
     device_id: Uuid,
     event: &VizierEventRecord,
 ) -> Result<()> {
+    let identity = vizier_capture_identity(event);
     let payload = serde_json::json!({
         "device_id": device_id,
         "session_id": event.session_id,
@@ -331,11 +381,8 @@ pub async fn ingest_vizier_event(
     post_capture_event(
         config,
         CaptureEvent {
-            source_system: "ci-applet",
-            source_id: format!(
-                "vizier:{}:{}:{}",
-                event.session_id, event.monotonic_ms, event.event_kind
-            ),
+            source_system: identity.source_system,
+            source_id: identity.source_id,
             kind: format!("vizier_{}", event.event_kind),
             occurred_at: event
                 .observed_at
@@ -443,6 +490,7 @@ fn capture_upload_form(
     inventory: bool,
     skip_description: bool,
     model: Option<&str>,
+    identity: Option<&CaptureIdentity>,
 ) -> Result<reqwest::multipart::Form> {
     let part = reqwest::multipart::Part::bytes(png_bytes.to_vec())
         .file_name(filename.to_string())
@@ -464,6 +512,21 @@ fn capture_upload_form(
     // server reject the job. When the applet analyses locally, omit it.
     if let Some(model) = model.filter(|m| !m.trim().is_empty()) {
         form = form.text("model", model.to_string());
+    }
+    // Echo the SAME (source_type, source_system, source_id) triple the vizier
+    // event from this tick sent (see `vizier_capture_identity`), so
+    // CI-Server's FileService can resolve this upload's `ci.files.event_id`
+    // against the matching `ci.events` row by that triple. Only the LIVE tick
+    // path has an identity to offer — `WorkerState::capture_once` threads it
+    // in via `PendingCapture`; the disk-backed retry sweep
+    // (`sweep_capture_store`) only ever recovers a filename + bytes and has no
+    // way to reconstruct it, so a sweep-retried upload omits these fields and
+    // simply lands with `event_id` null, same as before this feature existed.
+    if let Some(identity) = identity {
+        form = form
+            .text("sourceType", identity.source_type)
+            .text("sourceSystem", identity.source_system)
+            .text("sourceId", identity.source_id.clone());
     }
     Ok(form)
 }
@@ -545,6 +608,77 @@ mod tests {
             markdown: markdown.map(|s| s.to_string()),
             ..FileEventContent::default()
         }
+    }
+
+    fn sample_vizier_event(
+        session_id: Uuid,
+        monotonic_ms: i64,
+        event_kind: &str,
+    ) -> VizierEventRecord {
+        VizierEventRecord {
+            user_id: Uuid::new_v4(),
+            device_id: Uuid::new_v4(),
+            session_id,
+            event_kind: event_kind.to_string(),
+            observed_at: chrono::Utc::now(),
+            monotonic_ms,
+            payload: serde_json::json!({}),
+            focus_app: None,
+            focus_title: None,
+            cwd: None,
+            fs_event_count: 0,
+        }
+    }
+
+    /// `vizier_capture_identity` builds the SAME triple this event's
+    /// `CaptureEvent` gets sent under (`ingest_vizier_event`), and
+    /// `WorkerState::capture_vizier` hands the identical triple back to the
+    /// caller to thread into that tick's screenshot upload. Pin the exact
+    /// shape so the two never drift apart: `source_type` is 'capture' (what
+    /// CI-Server defaults an explicit-less `/v1/events` row to — see
+    /// BulkIngestController's `e.source_type ?? 'capture'`), `source_system`
+    /// is 'ci-applet', and `source_id` is `vizier:{session_id}:{monotonic_ms}:{event_kind}`.
+    #[test]
+    fn vizier_capture_identity_matches_the_documented_triple() {
+        let session_id = Uuid::new_v4();
+        let event = sample_vizier_event(session_id, 42, "patch");
+
+        let identity = vizier_capture_identity(&event);
+
+        assert_eq!(identity.source_type, "capture");
+        assert_eq!(identity.source_system, "ci-applet");
+        assert_eq!(identity.source_id, format!("vizier:{session_id}:42:patch"));
+    }
+
+    /// Two events from the same tick (same session, monotonic_ms, kind) must
+    /// resolve to the SAME triple — that identity IS the correlator threaded
+    /// into the screenshot upload, so it must be a pure, deterministic
+    /// function of the event's own fields, not e.g. re-randomized per call.
+    #[test]
+    fn vizier_capture_identity_is_deterministic() {
+        let session_id = Uuid::new_v4();
+        let a = vizier_capture_identity(&sample_vizier_event(session_id, 7, "snapshot"));
+        let b = vizier_capture_identity(&sample_vizier_event(session_id, 7, "snapshot"));
+
+        assert_eq!(a.source_id, b.source_id);
+    }
+
+    /// A different `monotonic_ms` or `event_kind` (i.e. a different tick, or
+    /// the snapshot-vs-patch distinction within a session) must produce a
+    /// DIFFERENT source_id — otherwise two distinct vizier events would
+    /// collide on the same `events_source_triple_uniq` key server-side, and a
+    /// screenshot could link to the wrong one.
+    #[test]
+    fn vizier_capture_identity_distinguishes_ticks_within_a_session() {
+        let session_id = Uuid::new_v4();
+        let by_time = vizier_capture_identity(&sample_vizier_event(session_id, 1, "patch"));
+        let by_kind = vizier_capture_identity(&sample_vizier_event(session_id, 1, "snapshot"));
+
+        assert_ne!(
+            by_time.source_id,
+            vizier_capture_identity(&sample_vizier_event(session_id, 2, "patch")).source_id
+        );
+        assert_ne!(by_time.source_id, by_kind.source_id);
     }
 
     #[test]
