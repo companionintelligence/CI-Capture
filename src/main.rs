@@ -1,5 +1,6 @@
 mod analysis;
 mod backlog;
+mod bluebubbles;
 mod capture;
 mod capture_store;
 mod config;
@@ -101,6 +102,11 @@ fn main() -> Result<()> {
 
     if std::env::args().any(|arg| arg == "--check-server") {
         server_check::run(parse_portal_override())?;
+        return Ok(());
+    }
+
+    if std::env::args().any(|arg| arg == "--check-bluebubbles") {
+        bluebubbles::check::run()?;
         return Ok(());
     }
 

@@ -370,6 +370,59 @@ pub async fn ingest_vizier_event(
     .map_err(anyhow::Error::from)
 }
 
+/// Ship one BlueBubbles message to CI-Server via the generic capture-event
+/// pipeline (see `crate::bluebubbles`'s module doc for the known gap this
+/// leaves — it lands as an event blob, not a `ci.communications` row).
+///
+/// `title`/`description` (the two fields CI-Server's search indexer actually
+/// embeds — see `file_event_description`'s doc comment above for the same
+/// reasoning applied to file events) carry the chat name and message text.
+/// Message *content* therefore reaches the server and, from there, disk and
+/// logs on that machine — same trust boundary as every other capture lane,
+/// but worth being explicit about for a lane that carries someone else's
+/// words, not just this device's own activity.
+pub async fn ingest_bluebubbles_message(
+    config: &AppConfig,
+    device_id: Uuid,
+    message: &crate::bluebubbles::client::BlueBubblesMessage,
+) -> Result<(), IngestError> {
+    let chat = message.chats.first();
+    let occurred_at = message
+        .date_created
+        .and_then(chrono::DateTime::from_timestamp_millis)
+        .unwrap_or_else(chrono::Utc::now)
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+
+    let title = chat
+        .and_then(|c| c.display_name.clone().or_else(|| c.chat_identifier.clone()))
+        .or_else(|| message.handle.as_ref().map(|h| h.address.clone()));
+
+    let payload = serde_json::json!({
+        "device_id": device_id,
+        "guid": message.guid,
+        "chat_guid": chat.map(|c| c.guid.clone()),
+        "is_from_me": message.is_from_me,
+        "handle": message.handle,
+        "attachments": message.attachments,
+    });
+
+    post_capture_event(
+        config,
+        CaptureEvent {
+            source_system: "ci-applet",
+            source_id: format!("bluebubbles:{}", message.guid),
+            kind: "bluebubbles_message".to_string(),
+            occurred_at: occurred_at.clone(),
+            observed_at: Some(occurred_at),
+            title,
+            description: message.text.clone(),
+            payload,
+            capture_tick_id: None,
+        },
+    )
+    .await
+}
+
 // ── Internal ──────────────────────────────────────────────────────────────────
 
 async fn post_capture_event(config: &AppConfig, event: CaptureEvent) -> Result<(), IngestError> {
