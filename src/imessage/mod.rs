@@ -35,7 +35,7 @@ use crate::config::AppConfig;
 use crate::permissions::{self, PermissionStatus};
 use crate::server_ingest;
 
-use reader::{ImessageCursor, MessagePage};
+use reader::{ImessageCursor, ImessageRow, MessagePage};
 
 /// Floor on the poll interval — same reasoning as `bluebubbles`'s.
 const MIN_POLL_INTERVAL_SECS: u64 = 10;
@@ -274,7 +274,7 @@ pub(crate) async fn poll_once(
 /// Human-readable summary of one row, for `--check-imessage` — never the
 /// message text itself, matching `bluebubbles::describe`'s reasoning: this
 /// carries someone else's words, not just this device's own activity.
-pub fn describe(row: &reader::ImessageRow) -> String {
+pub fn describe(row: &ImessageRow) -> String {
     let chat = row
         .chat_display_name
         .clone()
