@@ -519,6 +519,47 @@ async fn a_message_with_no_text_is_still_ingested_not_rejected_as_a_null_descrip
     );
 }
 
+/// A page with nothing ingestible left in it has no acknowledged row to
+/// advance the cursor off, so it advances past the drops itself — otherwise
+/// the same unreadable rows come back on every poll for good.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_page_of_nothing_but_unreadable_rows_still_moves_the_cursor_past_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("chat.db");
+    let conn = fixture_chat_db(
+        &db_path,
+        &[
+            (1, "MSG-BAD-1", "unreadable date", false, i64::MIN),
+            (2, "MSG-BAD-2", "unreadable date", false, i64::MIN + 1),
+            (3, "MSG-GOOD", "fine", false, COCOA_2026_NANOS + 373_504),
+        ],
+    );
+    drop(conn);
+
+    let (origin, recorded) = spawn_mock_server(vec![]);
+    let config = lane_config(&origin);
+
+    // Page size 2: the first page is entirely drops.
+    let first = poll_once(&db_path, &config, Uuid::nil(), None, 2)
+        .await
+        .unwrap();
+    assert_eq!(first.fetched, 0);
+    assert_eq!(first.skipped_invalid_timestamp, 2);
+    assert!(
+        first.advanced_to.is_some(),
+        "a fully-dropped page must still hand back a cursor"
+    );
+
+    let second = poll_once(&db_path, &config, Uuid::nil(), first.advanced_to, 2)
+        .await
+        .unwrap();
+    assert_eq!(
+        second.ingested, 1,
+        "the good row is reached on the next poll"
+    );
+    assert_eq!(recorded.lock().unwrap().len(), 1);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn an_empty_database_is_a_no_op_not_an_error() {
     let dir = tempfile::tempdir().unwrap();

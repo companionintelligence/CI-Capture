@@ -130,6 +130,14 @@ pub struct MessagePage {
     /// omitted, because a page that silently shrinks is indistinguishable from
     /// one that had nothing in it.
     pub skipped_invalid_timestamp: usize,
+    /// The last row the query returned, dropped ones included. The caller
+    /// normally advances its cursor off an *ingested* row, so that a failure
+    /// is retried rather than skipped — but a page whose every row was dropped
+    /// leaves it nothing to advance with, and re-reading returns the same rows
+    /// forever. This is the way past that: those rows can never become
+    /// ingestible, so there is nothing being skipped that could have been
+    /// retried.
+    pub last_seen: Option<ImessageCursor>,
 }
 
 /// Open `chat.db` read-only. Doesn't create the file, doesn't write a
@@ -202,14 +210,17 @@ pub fn read_messages(
         .query_map(params![after_date, after_rowid, limit], |row| {
             let rowid: i64 = row.get("rowid")?;
             let date_raw: i64 = row.get("date_raw")?;
+            // Paired with every row, kept or not, so `last_seen` can be filled
+            // in even for one that never becomes an `ImessageRow`.
+            let seen = ImessageCursor { date_raw, rowid };
             let Some(date_created_unix_ms) = cocoa_raw_to_unix_ms(date_raw) else {
                 log::warn!(
                     "imessage: skipping rowid={rowid}, message.date={date_raw} is not a representable timestamp"
                 );
-                return Ok(None);
+                return Ok((seen, None));
             };
 
-            Ok(Some(ImessageRow {
+            Ok((seen, Some(ImessageRow {
                 rowid,
                 guid: row.get("guid")?,
                 text: row.get("text")?,
@@ -224,13 +235,15 @@ pub fn read_messages(
                 chat_identifier: row.get("chat_identifier")?,
                 chat_display_name: row.get("chat_display_name")?,
                 attachment_count: row.get("attachment_count")?,
-            }))
+            })))
         })
         .context("running message query")?;
 
     let mut page = MessagePage::default();
     for row in rows {
-        match row.context("reading message rows")? {
+        let (seen, row) = row.context("reading message rows")?;
+        page.last_seen = Some(seen);
+        match row {
             Some(row) => page.rows.push(row),
             None => page.skipped_invalid_timestamp += 1,
         }
@@ -454,6 +467,33 @@ mod tests {
         let page = read_messages(&conn, None, 10).unwrap();
         assert_eq!(guids(&page), ["MSG-2"]);
         assert_eq!(page.skipped_invalid_timestamp, 1);
+    }
+
+    /// A page with nothing left in it after the drops still reports where it
+    /// got to, so the caller has something to move past. Without it, a whole
+    /// page of unreadable rows would be re-read on every poll forever.
+    #[test]
+    fn an_entirely_dropped_page_still_reports_where_it_reached() {
+        let conn = fixture_db();
+        insert_message(&conn, 1, i64::MIN);
+        insert_message(&conn, 2, i64::MIN + 1);
+
+        let page = read_messages(&conn, None, 10).unwrap();
+        assert!(page.rows.is_empty());
+        assert_eq!(page.skipped_invalid_timestamp, 2);
+        assert_eq!(
+            page.last_seen,
+            Some(ImessageCursor {
+                date_raw: i64::MIN + 1,
+                rowid: 2
+            })
+        );
+    }
+
+    #[test]
+    fn an_empty_page_reaches_nothing_to_report() {
+        let conn = fixture_db();
+        assert_eq!(read_messages(&conn, None, 10).unwrap().last_seen, None);
     }
 
     #[test]

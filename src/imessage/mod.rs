@@ -244,6 +244,13 @@ pub(crate) async fn poll_once(
     }
 
     if page.rows.is_empty() {
+        // Every row in this page was dropped, so there is no ingested row to
+        // advance the cursor off and the next poll would read exactly these
+        // rows again, forever. Step past them explicitly — they can never
+        // become ingestible, so nothing retryable is being skipped.
+        if page.skipped_invalid_timestamp > 0 {
+            outcome.advanced_to = page.last_seen;
+        }
         return Ok(outcome);
     }
 
