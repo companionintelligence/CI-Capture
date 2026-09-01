@@ -35,7 +35,7 @@ use crate::config::AppConfig;
 use crate::permissions::{self, PermissionStatus};
 use crate::server_ingest;
 
-use reader::ImessageRow;
+use reader::{ImessageCursor, MessagePage};
 
 /// Floor on the poll interval — same reasoning as `bluebubbles`'s.
 const MIN_POLL_INTERVAL_SECS: u64 = 10;
@@ -58,14 +58,50 @@ pub fn chat_db_path() -> Result<PathBuf> {
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct Cursor {
+    /// Compound `(message.date, ROWID)` in chat.db's own units — see
+    /// [`reader::ImessageCursor`] for why a millisecond timestamp cannot serve
+    /// as one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last: Option<ImessageCursor>,
+    /// The only field the pre-compound format had. Read but never written,
+    /// purely so a stale file is recognized and reported rather than looking
+    /// like "never synced".
+    #[serde(default, skip_serializing)]
     last_date_created_unix_ms: Option<i64>,
 }
 
+/// A cursor file older than the compound format is discarded, not converted:
+/// turning a Unix-millisecond value back into a raw `message.date` means
+/// guessing whether this chat.db counts in seconds or nanoseconds — the
+/// database-wide guess this lane just stopped making — and guessing wrong
+/// skips history silently, which is the failure being removed. Re-reading from
+/// the beginning costs traffic instead, and CI-Server dedups on
+/// `source_id = imessage:<guid>`, so the replay lands as duplicates-suppressed
+/// rather than as duplicated events.
 fn load_cursor(path: &Path) -> Cursor {
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+    let Ok(raw) = std::fs::read_to_string(path) else {
+        return Cursor::default();
+    };
+    match serde_json::from_str::<Cursor>(&raw) {
+        Ok(cursor) => {
+            if cursor.last.is_none()
+                && let Some(legacy_ms) = cursor.last_date_created_unix_ms
+            {
+                log::warn!(
+                    "imessage: cursor file {} is in the pre-compound format (last_date_created_unix_ms={legacy_ms}); restarting from the oldest message — CI-Server dedups the replay",
+                    path.display()
+                );
+            }
+            cursor
+        }
+        Err(err) => {
+            log::warn!(
+                "imessage: cursor file {} is unreadable, restarting from the oldest message: {err}",
+                path.display()
+            );
+            Cursor::default()
+        }
+    }
 }
 
 fn save_cursor(path: &Path, cursor: &Cursor) -> Result<()> {
@@ -109,7 +145,7 @@ pub async fn run(config: AppConfig, cursor_path: PathBuf) -> Result<()> {
     log::info!(
         "imessage lane running: {}, cursor={:?}, poll every {poll_secs}s",
         db_path.display(),
-        cursor.last_date_created_unix_ms
+        cursor.last
     );
 
     loop {
@@ -124,14 +160,14 @@ pub async fn run(config: AppConfig, cursor_path: PathBuf) -> Result<()> {
             &db_path,
             &config,
             device_id,
-            cursor.last_date_created_unix_ms,
+            cursor.last,
             reader::DEFAULT_LIMIT,
         )
         .await
         {
             Ok(outcome) => {
                 if let Some(new_cursor) = outcome.advanced_to {
-                    cursor.last_date_created_unix_ms = Some(new_cursor);
+                    cursor.last = Some(new_cursor);
                     if let Err(err) = save_cursor(&cursor_path, &cursor) {
                         log::warn!("imessage: failed to persist cursor: {err:?}");
                     }
@@ -149,7 +185,11 @@ pub async fn run(config: AppConfig, cursor_path: PathBuf) -> Result<()> {
 pub struct PollOutcome {
     pub fetched: usize,
     pub ingested: usize,
-    pub advanced_to: Option<i64>,
+    /// Rows chat.db returned whose `message.date` is not a representable
+    /// timestamp. They are dropped, so they are counted here rather than only
+    /// shrinking `fetched` — see [`reader::MessagePage`].
+    pub skipped_invalid_timestamp: usize,
+    pub advanced_to: Option<ImessageCursor>,
 }
 
 /// One poll pass: open `chat.db` fresh (a long-lived handle would hold a
@@ -160,14 +200,14 @@ pub(crate) async fn poll_once(
     db_path: &Path,
     config: &AppConfig,
     device_id: uuid::Uuid,
-    after: Option<i64>,
+    after: Option<ImessageCursor>,
     limit: u32,
 ) -> Result<PollOutcome> {
     let db_path = db_path.to_path_buf();
     // rusqlite::Connection is blocking and !Send in the way that matters
     // here (holds a raw pointer) — do the whole read on a blocking thread
     // rather than smuggle it across an await point.
-    let rows: Vec<ImessageRow> = tokio::task::spawn_blocking(move || {
+    let page: MessagePage = tokio::task::spawn_blocking(move || {
         let conn = reader::open_readonly(&db_path)?;
         reader::read_messages(&conn, after, limit)
     })
@@ -175,21 +215,32 @@ pub(crate) async fn poll_once(
     .context("joining chat.db read thread")??;
 
     let mut outcome = PollOutcome {
-        fetched: rows.len(),
+        fetched: page.rows.len(),
+        skipped_invalid_timestamp: page.skipped_invalid_timestamp,
         ..PollOutcome::default()
     };
 
-    if rows.is_empty() {
+    if page.skipped_invalid_timestamp > 0 {
+        log::warn!(
+            "imessage: dropped {} row(s) with an unreadable message.date (logged individually above)",
+            page.skipped_invalid_timestamp
+        );
+    }
+
+    if page.rows.is_empty() {
         return Ok(outcome);
     }
 
-    log::info!("imessage: read {} message(s) since {after:?}", rows.len());
+    log::info!(
+        "imessage: read {} message(s) since {after:?}",
+        page.rows.len()
+    );
 
-    for row in &rows {
+    for row in &page.rows {
         match server_ingest::ingest_imessage_message(config, device_id, row).await {
             Ok(()) => {
                 outcome.ingested += 1;
-                outcome.advanced_to = Some(row.date_created_unix_ms);
+                outcome.advanced_to = Some(row.cursor());
             }
             Err(err) => {
                 log::warn!(
@@ -207,7 +258,7 @@ pub(crate) async fn poll_once(
 /// Human-readable summary of one row, for `--check-imessage` — never the
 /// message text itself, matching `bluebubbles::describe`'s reasoning: this
 /// carries someone else's words, not just this device's own activity.
-pub fn describe(row: &ImessageRow) -> String {
+pub fn describe(row: &reader::ImessageRow) -> String {
     let chat = row
         .chat_display_name
         .clone()

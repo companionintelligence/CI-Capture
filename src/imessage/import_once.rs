@@ -89,12 +89,12 @@ async fn import_once() -> Result<()> {
     let preview = reader::read_messages(&conn, None, limit).context("reading messages")?;
     drop(conn); // release before the async pass reopens it on its own blocking thread
 
-    if preview.is_empty() {
+    if preview.rows.is_empty() {
         println!("chat.db returned 0 messages for this range — nothing to import.");
         return Ok(());
     }
-    println!("About to ingest {} message(s):", preview.len());
-    for row in &preview {
+    println!("About to ingest {} message(s):", preview.rows.len());
+    for row in &preview.rows {
         println!("  - {}", describe(row));
     }
     println!();
@@ -107,11 +107,17 @@ async fn import_once() -> Result<()> {
     println!("------");
     println!("fetched  : {}", outcome.fetched);
     println!("ingested : {}", outcome.ingested);
+    if outcome.skipped_invalid_timestamp > 0 {
+        println!(
+            "dropped  : {} row(s) with an unreadable message.date",
+            outcome.skipped_invalid_timestamp
+        );
+    }
     println!(
         "advanced to: {}",
         outcome
             .advanced_to
-            .map(|v| v.to_string())
+            .map(|c| format!("date_raw={} rowid={}", c.date_raw, c.rowid))
             .unwrap_or_else(|| "(none — first message failed)".to_string())
     );
     if outcome.ingested < outcome.fetched {

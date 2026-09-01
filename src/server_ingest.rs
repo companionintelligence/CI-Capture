@@ -398,10 +398,19 @@ pub async fn ingest_bluebubbles_message(
     message: &crate::bluebubbles::client::BlueBubblesMessage,
 ) -> Result<(), IngestError> {
     let chat = message.chats.first();
+    // Never `unwrap_or_else(Utc::now)`: stamping an unreadable timestamp with
+    // the current time gets the event acknowledged, which advances the caller's
+    // cursor past it — a garbage value would then silently redate the message
+    // and, in the imessage lane, strand every real row behind it.
     let occurred_at = message
         .date_created
         .and_then(chrono::DateTime::from_timestamp_millis)
-        .unwrap_or_else(chrono::Utc::now)
+        .ok_or_else(|| {
+            IngestError::permanent(format!(
+                "BlueBubbles message {} has no usable dateCreated ({:?})",
+                message.guid, message.date_created
+            ))
+        })?
         .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
 
     let title = chat
@@ -447,8 +456,17 @@ pub async fn ingest_imessage_message(
     device_id: Uuid,
     row: &crate::imessage::reader::ImessageRow,
 ) -> Result<(), IngestError> {
+    // `reader::read_messages` already refuses to emit a row whose timestamp
+    // cannot be represented, so this is a belt-and-braces guard — but an
+    // explicit error rather than `Utc::now()` for the reason spelled out on
+    // `ingest_bluebubbles_message` above.
     let occurred_at = chrono::DateTime::from_timestamp_millis(row.date_created_unix_ms)
-        .unwrap_or_else(chrono::Utc::now)
+        .ok_or_else(|| {
+            IngestError::permanent(format!(
+                "iMessage rowid={} has an unrepresentable timestamp ({}ms)",
+                row.rowid, row.date_created_unix_ms
+            ))
+        })?
         .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
 
     let title = row

@@ -16,40 +16,72 @@
 //! - attachments, reactions, and reply threading
 
 use anyhow::{Context, Result};
-use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
+use rusqlite::{Connection, OpenFlags, params};
+use serde::{Deserialize, Serialize};
 
 /// Milliseconds from the Unix epoch to Apple's Cocoa epoch (2001-01-01T00:00:00Z).
 const COCOA_EPOCH_OFFSET_MS: i64 = 978_307_200_000;
 
+/// Above this, a raw `message.date` can only be nanoseconds — Cocoa *seconds*
+/// stay under ~1e10 for centuries. Same threshold as the TS importer's
+/// `parseCocoaDate`.
+const NANOSECOND_THRESHOLD: i64 = 100_000_000_000;
+
 /// Default page size for [`read_messages`] — matches `bluebubbles::client::PAGE_LIMIT`.
 pub const DEFAULT_LIMIT: u32 = 1000;
 
-/// macOS ≤10.12 stores `message.date` as seconds since the Cocoa epoch;
-/// 10.13+/iOS 11+ stores nanoseconds. A whole `chat.db` is consistent one way
-/// or the other, so this is detected once per connection (see
-/// [`detect_date_unit`]) rather than per row like the TS importer does — that
-/// lets a cursor be pushed down into SQL as a real `WHERE date > ?`, which
-/// matters on a database that can hold hundreds of thousands of rows.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CocoaDateUnit {
-    Seconds,
-    Nanoseconds,
+/// Where a poll stopped, in chat.db's **own** units — deliberately not a Unix
+/// millisecond timestamp, and deliberately compound.
+///
+/// Both halves are load-bearing:
+/// - `date_raw` is `message.date` verbatim because macOS ≥10.13 stores it in
+///   nanoseconds. Storing the cursor as Unix ms and converting back floors
+///   away up to 999,999ns of the very row it came from, so `date > cursor`
+///   lands *below* that row and re-matches it on every subsequent poll,
+///   forever. On a real 433,398-row chat.db, 96.9% of rows are not
+///   millisecond-aligned.
+/// - `rowid` makes the comparison total. `message.date` is not unique — a real
+///   chat.db has runs of up to 56 rows sharing one timestamp — so a date-only
+///   cursor combined with `LIMIT` permanently skips the remainder of whatever
+///   run the page boundary happens to fall inside.
+///
+/// Fixing either half alone just trades one bug for the other, which is why
+/// they are one type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImessageCursor {
+    /// `message.date` exactly as chat.db stores it, no unit conversion applied.
+    pub date_raw: i64,
+    /// `message.ROWID` of the same row.
+    pub rowid: i64,
 }
 
-fn cocoa_raw_to_unix_ms(raw: i64, unit: CocoaDateUnit) -> i64 {
-    let ms_since_2001 = match unit {
-        CocoaDateUnit::Nanoseconds => raw / 1_000_000,
-        CocoaDateUnit::Seconds => raw * 1000,
+/// `message.date` → Unix milliseconds, or `None` when the value cannot be a
+/// real timestamp at all.
+///
+/// The unit is decided **per row**, matching the TS importer's
+/// `parseCocoaDate`, rather than once per database from a sampled row as an
+/// earlier version did. A whole chat.db really is consistent in practice, but
+/// `WHERE date IS NOT NULL` does not exclude `date = 0`, and one such row
+/// landing on the sample re-typed every other row in the file: a nanosecond
+/// history read as seconds lands in the year 79,000,000.
+///
+/// `None` rather than a best-effort value because the caller's only other
+/// option was `server_ingest`'s `unwrap_or_else(Utc::now)`, which stamped an
+/// unreadable row with the current time, got it acknowledged, and advanced the
+/// cursor past every real message behind it — with nothing logged.
+fn cocoa_raw_to_unix_ms(raw: i64) -> Option<i64> {
+    let ms_since_2001 = if raw > NANOSECOND_THRESHOLD {
+        raw / 1_000_000
+    } else {
+        // Checked: a corrupt or hostile `date` (say `i64::MIN`) otherwise
+        // panics on overflow in debug builds and takes the whole poll with it.
+        raw.checked_mul(1000)?
     };
-    COCOA_EPOCH_OFFSET_MS + ms_since_2001
-}
-
-fn unix_ms_to_cocoa_raw(unix_ms: i64, unit: CocoaDateUnit) -> i64 {
-    let ms_since_2001 = unix_ms - COCOA_EPOCH_OFFSET_MS;
-    match unit {
-        CocoaDateUnit::Nanoseconds => ms_since_2001 * 1_000_000,
-        CocoaDateUnit::Seconds => ms_since_2001 / 1000,
-    }
+    let unix_ms = COCOA_EPOCH_OFFSET_MS.checked_add(ms_since_2001)?;
+    // Must survive the `DateTime::from_timestamp_millis` in `server_ingest` —
+    // anything it would reject is rejected here instead, where the row can be
+    // named in a log line rather than silently re-dated.
+    chrono::DateTime::from_timestamp_millis(unix_ms).map(|_| unix_ms)
 }
 
 /// One `message` row, joined with its sender handle and (when resolvable)
@@ -70,28 +102,34 @@ pub struct ImessageRow {
     /// on an outbound message where only the chat (not this column) names
     /// the recipient — chat.db never puts the owner's own handle here.
     pub handle: Option<String>,
+    /// `message.date` verbatim — kept alongside the converted timestamp
+    /// because only the raw value can serve as a cursor (see [`ImessageCursor`]).
+    pub date_raw: i64,
     pub date_created_unix_ms: i64,
     pub chat_identifier: Option<String>,
     pub chat_display_name: Option<String>,
     pub attachment_count: i64,
 }
 
-fn detect_date_unit(conn: &Connection) -> Result<CocoaDateUnit> {
-    let sample: Option<i64> = conn
-        .query_row(
-            "SELECT date FROM message WHERE date IS NOT NULL ORDER BY ROWID DESC LIMIT 1",
-            [],
-            |row| row.get(0),
-        )
-        .optional()
-        .context("sampling message.date to detect its unit")?;
-    Ok(match sample {
-        // Seconds-since-2001 stays under ~1e10 for centuries; anything past
-        // 1e11 can only be nanoseconds. Matches the TS importer's own
-        // `parseCocoaDate` threshold.
-        Some(v) if v > 100_000_000_000 => CocoaDateUnit::Nanoseconds,
-        _ => CocoaDateUnit::Seconds,
-    })
+impl ImessageRow {
+    /// Where a poll that has ingested this row should resume.
+    pub fn cursor(&self) -> ImessageCursor {
+        ImessageCursor {
+            date_raw: self.date_raw,
+            rowid: self.rowid,
+        }
+    }
+}
+
+/// One page of rows, plus what reading it had to throw away.
+#[derive(Debug, Default)]
+pub struct MessagePage {
+    pub rows: Vec<ImessageRow>,
+    /// Rows whose `message.date` is not a representable timestamp. Counted and
+    /// surfaced (each one is also logged with its rowid) rather than quietly
+    /// omitted, because a page that silently shrinks is indistinguishable from
+    /// one that had nothing in it.
+    pub skipped_invalid_timestamp: usize,
 }
 
 /// Open `chat.db` read-only. Doesn't create the file, doesn't write a
@@ -101,23 +139,37 @@ pub fn open_readonly(path: &std::path::Path) -> Result<Connection> {
         .with_context(|| format!("opening {} read-only", path.display()))
 }
 
-/// Up to `limit` messages with `date_created_unix_ms > after` (or everything,
-/// oldest first, when `after` is `None`), ascending. Mirrors
+/// Up to `limit` messages strictly after `after`, in `(date, ROWID)` order (or
+/// everything, oldest first, when `after` is `None`). Mirrors
 /// `bluebubbles::poll_once`'s contract so both lanes' `run` loops read the
 /// same way.
 pub fn read_messages(
     conn: &Connection,
-    after: Option<i64>,
+    after: Option<ImessageCursor>,
     limit: u32,
-) -> Result<Vec<ImessageRow>> {
-    let unit = detect_date_unit(conn)?;
-    let after_raw = after.map(|ms| unix_ms_to_cocoa_raw(ms, unit));
+) -> Result<MessagePage> {
+    let (after_date, after_rowid) = match after {
+        Some(cursor) => (Some(cursor.date_raw), Some(cursor.rowid)),
+        None => (None, None),
+    };
 
     // chat.db's schema drifts across macOS releases (columns added/removed);
     // `attributedBody`/reactions/etc. are exactly that kind of column, which
     // is why the TS importer probes `PRAGMA table_info` first. This subset
     // sticks to columns present since chat.db's schema stabilized (10.12+),
     // so no probing is needed yet — add it here if that stops being true.
+    //
+    // The chat is resolved by a per-row subquery rather than by pre-loading
+    // the whole `chat_message_join ⋈ chat` product into a map: that scanned
+    // 388,115 rows on a real database on every poll to label at most `limit`
+    // of them, and swallowed its own errors to boot. A message can technically
+    // join more than one chat row; the lowest-ROWID join wins, which is both
+    // deterministic and the same "first one found" answer the map gave — good
+    // enough for "which conversation is this," not a claim about exhaustive
+    // membership (see the module doc's participants gap).
+    //
+    // The `(date, ROWID) > (?1, ?2)` row-value comparison needs SQLite ≥3.15;
+    // this crate bundles its own (3.4x), so it is not a host-version gamble.
     let mut stmt = conn
         .prepare(
             "SELECT
@@ -128,150 +180,294 @@ pub fn read_messages(
                 message.service AS service,
                 message.date AS date_raw,
                 handle.id AS handle,
+                chat.chat_identifier AS chat_identifier,
+                chat.display_name AS chat_display_name,
                 (SELECT COUNT(*) FROM message_attachment_join maj WHERE maj.message_id = message.ROWID)
                     AS attachment_count
              FROM message
              LEFT JOIN handle ON handle.ROWID = message.handle_id
+             LEFT JOIN chat ON chat.ROWID = (
+                 SELECT cmj.chat_id FROM chat_message_join cmj
+                 WHERE cmj.message_id = message.ROWID
+                 ORDER BY cmj.ROWID ASC LIMIT 1
+             )
              WHERE message.date IS NOT NULL
-               AND (?1 IS NULL OR message.date > ?1)
-             ORDER BY message.date ASC
-             LIMIT ?2",
+               AND (?1 IS NULL OR (message.date, message.ROWID) > (?1, ?2))
+             ORDER BY message.date ASC, message.ROWID ASC
+             LIMIT ?3",
         )
         .context("preparing message query")?;
 
-    let mut chat_by_message = chat_lookup(conn).unwrap_or_default();
-
     let rows = stmt
-        .query_map(params![after_raw, limit], |row| {
+        .query_map(params![after_date, after_rowid, limit], |row| {
             let rowid: i64 = row.get("rowid")?;
             let date_raw: i64 = row.get("date_raw")?;
-            let (chat_identifier, chat_display_name) =
-                chat_by_message.remove(&rowid).unwrap_or((None, None));
+            let Some(date_created_unix_ms) = cocoa_raw_to_unix_ms(date_raw) else {
+                log::warn!(
+                    "imessage: skipping rowid={rowid}, message.date={date_raw} is not a representable timestamp"
+                );
+                return Ok(None);
+            };
 
-            Ok(ImessageRow {
+            Ok(Some(ImessageRow {
                 rowid,
                 guid: row.get("guid")?,
                 text: row.get("text")?,
-                is_from_me: row.get::<_, i64>("is_from_me")? == 1,
+                // Nullable in the real schema despite always being 0/1 in
+                // practice; a strict `i64` get failed the *entire* page on the
+                // one row that wasn't.
+                is_from_me: row.get::<_, Option<i64>>("is_from_me")?.unwrap_or(0) == 1,
                 service: row.get("service")?,
                 handle: row.get("handle")?,
-                date_created_unix_ms: cocoa_raw_to_unix_ms(date_raw, unit),
-                chat_identifier,
-                chat_display_name,
+                date_raw,
+                date_created_unix_ms,
+                chat_identifier: row.get("chat_identifier")?,
+                chat_display_name: row.get("chat_display_name")?,
                 attachment_count: row.get("attachment_count")?,
-            })
+            }))
         })
-        .context("running message query")?
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .context("reading message rows")?;
+        .context("running message query")?;
 
-    Ok(rows)
-}
-
-/// `chat.chat_identifier` + `chat.display_name` for one chat.
-type ChatIdentity = (Option<String>, Option<String>);
-
-/// `message.ROWID` → its chat's identity, for whichever one chat each
-/// message belongs to. A message can technically join more than one chat
-/// row; like the TS importer, the first one found wins — good enough for
-/// "which conversation is this," not a claim about exhaustive membership
-/// (see the module doc's participants gap).
-fn chat_lookup(conn: &Connection) -> Result<std::collections::HashMap<i64, ChatIdentity>> {
-    let mut stmt = conn.prepare(
-        "SELECT cmj.message_id AS message_id, c.chat_identifier AS chat_identifier, c.display_name AS display_name
-         FROM chat_message_join cmj
-         JOIN chat c ON c.ROWID = cmj.chat_id",
-    )?;
-    let mut map = std::collections::HashMap::new();
-    let rows = stmt.query_map([], |row| {
-        Ok((
-            row.get::<_, i64>("message_id")?,
-            row.get::<_, Option<String>>("chat_identifier")?,
-            row.get::<_, Option<String>>("display_name")?,
-        ))
-    })?;
+    let mut page = MessagePage::default();
     for row in rows {
-        let (message_id, identifier, display_name) = row?;
-        map.entry(message_id).or_insert((identifier, display_name));
+        match row.context("reading message rows")? {
+            Some(row) => page.rows.push(row),
+            None => page.skipped_invalid_timestamp += 1,
+        }
     }
-    Ok(map)
+    Ok(page)
 }
+
+/// A `chat.db`-shaped schema for tests — the tables `read_messages` touches,
+/// with enough of the real column list around them (`message` alone has ~100
+/// columns on macOS 15) that a query relying on column *position*, on a
+/// column being NOT NULL, or on `date` being the last thing in the row would
+/// fail here rather than only against a real database. Shared with `e2e` so
+/// both exercise the same layout.
+#[cfg(test)]
+pub(crate) const FIXTURE_SCHEMA: &str = "
+    CREATE TABLE handle (
+        ROWID INTEGER PRIMARY KEY AUTOINCREMENT,
+        id TEXT NOT NULL,
+        country TEXT,
+        service TEXT NOT NULL,
+        uncanonicalized_id TEXT
+    );
+    CREATE TABLE chat (
+        ROWID INTEGER PRIMARY KEY AUTOINCREMENT,
+        guid TEXT UNIQUE NOT NULL,
+        style INTEGER,
+        state INTEGER,
+        account_id TEXT,
+        chat_identifier TEXT,
+        service_name TEXT,
+        room_name TEXT,
+        display_name TEXT
+    );
+    CREATE TABLE chat_message_join (
+        chat_id INTEGER REFERENCES chat (ROWID) ON DELETE CASCADE,
+        message_id INTEGER REFERENCES message (ROWID) ON DELETE CASCADE,
+        message_date INTEGER DEFAULT 0,
+        PRIMARY KEY (chat_id, message_id)
+    );
+    CREATE TABLE attachment (
+        ROWID INTEGER PRIMARY KEY AUTOINCREMENT,
+        guid TEXT UNIQUE NOT NULL,
+        filename TEXT,
+        mime_type TEXT,
+        transfer_name TEXT
+    );
+    CREATE TABLE message_attachment_join (
+        message_id INTEGER REFERENCES message (ROWID) ON DELETE CASCADE,
+        attachment_id INTEGER REFERENCES attachment (ROWID) ON DELETE CASCADE
+    );
+    CREATE TABLE message (
+        ROWID INTEGER PRIMARY KEY AUTOINCREMENT,
+        guid TEXT UNIQUE NOT NULL,
+        text TEXT,
+        replace INTEGER DEFAULT 0,
+        service_center TEXT,
+        handle_id INTEGER DEFAULT 0,
+        subject TEXT,
+        country TEXT,
+        attributedBody BLOB,
+        version INTEGER DEFAULT 0,
+        type INTEGER DEFAULT 0,
+        service TEXT,
+        account TEXT,
+        account_guid TEXT,
+        error INTEGER DEFAULT 0,
+        date INTEGER,
+        date_read INTEGER,
+        date_delivered INTEGER,
+        is_delivered INTEGER DEFAULT 0,
+        is_from_me INTEGER DEFAULT 0,
+        cache_has_attachments INTEGER DEFAULT 0,
+        cache_roomnames TEXT,
+        item_type INTEGER DEFAULT 0,
+        associated_message_guid TEXT,
+        associated_message_type INTEGER DEFAULT 0,
+        thread_originator_guid TEXT
+    );
+    CREATE INDEX chat_message_join_idx_message_id_only ON chat_message_join (message_id);
+";
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// A minimal `chat.db`-shaped schema — just the tables/columns
-    /// `read_messages` actually touches — seeded in memory. Lets the query
-    /// logic (joins, cursor pushdown, epoch conversion) be exercised without
-    /// Full Disk Access or a real Messages history.
     fn fixture_db() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(
-            "
-            CREATE TABLE handle (ROWID INTEGER PRIMARY KEY, id TEXT);
-            CREATE TABLE chat (ROWID INTEGER PRIMARY KEY, chat_identifier TEXT, display_name TEXT);
-            CREATE TABLE chat_message_join (chat_id INTEGER, message_id INTEGER);
-            CREATE TABLE message_attachment_join (message_id INTEGER, attachment_id INTEGER);
-            CREATE TABLE message (
-                ROWID INTEGER PRIMARY KEY,
-                guid TEXT,
-                text TEXT,
-                is_from_me INTEGER,
-                service TEXT,
-                date INTEGER,
-                handle_id INTEGER
-            );
-            ",
-        )
-        .unwrap();
+        conn.execute_batch(FIXTURE_SCHEMA).unwrap();
         conn
     }
 
-    /// 2026-01-01T00:00:00Z in Cocoa **seconds** — computed independently
-    /// (not via this module's own conversion function) so the test can't pass
-    /// by construction.
+    /// `message.guid` is `UNIQUE NOT NULL` in the real schema, so every
+    /// fixture row needs one even when the test is about something else.
+    fn insert_message(conn: &Connection, rowid: i64, date_raw: i64) {
+        conn.execute(
+            "INSERT INTO message (ROWID, guid, is_from_me, date) VALUES (?1, ?2, 0, ?3)",
+            params![rowid, format!("MSG-{rowid}"), date_raw],
+        )
+        .unwrap();
+    }
+
+    fn guids(page: &MessagePage) -> Vec<String> {
+        page.rows
+            .iter()
+            .map(|r| r.guid.clone().unwrap())
+            .collect::<Vec<_>>()
+    }
+
+    /// 2026-01-01T00:00:00Z in Cocoa units — computed independently (not via
+    /// this module's own conversion functions) so the tests can't pass by
+    /// construction. Nanoseconds is the default throughout: it is what every
+    /// macOS since 10.13 actually writes, and a suite that only ever fixtured
+    /// *seconds* is exactly why the millisecond-cursor bug stayed invisible.
     const JAN_1_2026_COCOA_SECONDS: i64 = 788_918_400;
+    const JAN_1_2026_COCOA_NANOS: i64 = 788_918_400_000_000_000;
     const JAN_1_2026_UNIX_MS: i64 = 1_767_225_600_000;
+    /// `date = 0` — Cocoa's own epoch, and a value real databases contain.
+    const COCOA_EPOCH_UNIX_MS: i64 = 978_307_200_000;
 
     #[test]
-    fn cocoa_seconds_round_trip_to_the_known_unix_timestamp() {
+    fn cocoa_seconds_convert_to_the_known_unix_timestamp() {
         assert_eq!(
-            cocoa_raw_to_unix_ms(JAN_1_2026_COCOA_SECONDS, CocoaDateUnit::Seconds),
-            JAN_1_2026_UNIX_MS
+            cocoa_raw_to_unix_ms(JAN_1_2026_COCOA_SECONDS),
+            Some(JAN_1_2026_UNIX_MS)
         );
+    }
+
+    /// Replaces a test that called only the forward conversion, on an exact
+    /// multiple of 1e6, and would therefore have passed with the nanosecond
+    /// arm deleted entirely. The value here is the shape that actually broke
+    /// the lane: 373,504ns past its millisecond, taken from the newest row of
+    /// a real 433,398-row chat.db.
+    #[test]
+    fn a_sub_millisecond_nanosecond_date_truncates_to_its_millisecond() {
         assert_eq!(
-            unix_ms_to_cocoa_raw(JAN_1_2026_UNIX_MS, CocoaDateUnit::Seconds),
-            JAN_1_2026_COCOA_SECONDS
+            cocoa_raw_to_unix_ms(JAN_1_2026_COCOA_NANOS + 373_504),
+            Some(JAN_1_2026_UNIX_MS)
+        );
+        // The same instant in the other unit reaches the same answer through
+        // the other arm — the whole point of typing per row. Were the
+        // nanosecond arm gone, the assertion above would overflow to `None`.
+        assert_eq!(
+            cocoa_raw_to_unix_ms(JAN_1_2026_COCOA_SECONDS),
+            cocoa_raw_to_unix_ms(JAN_1_2026_COCOA_NANOS)
         );
     }
 
     #[test]
-    fn cocoa_nanoseconds_round_trip_to_the_same_unix_timestamp() {
-        let nanos = JAN_1_2026_COCOA_SECONDS * 1_000_000_000;
-        assert_eq!(
-            cocoa_raw_to_unix_ms(nanos, CocoaDateUnit::Nanoseconds),
-            JAN_1_2026_UNIX_MS
+    fn a_date_that_cannot_be_a_timestamp_converts_to_none_rather_than_panicking() {
+        assert_eq!(cocoa_raw_to_unix_ms(i64::MIN), None);
+    }
+
+    /// The regression test for the bug this lane shipped with: an idle Mac
+    /// re-sent its newest message on every poll, forever, because the cursor
+    /// round-tripped through Unix milliseconds.
+    #[test]
+    fn feeding_a_returned_cursor_back_in_never_returns_the_same_row_twice() {
+        let conn = fixture_db();
+        for (rowid, offset_ns) in [(1, 373_504), (2, 60_000_000_001), (3, 120_000_000_007)] {
+            insert_message(&conn, rowid, JAN_1_2026_COCOA_NANOS + offset_ns);
+        }
+
+        let first = read_messages(&conn, None, 10).unwrap();
+        assert_eq!(guids(&first), ["MSG-1", "MSG-2", "MSG-3"]);
+
+        let cursor = first.rows.last().unwrap().cursor();
+        let second = read_messages(&conn, Some(cursor), 10).unwrap();
+        assert!(
+            second.rows.is_empty(),
+            "polling again with the cursor the first poll returned re-sent {:?}",
+            guids(&second)
         );
     }
 
+    /// The other half of the same fix: `message.date` is not unique, so a
+    /// page boundary inside a run of identical timestamps used to skip the
+    /// rest of that run permanently. Real runs reach 56 rows.
     #[test]
-    fn detects_seconds_vs_nanoseconds_from_a_sampled_row() {
+    fn a_run_of_tied_timestamps_pages_without_skipping_or_duplicating() {
+        let conn = fixture_db();
+        for rowid in 1..=5 {
+            insert_message(&conn, rowid, JAN_1_2026_COCOA_NANOS);
+        }
+
+        let mut seen: Vec<String> = Vec::new();
+        let mut cursor = None;
+        // Page size 2 against 5 tied rows: every boundary lands mid-run.
+        for _ in 0..10 {
+            let page = read_messages(&conn, cursor, 2).unwrap();
+            if page.rows.is_empty() {
+                break;
+            }
+            cursor = Some(page.rows.last().unwrap().cursor());
+            seen.extend(guids(&page));
+        }
+
+        assert_eq!(seen, ["MSG-1", "MSG-2", "MSG-3", "MSG-4", "MSG-5"]);
+    }
+
+    /// `WHERE date IS NOT NULL` does not exclude `date = 0`, and such a row
+    /// arriving newest by ROWID used to type the entire database as seconds —
+    /// sending every real (nanosecond) row to the year 79,000,000.
+    #[test]
+    fn the_date_unit_is_decided_per_row_not_from_one_sampled_row() {
+        let conn = fixture_db();
+        insert_message(&conn, 1, JAN_1_2026_COCOA_NANOS);
+        insert_message(&conn, 2, 0);
+
+        let page = read_messages(&conn, None, 10).unwrap();
+        assert_eq!(guids(&page), ["MSG-2", "MSG-1"], "ascending by date");
+        assert_eq!(page.rows[0].date_created_unix_ms, COCOA_EPOCH_UNIX_MS);
+        assert_eq!(page.rows[1].date_created_unix_ms, JAN_1_2026_UNIX_MS);
+    }
+
+    #[test]
+    fn an_unrepresentable_date_is_skipped_and_counted_not_stamped_with_now() {
+        let conn = fixture_db();
+        insert_message(&conn, 1, i64::MIN);
+        insert_message(&conn, 2, JAN_1_2026_COCOA_NANOS);
+
+        let page = read_messages(&conn, None, 10).unwrap();
+        assert_eq!(guids(&page), ["MSG-2"]);
+        assert_eq!(page.skipped_invalid_timestamp, 1);
+    }
+
+    #[test]
+    fn a_null_is_from_me_reads_as_inbound_rather_than_failing_the_whole_page() {
         let conn = fixture_db();
         conn.execute(
-            "INSERT INTO message (ROWID, date) VALUES (1, ?1)",
-            params![JAN_1_2026_COCOA_SECONDS],
+            "INSERT INTO message (ROWID, guid, is_from_me, date) VALUES (1, 'MSG-1', NULL, ?1)",
+            params![JAN_1_2026_COCOA_NANOS],
         )
         .unwrap();
-        assert_eq!(detect_date_unit(&conn).unwrap(), CocoaDateUnit::Seconds);
 
-        conn.execute("DELETE FROM message", []).unwrap();
-        conn.execute(
-            "INSERT INTO message (ROWID, date) VALUES (2, ?1)",
-            params![JAN_1_2026_COCOA_SECONDS * 1_000_000_000],
-        )
-        .unwrap();
-        assert_eq!(detect_date_unit(&conn).unwrap(), CocoaDateUnit::Nanoseconds);
+        let page = read_messages(&conn, None, 10).unwrap();
+        assert_eq!(page.rows.len(), 1);
+        assert!(!page.rows[0].is_from_me);
     }
 
     #[test]
@@ -279,15 +475,16 @@ mod tests {
         let conn = fixture_db();
         conn.execute_batch(
             "
-            INSERT INTO handle (ROWID, id) VALUES (1, '+15551234567');
-            INSERT INTO chat (ROWID, chat_identifier, display_name) VALUES (1, '+15551234567', NULL);
+            INSERT INTO handle (ROWID, id, service) VALUES (1, '+15551234567', 'iMessage');
+            INSERT INTO chat (ROWID, guid, chat_identifier, display_name)
+                VALUES (1, 'iMessage;-;+15551234567', '+15551234567', NULL);
             ",
         )
         .unwrap();
         conn.execute(
             "INSERT INTO message (ROWID, guid, text, is_from_me, service, date, handle_id)
              VALUES (1, 'MSG-1', 'hello there', 0, 'iMessage', ?1, 1)",
-            params![JAN_1_2026_COCOA_SECONDS],
+            params![JAN_1_2026_COCOA_NANOS],
         )
         .unwrap();
         conn.execute(
@@ -296,96 +493,126 @@ mod tests {
         )
         .unwrap();
 
-        let rows = read_messages(&conn, None, 10).unwrap();
-        assert_eq!(rows.len(), 1);
-        let row = &rows[0];
+        let page = read_messages(&conn, None, 10).unwrap();
+        assert_eq!(page.rows.len(), 1);
+        let row = &page.rows[0];
         assert_eq!(row.guid.as_deref(), Some("MSG-1"));
         assert_eq!(row.text.as_deref(), Some("hello there"));
         assert!(!row.is_from_me);
         assert_eq!(row.handle.as_deref(), Some("+15551234567"));
         assert_eq!(row.chat_identifier.as_deref(), Some("+15551234567"));
         assert_eq!(row.date_created_unix_ms, JAN_1_2026_UNIX_MS);
+        assert_eq!(row.date_raw, JAN_1_2026_COCOA_NANOS);
         assert_eq!(row.attachment_count, 0);
+    }
+
+    /// The chat is resolved per row now, so each message must still get its
+    /// own chat and only its own — the failure mode a shared lookup map would
+    /// have hidden.
+    #[test]
+    fn each_message_resolves_its_own_chat() {
+        let conn = fixture_db();
+        conn.execute_batch(
+            "
+            INSERT INTO chat (ROWID, guid, chat_identifier, display_name)
+                VALUES (1, 'chat-1', '+15550000001', 'Alice'),
+                       (2, 'chat-2', '+15550000002', 'Bob');
+            ",
+        )
+        .unwrap();
+        insert_message(&conn, 1, JAN_1_2026_COCOA_NANOS);
+        insert_message(&conn, 2, JAN_1_2026_COCOA_NANOS + 1);
+        insert_message(&conn, 3, JAN_1_2026_COCOA_NANOS + 2);
+        conn.execute_batch(
+            "
+            INSERT INTO chat_message_join (chat_id, message_id) VALUES (1, 1), (2, 2);
+            ",
+        )
+        .unwrap();
+
+        let page = read_messages(&conn, None, 10).unwrap();
+        assert_eq!(page.rows[0].chat_display_name.as_deref(), Some("Alice"));
+        assert_eq!(page.rows[1].chat_display_name.as_deref(), Some("Bob"));
+        assert_eq!(page.rows[2].chat_display_name, None, "no join row at all");
+    }
+
+    /// A message joining two chats picks the lowest-ROWID join deterministically
+    /// rather than whichever row the scan happened to reach first.
+    #[test]
+    fn a_message_in_two_chats_resolves_to_one_of_them_deterministically() {
+        let conn = fixture_db();
+        conn.execute_batch(
+            "
+            INSERT INTO chat (ROWID, guid, chat_identifier, display_name)
+                VALUES (1, 'chat-1', 'first', 'First'),
+                       (2, 'chat-2', 'second', 'Second');
+            ",
+        )
+        .unwrap();
+        insert_message(&conn, 1, JAN_1_2026_COCOA_NANOS);
+        conn.execute_batch(
+            "INSERT INTO chat_message_join (chat_id, message_id) VALUES (2, 1), (1, 1);",
+        )
+        .unwrap();
+
+        for _ in 0..3 {
+            let page = read_messages(&conn, None, 10).unwrap();
+            assert_eq!(page.rows[0].chat_display_name.as_deref(), Some("Second"));
+        }
     }
 
     #[test]
     fn cursor_excludes_everything_at_or_before_it() {
         let conn = fixture_db();
-        for (rowid, offset_secs) in [(1, 0), (2, 60), (3, 120)] {
-            conn.execute(
-                "INSERT INTO message (ROWID, guid, is_from_me, date) VALUES (?1, ?2, 0, ?3)",
-                params![
-                    rowid,
-                    format!("MSG-{rowid}"),
-                    JAN_1_2026_COCOA_SECONDS + offset_secs
-                ],
-            )
-            .unwrap();
+        for (rowid, offset_ns) in [(1, 0), (2, 60_000_000_000), (3, 120_000_000_000)] {
+            insert_message(&conn, rowid, JAN_1_2026_COCOA_NANOS + offset_ns);
         }
 
-        let cursor = JAN_1_2026_UNIX_MS + 60_000; // exactly message 2's timestamp
-        let rows = read_messages(&conn, Some(cursor), 10).unwrap();
-        assert_eq!(
-            rows.len(),
-            1,
-            "only the strictly-later message should return"
-        );
-        assert_eq!(rows[0].guid.as_deref(), Some("MSG-3"));
+        let cursor = ImessageCursor {
+            date_raw: JAN_1_2026_COCOA_NANOS + 60_000_000_000, // exactly message 2's
+            rowid: 2,
+        };
+        let page = read_messages(&conn, Some(cursor), 10).unwrap();
+        assert_eq!(guids(&page), ["MSG-3"]);
     }
 
     #[test]
     fn limit_is_respected_and_order_is_ascending() {
         let conn = fixture_db();
-        for (rowid, offset_secs) in [(1, 30), (2, 0), (3, 60)] {
-            conn.execute(
-                "INSERT INTO message (ROWID, guid, is_from_me, date) VALUES (?1, ?2, 0, ?3)",
-                params![
-                    rowid,
-                    format!("MSG-{rowid}"),
-                    JAN_1_2026_COCOA_SECONDS + offset_secs
-                ],
-            )
-            .unwrap();
+        for (rowid, offset_ns) in [(1, 30_000_000_000), (2, 0), (3, 60_000_000_000)] {
+            insert_message(&conn, rowid, JAN_1_2026_COCOA_NANOS + offset_ns);
         }
 
-        let rows = read_messages(&conn, None, 2).unwrap();
-        assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0].guid.as_deref(), Some("MSG-2")); // earliest
-        assert_eq!(rows[1].guid.as_deref(), Some("MSG-1"));
+        let page = read_messages(&conn, None, 2).unwrap();
+        assert_eq!(guids(&page), ["MSG-2", "MSG-1"]);
     }
 
     #[test]
     fn attachment_count_reflects_the_join_table() {
         let conn = fixture_db();
-        conn.execute(
-            "INSERT INTO message (ROWID, guid, is_from_me, date) VALUES (1, 'MSG-1', 1, ?1)",
-            params![JAN_1_2026_COCOA_SECONDS],
-        )
-        .unwrap();
+        insert_message(&conn, 1, JAN_1_2026_COCOA_NANOS);
         conn.execute_batch(
             "
+            INSERT INTO attachment (ROWID, guid, transfer_name)
+                VALUES (100, 'att-100', 'IMG_0042.HEIC'), (101, 'att-101', 'IMG_0043.HEIC');
             INSERT INTO message_attachment_join (message_id, attachment_id) VALUES (1, 100);
             INSERT INTO message_attachment_join (message_id, attachment_id) VALUES (1, 101);
             ",
         )
         .unwrap();
 
-        let rows = read_messages(&conn, None, 10).unwrap();
-        assert_eq!(rows[0].attachment_count, 2);
+        let page = read_messages(&conn, None, 10).unwrap();
+        assert_eq!(page.rows[0].attachment_count, 2);
     }
 
     #[test]
     fn a_message_with_no_chat_row_still_reads_with_none_for_chat_fields() {
         let conn = fixture_db();
-        conn.execute(
-            "INSERT INTO message (ROWID, guid, is_from_me, date) VALUES (1, 'MSG-1', 1, ?1)",
-            params![JAN_1_2026_COCOA_SECONDS],
-        )
-        .unwrap();
+        insert_message(&conn, 1, JAN_1_2026_COCOA_NANOS);
 
-        let rows = read_messages(&conn, None, 10).unwrap();
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].chat_identifier, None);
-        assert_eq!(rows[0].chat_display_name, None);
+        let page = read_messages(&conn, None, 10).unwrap();
+        assert_eq!(page.rows.len(), 1);
+        assert_eq!(page.rows[0].chat_identifier, None);
+        assert_eq!(page.rows[0].chat_display_name, None);
     }
 }

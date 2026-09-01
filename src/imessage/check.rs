@@ -44,15 +44,21 @@ pub fn run() -> Result<()> {
     println!("---------");
 
     let conn = reader::open_readonly(&db_path).context("opening chat.db")?;
-    let rows = reader::read_messages(&conn, None, 5).context("reading messages")?;
+    let page = reader::read_messages(&conn, None, 5).context("reading messages")?;
 
     println!(
         "Read {} message(s) (oldest, limit 5, no cursor):",
-        rows.len()
+        page.rows.len()
     );
-    for row in &rows {
+    for row in &page.rows {
         // `describe` reports shape only — see its doc comment.
         println!("  - {}", describe(row));
+    }
+    if page.skipped_invalid_timestamp > 0 {
+        println!(
+            "Dropped {} row(s) whose message.date is not a representable timestamp.",
+            page.skipped_invalid_timestamp
+        );
     }
 
     println!(

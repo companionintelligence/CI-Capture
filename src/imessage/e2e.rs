@@ -119,40 +119,31 @@ fn lane_config(origin: &str) -> AppConfig {
 
 /// A real (file-backed) `chat.db`, not `:memory:` — `poll_once` opens the
 /// path fresh on every call the way the real lane does, so an in-memory
-/// connection (which dies with its handle) can't stand in here.
+/// connection (which dies with its handle) can't stand in here. The schema is
+/// `reader`'s shared fixture, so these tests and the unit tests exercise the
+/// same column layout.
 fn fixture_chat_db(path: &std::path::Path, rows: &[(i64, &str, &str, bool, i64)]) -> Connection {
     let conn = Connection::open(path).unwrap();
-    conn.execute_batch(
-        "
-        CREATE TABLE handle (ROWID INTEGER PRIMARY KEY, id TEXT);
-        CREATE TABLE chat (ROWID INTEGER PRIMARY KEY, chat_identifier TEXT, display_name TEXT);
-        CREATE TABLE chat_message_join (chat_id INTEGER, message_id INTEGER);
-        CREATE TABLE message_attachment_join (message_id INTEGER, attachment_id INTEGER);
-        CREATE TABLE message (
-            ROWID INTEGER PRIMARY KEY,
-            guid TEXT,
-            text TEXT,
-            is_from_me INTEGER,
-            service TEXT,
-            date INTEGER,
-            handle_id INTEGER
-        );
-        INSERT INTO handle (ROWID, id) VALUES (1, '+15551234567');
-        ",
-    )
-    .unwrap();
-    for (rowid, guid, text, is_from_me, date_cocoa_secs) in rows {
+    conn.execute_batch(reader::FIXTURE_SCHEMA).unwrap();
+    conn.execute_batch("INSERT INTO handle (ROWID, id, service) VALUES (1, '+15551234567', 'iMessage');")
+        .unwrap();
+    for (rowid, guid, text, is_from_me, date_raw) in rows {
         conn.execute(
             "INSERT INTO message (ROWID, guid, text, is_from_me, service, date, handle_id)
              VALUES (?1, ?2, ?3, ?4, 'iMessage', ?5, 1)",
-            params![rowid, guid, text, *is_from_me as i64, date_cocoa_secs],
+            params![rowid, guid, text, *is_from_me as i64, date_raw],
         )
         .unwrap();
     }
     conn
 }
 
-const COCOA_2026: i64 = 788_918_400; // 2026-01-01T00:00:00Z, verified independently in reader::tests
+/// 2026-01-01T00:00:00Z in Cocoa **nanoseconds** — the unit every macOS since
+/// 10.13 writes, verified independently in `reader::tests`. The offsets added
+/// to it below are deliberately not round milliseconds: a cursor that floors
+/// to the millisecond passes on aligned fixtures and fails on real data.
+const COCOA_2026_NANOS: i64 = 788_918_400_000_000_000;
+const ONE_MINUTE_NANOS: i64 = 60_000_000_000;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_message_reaches_the_server_with_its_text_and_api_key() {
@@ -160,7 +151,13 @@ async fn a_message_reaches_the_server_with_its_text_and_api_key() {
     let db_path = dir.path().join("chat.db");
     let conn = fixture_chat_db(
         &db_path,
-        &[(1, "MSG-1", "hello from the fixture", false, COCOA_2026)],
+        &[(
+            1,
+            "MSG-1",
+            "hello from the fixture",
+            false,
+            COCOA_2026_NANOS + 373_504,
+        )],
     );
     drop(conn); // release the write lock before poll_once opens it read-only
 
@@ -196,9 +193,15 @@ async fn all_messages_in_the_page_are_sent_in_order() {
     let conn = fixture_chat_db(
         &db_path,
         &[
-            (1, "MSG-1", "first", false, COCOA_2026),
-            (2, "MSG-2", "second", true, COCOA_2026 + 60),
-            (3, "MSG-3", "third", false, COCOA_2026 + 120),
+            (1, "MSG-1", "first", false, COCOA_2026_NANOS),
+            (2, "MSG-2", "second", true, COCOA_2026_NANOS + ONE_MINUTE_NANOS),
+            (
+                3,
+                "MSG-3",
+                "third",
+                false,
+                COCOA_2026_NANOS + 2 * ONE_MINUTE_NANOS,
+            ),
         ],
     );
     drop(conn);
@@ -228,9 +231,21 @@ async fn a_mid_page_rejection_stops_the_cursor_there_not_at_the_end() {
     let conn = fixture_chat_db(
         &db_path,
         &[
-            (1, "MSG-1", "ok", false, COCOA_2026),
-            (2, "MSG-2", "this one gets rejected", false, COCOA_2026 + 60),
-            (3, "MSG-3", "never reached", false, COCOA_2026 + 120),
+            (1, "MSG-1", "ok", false, COCOA_2026_NANOS),
+            (
+                2,
+                "MSG-2",
+                "this one gets rejected",
+                false,
+                COCOA_2026_NANOS + ONE_MINUTE_NANOS,
+            ),
+            (
+                3,
+                "MSG-3",
+                "never reached",
+                false,
+                COCOA_2026_NANOS + 2 * ONE_MINUTE_NANOS,
+            ),
         ],
     );
     drop(conn);
@@ -247,11 +262,12 @@ async fn a_mid_page_rejection_stops_the_cursor_there_not_at_the_end() {
 
     assert_eq!(outcome.fetched, 3, "the whole page is read from chat.db");
     assert_eq!(outcome.ingested, 1, "only MSG-1 was accepted");
-    // Cursor sits at MSG-1's timestamp, not MSG-3's — so MSG-2 and MSG-3 are
-    // both retried next call rather than MSG-2 being silently skipped.
+    // Cursor sits at MSG-1's row, not MSG-3's — so MSG-2 and MSG-3 are both
+    // retried next call rather than MSG-2 being silently skipped.
     let expected_cursor = reader::read_messages(&Connection::open(&db_path).unwrap(), None, 1)
-        .unwrap()[0]
-        .date_created_unix_ms;
+        .unwrap()
+        .rows[0]
+        .cursor();
     assert_eq!(outcome.advanced_to, Some(expected_cursor));
 
     let requests = recorded.lock().unwrap();
@@ -269,19 +285,26 @@ async fn passing_a_cursor_excludes_everything_at_or_before_it() {
     let conn = fixture_chat_db(
         &db_path,
         &[
-            (1, "MSG-1", "old", false, COCOA_2026),
-            (2, "MSG-2", "new", false, COCOA_2026 + 60),
+            (1, "MSG-1", "old", false, COCOA_2026_NANOS + 373_504),
+            (
+                2,
+                "MSG-2",
+                "new",
+                false,
+                COCOA_2026_NANOS + ONE_MINUTE_NANOS + 1,
+            ),
         ],
     );
     drop(conn);
 
     let (origin, recorded) = spawn_mock_server(vec![]);
     let config = lane_config(&origin);
-    let cursor_unix_ms = reader::read_messages(&Connection::open(&db_path).unwrap(), None, 1)
-        .unwrap()[0]
-        .date_created_unix_ms;
+    let cursor = reader::read_messages(&Connection::open(&db_path).unwrap(), None, 1)
+        .unwrap()
+        .rows[0]
+        .cursor();
 
-    let outcome = poll_once(&db_path, &config, Uuid::nil(), Some(cursor_unix_ms), 10)
+    let outcome = poll_once(&db_path, &config, Uuid::nil(), Some(cursor), 10)
         .await
         .unwrap();
 
@@ -289,6 +312,153 @@ async fn passing_a_cursor_excludes_everything_at_or_before_it() {
     let requests = recorded.lock().unwrap();
     assert_eq!(requests.len(), 1);
     assert!(requests[0].2.contains("imessage:MSG-2"));
+}
+
+/// The whole-lane version of `reader`'s poll-twice test: an idle Mac used to
+/// re-send its newest message on every tick, because the cursor round-tripped
+/// through Unix milliseconds and landed back below the row that produced it.
+/// This drives the real `poll_once`, so it also covers the cursor surviving the
+/// `PollOutcome` → next-call hand-off the `run` loop performs.
+#[tokio::test(flavor = "multi_thread")]
+async fn polling_twice_with_the_returned_cursor_sends_nothing_the_second_time() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("chat.db");
+    let conn = fixture_chat_db(
+        &db_path,
+        &[
+            (1, "MSG-1", "first", false, COCOA_2026_NANOS + 373_504),
+            (
+                2,
+                "MSG-2",
+                "newest",
+                false,
+                COCOA_2026_NANOS + ONE_MINUTE_NANOS + 999_999,
+            ),
+        ],
+    );
+    drop(conn);
+
+    let (origin, recorded) = spawn_mock_server(vec![]);
+    let config = lane_config(&origin);
+
+    let first = poll_once(&db_path, &config, Uuid::nil(), None, 10)
+        .await
+        .unwrap();
+    assert_eq!(first.ingested, 2);
+
+    let second = poll_once(&db_path, &config, Uuid::nil(), first.advanced_to, 10)
+        .await
+        .unwrap();
+
+    assert_eq!(second.fetched, 0, "the newest message came back a second time");
+    assert_eq!(second.ingested, 0);
+    assert_eq!(second.advanced_to, None);
+    assert_eq!(
+        recorded.lock().unwrap().len(),
+        2,
+        "exactly the two messages, each sent once"
+    );
+}
+
+/// The page-boundary half of the same fix, end to end: `message.date` is not
+/// unique (real runs reach 56 rows sharing one timestamp), so a `LIMIT` cut
+/// inside a run used to skip the remainder of it permanently.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_run_of_tied_timestamps_crosses_page_boundaries_intact() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("chat.db");
+    let conn = fixture_chat_db(
+        &db_path,
+        &[
+            (1, "MSG-1", "a", false, COCOA_2026_NANOS),
+            (2, "MSG-2", "b", false, COCOA_2026_NANOS),
+            (3, "MSG-3", "c", false, COCOA_2026_NANOS),
+            (4, "MSG-4", "d", false, COCOA_2026_NANOS),
+            (5, "MSG-5", "e", false, COCOA_2026_NANOS),
+        ],
+    );
+    drop(conn);
+
+    let (origin, recorded) = spawn_mock_server(vec![]);
+    let config = lane_config(&origin);
+
+    // Page size 2 against 5 tied rows: every boundary lands mid-run.
+    let mut cursor = None;
+    for _ in 0..10 {
+        let outcome = poll_once(&db_path, &config, Uuid::nil(), cursor, 2)
+            .await
+            .unwrap();
+        if outcome.fetched == 0 {
+            break;
+        }
+        cursor = outcome.advanced_to;
+    }
+
+    let requests = recorded.lock().unwrap();
+    let sent: Vec<String> = requests
+        .iter()
+        .map(|(_, _, body)| {
+            let json: serde_json::Value = serde_json::from_str(body).unwrap();
+            json["events"][0]["source_id"].as_str().unwrap().to_string()
+        })
+        .collect();
+    assert_eq!(
+        sent,
+        [
+            "imessage:MSG-1",
+            "imessage:MSG-2",
+            "imessage:MSG-3",
+            "imessage:MSG-4",
+            "imessage:MSG-5"
+        ],
+        "every tied row sent exactly once, in order"
+    );
+}
+
+/// `WHERE date IS NOT NULL` does not exclude `date = 0`, and `is_from_me` is
+/// nullable in the real schema. Both used to be fatal at the page level: the
+/// zero row (newest by ROWID) typed the whole database as seconds, and the
+/// NULL failed the entire `query_map`.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_zero_date_and_a_null_is_from_me_do_not_take_the_page_down_with_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("chat.db");
+    let conn = Connection::open(&db_path).unwrap();
+    conn.execute_batch(reader::FIXTURE_SCHEMA).unwrap();
+    conn.execute(
+        "INSERT INTO message (ROWID, guid, text, is_from_me, date) VALUES (1, 'MSG-REAL', 'real', NULL, ?1)",
+        params![COCOA_2026_NANOS + 373_504],
+    )
+    .unwrap();
+    // Newest by ROWID — the row the old one-shot unit detection sampled.
+    conn.execute(
+        "INSERT INTO message (ROWID, guid, text, is_from_me, date) VALUES (2, 'MSG-ZERO', 'zero', 0, 0)",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    let (origin, recorded) = spawn_mock_server(vec![]);
+    let config = lane_config(&origin);
+
+    let outcome = poll_once(&db_path, &config, Uuid::nil(), None, 10)
+        .await
+        .unwrap();
+    assert_eq!(outcome.fetched, 2);
+    assert_eq!(outcome.ingested, 2);
+
+    let requests = recorded.lock().unwrap();
+    let occurred: Vec<String> = requests
+        .iter()
+        .map(|(_, _, body)| {
+            let json: serde_json::Value = serde_json::from_str(body).unwrap();
+            json["events"][0]["occurred_at"].as_str().unwrap().to_string()
+        })
+        .collect();
+    // The zero row is Cocoa's own epoch and sorts first; the real row keeps its
+    // 2026 date instead of being re-typed into the year 79,000,000.
+    assert_eq!(occurred[0], "2001-01-01T00:00:00.000Z");
+    assert_eq!(occurred[1], "2026-01-01T00:00:00.000Z");
 }
 
 /// Regression test for a real bug found running this against a live
@@ -303,29 +473,12 @@ async fn a_message_with_no_text_is_still_ingested_not_rejected_as_a_null_descrip
     let dir = tempfile::tempdir().unwrap();
     let db_path = dir.path().join("chat.db");
     let conn = Connection::open(&db_path).unwrap();
-    conn.execute_batch(
-        "
-        CREATE TABLE handle (ROWID INTEGER PRIMARY KEY, id TEXT);
-        CREATE TABLE chat (ROWID INTEGER PRIMARY KEY, chat_identifier TEXT, display_name TEXT);
-        CREATE TABLE chat_message_join (chat_id INTEGER, message_id INTEGER);
-        CREATE TABLE message_attachment_join (message_id INTEGER, attachment_id INTEGER);
-        CREATE TABLE message (
-            ROWID INTEGER PRIMARY KEY,
-            guid TEXT,
-            text TEXT,
-            is_from_me INTEGER,
-            service TEXT,
-            date INTEGER,
-            handle_id INTEGER
-        );
-        ",
-    )
-    .unwrap();
+    conn.execute_batch(reader::FIXTURE_SCHEMA).unwrap();
     // `text` genuinely NULL, not an empty string — the shape a real
     // attributedBody-only row has.
     conn.execute(
         "INSERT INTO message (ROWID, guid, text, is_from_me, date) VALUES (1, 'MSG-NULL', NULL, 0, ?1)",
-        params![COCOA_2026],
+        params![COCOA_2026_NANOS],
     )
     .unwrap();
     drop(conn);
