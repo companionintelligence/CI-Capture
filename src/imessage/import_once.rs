@@ -15,9 +15,10 @@
 //! Full Disk Access already granted — this does not attempt to request it
 //! (there is nothing to request; see `crate::permissions`).
 //!
-//! Fixed, small page (5 messages) — a demonstration that the pipeline
-//! works, not a bulk backfill tool. The background lane (`imessage::run`) is
-//! what does ongoing sync.
+//! Small by default (5 messages) — a demonstration that the pipeline works,
+//! not a bulk backfill tool; the background lane (`imessage::run`) is what
+//! does ongoing sync. `IMESSAGE_IMPORT_LIMIT` raises it for an explicit,
+//! opt-in larger one-off run — the default a bare invocation gets stays 5.
 
 use anyhow::{Context, Result, bail};
 use uuid::Uuid;
@@ -27,7 +28,15 @@ use crate::permissions::{self, PermissionStatus};
 
 use super::{chat_db_path, describe, poll_once, reader};
 
-const LIMIT: u32 = 5;
+const DEFAULT_LIMIT: u32 = 5;
+
+fn limit() -> u32 {
+    std::env::var("IMESSAGE_IMPORT_LIMIT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(DEFAULT_LIMIT)
+}
 
 pub fn run() -> Result<()> {
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -58,9 +67,10 @@ async fn import_once() -> Result<()> {
         );
     }
 
+    let limit = limit();
     println!("Database   : {}", db_path.display());
     println!("CI-Server  : {portal_url}");
-    println!("Fetching   : up to {LIMIT} message(s), oldest first\n");
+    println!("Fetching   : up to {limit} message(s), oldest first\n");
 
     let config = AppConfig {
         server: crate::config::ServerConfig {
@@ -76,7 +86,7 @@ async fn import_once() -> Result<()> {
     };
 
     let conn = reader::open_readonly(&db_path).context("opening chat.db")?;
-    let preview = reader::read_messages(&conn, None, LIMIT).context("reading messages")?;
+    let preview = reader::read_messages(&conn, None, limit).context("reading messages")?;
     drop(conn); // release before the async pass reopens it on its own blocking thread
 
     if preview.is_empty() {
@@ -89,7 +99,7 @@ async fn import_once() -> Result<()> {
     }
     println!();
 
-    let outcome = poll_once(&db_path, &config, Uuid::nil(), None, LIMIT)
+    let outcome = poll_once(&db_path, &config, Uuid::nil(), None, limit)
         .await
         .context("running the poll+ingest pass")?;
 

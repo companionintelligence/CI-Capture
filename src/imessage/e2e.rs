@@ -291,6 +291,67 @@ async fn passing_a_cursor_excludes_everything_at_or_before_it() {
     assert!(requests[0].2.contains("imessage:MSG-2"));
 }
 
+/// Regression test for a real bug found running this against a live
+/// database: a message with `text IS NULL` (e.g. an `attributedBody`-only
+/// row, see `reader`'s module doc) produced `description: null` in the
+/// ingest JSON, and CI-Server's schema rejects an explicit `null` for an
+/// optional string field — it wants the key omitted entirely. 35 of 50 real
+/// messages failed this way in one batch before `CaptureEvent` got
+/// `skip_serializing_if` on `description`.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_message_with_no_text_is_still_ingested_not_rejected_as_a_null_description() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("chat.db");
+    let conn = Connection::open(&db_path).unwrap();
+    conn.execute_batch(
+        "
+        CREATE TABLE handle (ROWID INTEGER PRIMARY KEY, id TEXT);
+        CREATE TABLE chat (ROWID INTEGER PRIMARY KEY, chat_identifier TEXT, display_name TEXT);
+        CREATE TABLE chat_message_join (chat_id INTEGER, message_id INTEGER);
+        CREATE TABLE message_attachment_join (message_id INTEGER, attachment_id INTEGER);
+        CREATE TABLE message (
+            ROWID INTEGER PRIMARY KEY,
+            guid TEXT,
+            text TEXT,
+            is_from_me INTEGER,
+            service TEXT,
+            date INTEGER,
+            handle_id INTEGER
+        );
+        ",
+    )
+    .unwrap();
+    // `text` genuinely NULL, not an empty string — the shape a real
+    // attributedBody-only row has.
+    conn.execute(
+        "INSERT INTO message (ROWID, guid, text, is_from_me, date) VALUES (1, 'MSG-NULL', NULL, 0, ?1)",
+        params![COCOA_2026],
+    )
+    .unwrap();
+    drop(conn);
+
+    let (origin, recorded) = spawn_mock_server(vec![]);
+    let config = lane_config(&origin);
+
+    let outcome = poll_once(&db_path, &config, Uuid::nil(), None, 10)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        outcome.ingested, 1,
+        "a NULL-text message must still be accepted"
+    );
+
+    let requests = recorded.lock().unwrap();
+    let body = &requests[0].2;
+    let json: serde_json::Value = serde_json::from_str(body).unwrap();
+    let event = &json["events"][0];
+    assert!(
+        !event.as_object().unwrap().contains_key("description"),
+        "description must be OMITTED, not sent as null, when there is no text: {body}"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn an_empty_database_is_a_no_op_not_an_error() {
     let dir = tempfile::tempdir().unwrap();

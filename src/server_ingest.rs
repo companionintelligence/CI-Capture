@@ -17,8 +17,19 @@ struct CaptureEvent {
     source_id: String,
     kind: String,
     occurred_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     observed_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     title: Option<String>,
+    /// CI-Server's `/v1/events` schema types this `z.string().optional()`,
+    /// which — a common zod trap — accepts an *absent* key but rejects an
+    /// explicit JSON `null` ("Expected string, received null"). `None` must
+    /// therefore be omitted, not serialized, same as `capture_tick_id`
+    /// below. Found live: an iMessage row with `text IS NULL` (see
+    /// `imessage::reader`'s `attributedBody` gap) sent `description: null`
+    /// and every such message in the batch was rejected — silently, until
+    /// something actually read the response body.
+    #[serde(skip_serializing_if = "Option::is_none")]
     description: Option<String>,
     payload: Value,
     /// Per-tick correlator shared with the screenshot uploaded via the same
