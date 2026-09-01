@@ -423,6 +423,59 @@ pub async fn ingest_bluebubbles_message(
     .await
 }
 
+/// Ship one locally-read iMessage/SMS row to CI-Server via the generic
+/// capture-event pipeline. Structurally close to `ingest_bluebubbles_message`
+/// (same underlying kind of data, same transport) but kept separate and
+/// tagged with a distinct `kind`/`source_id` prefix — this row came from
+/// reading a file on disk, not from a network API, and that provenance is
+/// worth keeping distinguishable server-side. See `crate::imessage`'s module
+/// doc for the same message-content-reaches-the-server caveat
+/// `ingest_bluebubbles_message` documents above.
+pub async fn ingest_imessage_message(
+    config: &AppConfig,
+    device_id: Uuid,
+    row: &crate::imessage::reader::ImessageRow,
+) -> Result<(), IngestError> {
+    let occurred_at = chrono::DateTime::from_timestamp_millis(row.date_created_unix_ms)
+        .unwrap_or_else(chrono::Utc::now)
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+
+    let title = row
+        .chat_display_name
+        .clone()
+        .or_else(|| row.chat_identifier.clone())
+        .or_else(|| row.handle.clone());
+
+    let payload = serde_json::json!({
+        "device_id": device_id,
+        "rowid": row.rowid,
+        "chat_identifier": row.chat_identifier,
+        "is_from_me": row.is_from_me,
+        "handle": row.handle,
+        "service": row.service,
+        "attachment_count": row.attachment_count,
+    });
+
+    post_capture_event(
+        config,
+        CaptureEvent {
+            source_system: "ci-applet",
+            source_id: format!(
+                "imessage:{}",
+                row.guid.clone().unwrap_or_else(|| row.rowid.to_string())
+            ),
+            kind: "imessage_message".to_string(),
+            occurred_at: occurred_at.clone(),
+            observed_at: Some(occurred_at),
+            title,
+            description: row.text.clone(),
+            payload,
+            capture_tick_id: None,
+        },
+    )
+    .await
+}
+
 // ── Internal ──────────────────────────────────────────────────────────────────
 
 async fn post_capture_event(config: &AppConfig, event: CaptureEvent) -> Result<(), IngestError> {
