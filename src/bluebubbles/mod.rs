@@ -14,6 +14,16 @@
 //! end-to-end; the batching/backoff/dead-letter machinery `file_tracker.rs`
 //! has can be grafted on once this is a real feature rather than a probe.
 //!
+//! **One exception to "loses nothing", and it is not recoverable by
+//! re-polling:** a message with no `dateCreated` cannot be placed against a
+//! cursor that *is* a `dateCreated`, so it is dropped, and a later message in
+//! the same page advancing the cursor puts it permanently behind. It is
+//! counted in [`PollOutcome::dropped_no_timestamp`] and reported at `warn`
+//! rather than passed over at `debug` — CI-Server's own importer records the
+//! same case as an `invalid_timestamp` drop. A compound cursor (the shape
+//! `imessage::reader::ImessageCursor` uses, ordering on a field every message
+//! has) is what would actually fix it.
+//!
 //! **Known data-model gap, not yet resolved:** messages land in
 //! `ci.events`/`ci.capture_events` as an opaque JSON blob (whatever
 //! `POST /v1/events` produces), not as a `ci.communications` row with a
@@ -26,6 +36,8 @@
 
 pub mod check;
 pub mod client;
+#[cfg(test)]
+mod e2e;
 pub mod import_once;
 
 use std::path::{Path, PathBuf};
@@ -155,6 +167,9 @@ pub struct PollOutcome {
     pub fetched: usize,
     /// Of those, how many CI-Server acknowledged.
     pub ingested: usize,
+    /// Messages dropped for having no `dateCreated` at all. Counted because
+    /// they are *lost*, not deferred — see the module doc.
+    pub dropped_no_timestamp: usize,
     /// Highest `dateCreated` actually acknowledged by CI-Server — `None`
     /// means nothing new landed (empty page, or the very first message
     /// failed). Not necessarily the whole page: a mid-page ingest failure
@@ -194,10 +209,15 @@ pub(crate) async fn poll_once(
 
     for message in &page {
         let Some(date_created) = message.date_created else {
+            // Dropped, not deferred: the cursor is a `dateCreated`, so there
+            // is no position this message could be resumed from, and the next
+            // acknowledged message in this page moves the cursor past it for
+            // good. The count is warned about below.
             log::debug!(
-                "bluebubbles: skipping message {} with no dateCreated",
+                "bluebubbles: dropping message {} — no dateCreated",
                 message.guid
             );
+            outcome.dropped_no_timestamp += 1;
             continue;
         };
 
@@ -214,6 +234,14 @@ pub(crate) async fn poll_once(
                 break;
             }
         }
+    }
+
+    if outcome.dropped_no_timestamp > 0 {
+        log::warn!(
+            "bluebubbles: dropped {} of {} message(s) in this page for having no dateCreated — they cannot be ordered against the cursor and will not be retried",
+            outcome.dropped_no_timestamp,
+            outcome.fetched
+        );
     }
 
     Ok(outcome)

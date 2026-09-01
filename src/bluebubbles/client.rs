@@ -10,7 +10,7 @@
 //! POST bodies — so the two implementations can be cross-checked against each
 //! other rather than against BlueBubbles' documentation alone.
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -80,21 +80,57 @@ pub struct BlueBubblesClientConfig {
     pub password: String,
 }
 
-/// Strip the `password` query param out of a URL before it is ever logged —
-/// BlueBubbles has no header-auth story, so the password rides in the query
+/// Strip every `password=` query value out of `text` before it is ever logged
+/// — BlueBubbles has no header-auth story, so the password rides in the query
 /// string of every request.
-pub fn redact_url(url: &str) -> String {
-    match url.find("password=") {
-        Some(idx) => {
-            let end = url[idx..]
-                .find('&')
-                .map(|rel| idx + rel)
-                .unwrap_or(url.len());
-            format!("{}password=REDACTED{}", &url[..idx], &url[end..])
-        }
-        None => url.to_string(),
+///
+/// Takes arbitrary text, not only a bare URL, because a URL comes back inside
+/// a sentence at least as often as it appears alone (an error body echoing the
+/// request, a message with the URL in the middle). That is also why the value
+/// ends at whitespace or a quote as well as at `&`: terminating only on `&`
+/// meant a URL at the end of a sentence swallowed the rest of the message,
+/// taking the actual diagnosis with it.
+pub fn redact_url(text: &str) -> String {
+    const NEEDLE: &str = "password=";
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(idx) = rest.find(NEEDLE) {
+        out.push_str(&rest[..idx]);
+        out.push_str("password=REDACTED");
+        let after = &rest[idx + NEEDLE.len()..];
+        let end = after
+            .find(|c: char| c == '&' || c == '#' || c == '"' || c.is_ascii_whitespace())
+            .unwrap_or(after.len());
+        rest = &after[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// A BlueBubbles request failure with the password already gone from every
+/// layer of it.
+///
+/// Applying [`redact_url`] to the *context* is not enough, which is how the
+/// password reached the log despite that function being correct:
+/// `reqwest::Error`'s own `Display` appends ` for url (<the full URL>)`, and
+/// `{err:?}` on an anyhow chain prints every source beneath the context. The
+/// warning that carried it — "poll failed, will retry next tick" — fires on
+/// the routine case of the LAN Mac being asleep, at a level the default
+/// `info` filter emits.
+///
+/// So this type is the only thing the client returns for a transport or
+/// decode failure, and it deliberately has **no `source`**: there is nothing
+/// left in the chain for anything downstream to print.
+#[derive(Debug)]
+pub struct BlueBubblesError(String);
+
+impl std::fmt::Display for BlueBubblesError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
     }
 }
+
+impl std::error::Error for BlueBubblesError {}
 
 pub struct BlueBubblesClient {
     config: BlueBubblesClientConfig,
@@ -135,6 +171,58 @@ impl BlueBubblesClient {
         )
     }
 
+    /// Every string this client puts into an error goes through here — not
+    /// just the ones that look like a URL. [`redact_url`] only knows the
+    /// query-string shape, and the two other ways the secret gets out are a
+    /// reqwest source layer and a server (or a proxy in front of it) echoing
+    /// the request URL back inside an error body. The literal value is what
+    /// must not survive, wherever it turns up.
+    fn redact(&self, text: &str) -> String {
+        if self.config.password.is_empty() {
+            // `replace("")` would splice REDACTED between every character.
+            return redact_url(text);
+        }
+        let text = text
+            .replace(&self.config.password, "REDACTED")
+            .replace(&urlencoding_password(&self.config.password), "REDACTED");
+        redact_url(&text)
+    }
+
+    /// Rebuild reqwest's message from the error's *shape* plus its sources.
+    /// reqwest's own `Display` is unusable — it is the thing that carries the
+    /// URL — but the layers beneath it (hyper/rustls/io) hold the diagnosis
+    /// worth keeping ("Connection refused", "dns error", "certificate
+    /// expired") and no URL, so they are kept, redacted anyway.
+    fn transport_error(&self, action: &str, url: &str, err: &reqwest::Error) -> BlueBubblesError {
+        let shape = if err.is_timeout() {
+            "timed out"
+        } else if err.is_connect() {
+            "could not be reached"
+        } else if err.is_decode() {
+            "sent a response this client could not decode"
+        } else if err.is_body() {
+            "sent a response body that failed mid-transfer"
+        } else if err.is_request() {
+            "rejected the request before it was sent"
+        } else {
+            "failed"
+        };
+
+        let mut causes = Vec::new();
+        let mut source = std::error::Error::source(err);
+        while let Some(cause) = source {
+            causes.push(cause.to_string());
+            source = cause.source();
+        }
+        let detail = if causes.is_empty() {
+            String::new()
+        } else {
+            format!(" — {}", causes.join(": "))
+        };
+
+        BlueBubblesError(self.redact(&format!("{action} {} {shape}{detail}", redact_url(url))))
+    }
+
     async fn get<T: for<'de> Deserialize<'de>>(&self, path: &str) -> Result<T> {
         let url = self.url_for(path);
         let response = self
@@ -142,8 +230,8 @@ impl BlueBubblesClient {
             .get(&url)
             .send()
             .await
-            .with_context(|| format!("GET {}", redact_url(&url)))?;
-        Self::decode(response, &url).await
+            .map_err(|err| self.transport_error("GET", &url, &err))?;
+        self.decode(response, &url).await
     }
 
     async fn post<T: for<'de> Deserialize<'de>>(&self, path: &str, body: Value) -> Result<T> {
@@ -154,33 +242,35 @@ impl BlueBubblesClient {
             .json(&body)
             .send()
             .await
-            .with_context(|| format!("POST {}", redact_url(&url)))?;
-        Self::decode(response, &url).await
+            .map_err(|err| self.transport_error("POST", &url, &err))?;
+        self.decode(response, &url).await
     }
 
     async fn decode<T: for<'de> Deserialize<'de>>(
+        &self,
         response: reqwest::Response,
         url: &str,
     ) -> Result<T> {
         let status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
-            return Err(anyhow!(
+            return Err(BlueBubblesError(self.redact(&format!(
                 "BlueBubbles request failed: HTTP {status} {} — {}",
                 redact_url(url),
                 body.chars().take(300).collect::<String>()
-            ));
+            )))
+            .into());
         }
         let envelope: Envelope<T> = response
             .json()
             .await
-            .with_context(|| format!("decoding BlueBubbles response from {}", redact_url(url)))?;
+            .map_err(|err| self.transport_error("decoding the response to", url, &err))?;
         if envelope.status >= 400 {
-            return Err(anyhow!(
+            return Err(BlueBubblesError(self.redact(&format!(
                 "BlueBubbles reported an error: {} ({})",
-                envelope.message,
-                envelope.status
-            ));
+                envelope.message, envelope.status
+            )))
+            .into());
         }
         Ok(envelope.data)
     }
@@ -198,17 +288,22 @@ impl BlueBubblesClient {
         after: Option<i64>,
         limit: u32,
     ) -> Result<Vec<BlueBubblesMessage>> {
-        self.post(
-            "message/query",
-            serde_json::json!({
-                "after": after,
-                "sort": "ASC",
-                "limit": limit,
-                "offset": 0,
-                "with": ["chats", "chats.participants", "handle", "attachments"],
-            }),
-        )
-        .await
+        let mut body = serde_json::json!({
+            "sort": "ASC",
+            "limit": limit,
+            "offset": 0,
+            "with": ["chats", "chats.participants", "handle", "attachments"],
+        });
+        // Omitted, not `null`. `json!({"after": after})` on a `None` emits
+        // `"after": null`, and the TS client this file mirrors field-for-field
+        // leaves the key out entirely — a server that treats a present-but-null
+        // filter differently from an absent one would silently diverge between
+        // the two implementations, which is the whole thing cross-checking them
+        // is meant to prevent.
+        if let Some(after) = after {
+            body["after"] = after.into();
+        }
+        self.post("message/query", body).await
     }
 }
 
@@ -256,9 +351,98 @@ mod tests {
         assert_eq!(redact_url(url), url);
     }
 
+    /// A URL usually arrives inside a sentence — an error body quoting the
+    /// request back, say. Terminating the value only at `&` used to eat the
+    /// remainder of the message along with the secret.
+    #[test]
+    fn redacts_a_url_embedded_in_text_without_swallowing_the_rest_of_it() {
+        assert_eq!(
+            redact_url("upstream refused http://host:1234/api/v1/x?password=hunter2 after 3 tries"),
+            "upstream refused http://host:1234/api/v1/x?password=REDACTED after 3 tries"
+        );
+    }
+
+    #[test]
+    fn redacts_every_occurrence_not_just_the_first() {
+        assert_eq!(
+            redact_url("GET ?password=a failed; retrying ?password=b"),
+            "GET ?password=REDACTED failed; retrying ?password=REDACTED"
+        );
+    }
+
     #[test]
     fn percent_encodes_reserved_characters_in_the_password() {
         assert_eq!(urlencoding_password("a b&c=d"), "a%20b%26c%3Dd");
         assert_eq!(urlencoding_password("plain-Pass_123.~"), "plain-Pass_123.~");
+    }
+
+    const SECRET: &str = "hunter2-server-password";
+
+    fn client_pointed_at_nothing() -> BlueBubblesClient {
+        // A port nothing is listening on: bind one to learn a free number,
+        // then drop it. Connecting there fails the way the user's LAN Mac
+        // failing to answer does — which is the routine case that logged the
+        // password, not an exotic one.
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        BlueBubblesClient::new(BlueBubblesClientConfig {
+            host: "127.0.0.1".to_string(),
+            port,
+            use_https: false,
+            password: SECRET.to_string(),
+        })
+        .unwrap()
+    }
+
+    /// `redact_url` was already correct and already applied — the leak went
+    /// around it. `reqwest::Error`'s own `Display` appends ` for url (<full
+    /// url>)`, and `{err:?}` on an anyhow chain prints every source under the
+    /// redacted context, so the password came back out in
+    /// `bluebubbles: poll failed, will retry next tick: {err:?}` — a warning
+    /// the default `info` filter emits in ordinary builds.
+    #[tokio::test]
+    async fn a_transport_failure_renders_with_no_password_anywhere_in_its_chain() {
+        let err = client_pointed_at_nothing().ping().await.unwrap_err();
+
+        let debug = format!("{err:?}");
+        assert!(
+            !debug.contains(SECRET),
+            "password leaked into {{err:?}}: {debug}"
+        );
+        assert!(
+            !debug.contains(&urlencoding_password(SECRET)),
+            "url-encoded password leaked into {{err:?}}: {debug}"
+        );
+        assert!(
+            debug.contains("password=REDACTED"),
+            "the redacted URL should still be there for diagnosis: {debug}"
+        );
+        assert!(
+            !format!("{err}").contains(SECRET),
+            "password leaked into Display"
+        );
+        // Belt and braces: no link of the chain may render it either, however
+        // a caller chooses to walk it.
+        for link in err.chain() {
+            assert!(
+                !link.to_string().contains(SECRET),
+                "password leaked into a chain link: {link}"
+            );
+        }
+    }
+
+    /// The same guarantee for the other reqwest-producing call, and through
+    /// the POST body path rather than the GET one.
+    #[tokio::test]
+    async fn a_failed_message_query_renders_with_no_password_either() {
+        let err = client_pointed_at_nothing()
+            .query_messages(None, 10)
+            .await
+            .unwrap_err();
+        let debug = format!("{err:?}");
+        assert!(!debug.contains(SECRET), "{debug}");
     }
 }

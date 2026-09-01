@@ -125,8 +125,10 @@ fn lane_config(origin: &str) -> AppConfig {
 fn fixture_chat_db(path: &std::path::Path, rows: &[(i64, &str, &str, bool, i64)]) -> Connection {
     let conn = Connection::open(path).unwrap();
     conn.execute_batch(reader::FIXTURE_SCHEMA).unwrap();
-    conn.execute_batch("INSERT INTO handle (ROWID, id, service) VALUES (1, '+15551234567', 'iMessage');")
-        .unwrap();
+    conn.execute_batch(
+        "INSERT INTO handle (ROWID, id, service) VALUES (1, '+15551234567', 'iMessage');",
+    )
+    .unwrap();
     for (rowid, guid, text, is_from_me, date_raw) in rows {
         conn.execute(
             "INSERT INTO message (ROWID, guid, text, is_from_me, service, date, handle_id)
@@ -194,7 +196,13 @@ async fn all_messages_in_the_page_are_sent_in_order() {
         &db_path,
         &[
             (1, "MSG-1", "first", false, COCOA_2026_NANOS),
-            (2, "MSG-2", "second", true, COCOA_2026_NANOS + ONE_MINUTE_NANOS),
+            (
+                2,
+                "MSG-2",
+                "second",
+                true,
+                COCOA_2026_NANOS + ONE_MINUTE_NANOS,
+            ),
             (
                 3,
                 "MSG-3",
@@ -350,7 +358,10 @@ async fn polling_twice_with_the_returned_cursor_sends_nothing_the_second_time() 
         .await
         .unwrap();
 
-    assert_eq!(second.fetched, 0, "the newest message came back a second time");
+    assert_eq!(
+        second.fetched, 0,
+        "the newest message came back a second time"
+    );
     assert_eq!(second.ingested, 0);
     assert_eq!(second.advanced_to, None);
     assert_eq!(
@@ -452,7 +463,10 @@ async fn a_zero_date_and_a_null_is_from_me_do_not_take_the_page_down_with_them()
         .iter()
         .map(|(_, _, body)| {
             let json: serde_json::Value = serde_json::from_str(body).unwrap();
-            json["events"][0]["occurred_at"].as_str().unwrap().to_string()
+            json["events"][0]["occurred_at"]
+                .as_str()
+                .unwrap()
+                .to_string()
         })
         .collect();
     // The zero row is Cocoa's own epoch and sorts first; the real row keeps its
