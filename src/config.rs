@@ -193,6 +193,58 @@ impl Default for FileTrackerConfig {
     }
 }
 
+/// BlueBubbles lane — prototype (see `crate::bluebubbles`). Off by default
+/// and, like `FileTrackerConfig`, effectively a no-op until a host and
+/// password are actually entered; `bluebubbles::is_runnable` is the single
+/// source of truth for "should this lane poll."
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct BlueBubblesConfig {
+    pub enabled: bool,
+    pub host: String,
+    pub port: u16,
+    pub use_https: bool,
+    /// BlueBubbles' own server password — a full-control credential for the
+    /// configured Mac. Stored in plaintext on disk, consistent with this
+    /// file's existing precedent for local service credentials (Postgres,
+    /// MinIO, above).
+    pub password: String,
+    pub poll_interval_secs: u64,
+}
+
+impl Default for BlueBubblesConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            host: String::new(),
+            port: 1234,
+            use_https: false,
+            password: String::new(),
+            poll_interval_secs: 30,
+        }
+    }
+}
+
+/// Local iMessage/SMS lane — prototype (see `crate::imessage`). Off by
+/// default; unlike `BlueBubblesConfig` there is no host/port/password to
+/// enter, since it reads this Mac's own `~/Library/Messages/chat.db`
+/// directly, gated by Full Disk Access rather than a saved credential.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct ImessageConfig {
+    pub enabled: bool,
+    pub poll_interval_secs: u64,
+}
+
+impl Default for ImessageConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            poll_interval_secs: 30,
+        }
+    }
+}
+
 /// The persisted applet configuration.
 ///
 /// Every config struct in this module — this one and each section — carries a
@@ -221,6 +273,10 @@ pub struct AppConfig {
     pub vizier: VizierConfig,
     #[serde(default)]
     pub file_tracker: FileTrackerConfig,
+    #[serde(default)]
+    pub bluebubbles: BlueBubblesConfig,
+    #[serde(default)]
+    pub imessage: ImessageConfig,
     #[serde(default)]
     pub oidc: OidcConfig,
     /// Tokens + claims captured from the last successful portal sign-in.
@@ -273,6 +329,8 @@ impl Default for AppConfig {
             server: ServerConfig::default(),
             vizier: VizierConfig::default(),
             file_tracker: FileTrackerConfig::default(),
+            bluebubbles: BlueBubblesConfig::default(),
+            imessage: ImessageConfig::default(),
             oidc: OidcConfig::default(),
             oidc_session: None,
             onboarding_completed: false,
@@ -449,6 +507,27 @@ pub fn queue_db_path() -> Result<PathBuf> {
     fs::create_dir_all(data_dir)
         .with_context(|| format!("creating data dir {}", data_dir.display()))?;
     Ok(data_dir.join("file-tracker-queue.db"))
+}
+
+/// Path to the BlueBubbles lane's sync cursor (plain JSON, not the SQLite
+/// queue file_tracker uses — see `crate::bluebubbles` for why).
+pub fn bluebubbles_cursor_path() -> Result<PathBuf> {
+    let dirs = ProjectDirs::from(APP_QUALIFIER, APP_QUALIFIER, APP_NAME)
+        .context("locating data directory")?;
+    let data_dir = dirs.data_dir();
+    fs::create_dir_all(data_dir)
+        .with_context(|| format!("creating data dir {}", data_dir.display()))?;
+    Ok(data_dir.join("bluebubbles-cursor.json"))
+}
+
+/// Path to the local iMessage lane's sync cursor.
+pub fn imessage_cursor_path() -> Result<PathBuf> {
+    let dirs = ProjectDirs::from(APP_QUALIFIER, APP_QUALIFIER, APP_NAME)
+        .context("locating data directory")?;
+    let data_dir = dirs.data_dir();
+    fs::create_dir_all(data_dir)
+        .with_context(|| format!("creating data dir {}", data_dir.display()))?;
+    Ok(data_dir.join("imessage-cursor.json"))
 }
 
 pub fn default_storage_dir() -> Result<PathBuf> {
