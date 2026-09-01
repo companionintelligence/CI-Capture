@@ -347,7 +347,7 @@ async fn a_message_with_no_date_created_is_counted_as_dropped_not_silently_passe
 
     assert_eq!(outcome.fetched, 2);
     assert_eq!(outcome.ingested, 1);
-    assert_eq!(outcome.dropped_no_timestamp, 1);
+    assert_eq!(outcome.dropped_invalid_timestamp, 1);
     // And the cursor really has moved past it — this is a report of a loss,
     // not a deferral.
     assert_eq!(outcome.advanced_to, Some(JAN_1_2026_UNIX_MS + 60_000));
@@ -355,6 +355,32 @@ async fn a_message_with_no_date_created_is_counted_as_dropped_not_silently_passe
     let ci = ci_requests.lock().unwrap();
     assert_eq!(ci.len(), 1);
     assert!(!ci[0].2.contains("MSG-NO-DATE"), "{:?}", ci[0].2);
+}
+
+/// A `dateCreated` no calendar date can be made of takes the same drop path,
+/// rather than being sent and rejected: a rejection is what stops the page, so
+/// one garbage timestamp at the head of a page would wedge the lane forever.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unrepresentable_date_created_is_dropped_rather_than_wedging_the_page() {
+    let ((host, port), _) = spawn_mock_bluebubbles(vec![Page::Messages(vec![
+        message("MSG-ABSURD", "from the year 300 million", Some(i64::MAX)),
+        message("MSG-2", "later", Some(JAN_1_2026_UNIX_MS)),
+    ])]);
+    let (origin, ci_requests) = spawn_mock_ci_server(vec![]);
+    let config = lane_config(&origin);
+
+    let outcome = poll_once(&client_for(&host, port), &config, Uuid::nil(), None, 10)
+        .await
+        .unwrap();
+
+    assert_eq!(outcome.ingested, 1);
+    assert_eq!(outcome.dropped_invalid_timestamp, 1);
+    assert_eq!(
+        outcome.advanced_to,
+        Some(JAN_1_2026_UNIX_MS),
+        "the page must keep going past it"
+    );
+    assert_eq!(ci_requests.lock().unwrap().len(), 1);
 }
 
 /// The redaction guarantee end to end, through a real socket: a server error

@@ -15,14 +15,14 @@
 //! has can be grafted on once this is a real feature rather than a probe.
 //!
 //! **One exception to "loses nothing", and it is not recoverable by
-//! re-polling:** a message with no `dateCreated` cannot be placed against a
-//! cursor that *is* a `dateCreated`, so it is dropped, and a later message in
-//! the same page advancing the cursor puts it permanently behind. It is
-//! counted in [`PollOutcome::dropped_no_timestamp`] and reported at `warn`
-//! rather than passed over at `debug` — CI-Server's own importer records the
-//! same case as an `invalid_timestamp` drop. A compound cursor (the shape
-//! `imessage::reader::ImessageCursor` uses, ordering on a field every message
-//! has) is what would actually fix it.
+//! re-polling:** a message with no usable `dateCreated` cannot be placed
+//! against a cursor that *is* a `dateCreated`, so it is dropped, and a later
+//! message in the same page advancing the cursor puts it permanently behind.
+//! It is counted in [`PollOutcome::dropped_invalid_timestamp`] and reported at
+//! `warn` rather than passed over at `debug` — CI-Server's own importer
+//! records the same case as an `invalid_timestamp` drop. A compound cursor
+//! (the shape `imessage::reader::ImessageCursor` uses, ordering on a field
+//! every message has) is what would actually fix it.
 //!
 //! **Known data-model gap, not yet resolved:** messages land in
 //! `ci.events`/`ci.capture_events` as an opaque JSON blob (whatever
@@ -167,9 +167,10 @@ pub struct PollOutcome {
     pub fetched: usize,
     /// Of those, how many CI-Server acknowledged.
     pub ingested: usize,
-    /// Messages dropped for having no `dateCreated` at all. Counted because
-    /// they are *lost*, not deferred — see the module doc.
-    pub dropped_no_timestamp: usize,
+    /// Messages dropped for having no usable `dateCreated` — absent, or a
+    /// value no calendar date can be made of. Counted because they are *lost*,
+    /// not deferred — see the module doc.
+    pub dropped_invalid_timestamp: usize,
     /// Highest `dateCreated` actually acknowledged by CI-Server — `None`
     /// means nothing new landed (empty page, or the very first message
     /// failed). Not necessarily the whole page: a mid-page ingest failure
@@ -208,16 +209,25 @@ pub(crate) async fn poll_once(
     );
 
     for message in &page {
-        let Some(date_created) = message.date_created else {
-            // Dropped, not deferred: the cursor is a `dateCreated`, so there
-            // is no position this message could be resumed from, and the next
-            // acknowledged message in this page moves the cursor past it for
-            // good. The count is warned about below.
+        // Dropped, not deferred: the cursor IS a `dateCreated`, so a message
+        // without a usable one has no position to be resumed from, and the
+        // next acknowledged message in this page moves the cursor past it for
+        // good. The count is warned about below.
+        //
+        // A present-but-unrepresentable value is dropped here rather than left
+        // for `ingest_bluebubbles_message` to reject, because a rejection is
+        // what stops the page — one garbage timestamp would otherwise wedge
+        // the lane at the head of the queue forever.
+        let Some(date_created) = message
+            .date_created
+            .filter(|ms| chrono::DateTime::from_timestamp_millis(*ms).is_some())
+        else {
             log::debug!(
-                "bluebubbles: dropping message {} — no dateCreated",
-                message.guid
+                "bluebubbles: dropping message {} — no usable dateCreated ({:?})",
+                message.guid,
+                message.date_created
             );
-            outcome.dropped_no_timestamp += 1;
+            outcome.dropped_invalid_timestamp += 1;
             continue;
         };
 
@@ -236,10 +246,10 @@ pub(crate) async fn poll_once(
         }
     }
 
-    if outcome.dropped_no_timestamp > 0 {
+    if outcome.dropped_invalid_timestamp > 0 {
         log::warn!(
-            "bluebubbles: dropped {} of {} message(s) in this page for having no dateCreated — they cannot be ordered against the cursor and will not be retried",
-            outcome.dropped_no_timestamp,
+            "bluebubbles: dropped {} of {} message(s) in this page for having no usable dateCreated — they cannot be ordered against the cursor and will not be retried",
+            outcome.dropped_invalid_timestamp,
             outcome.fetched
         );
     }

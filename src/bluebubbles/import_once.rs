@@ -126,10 +126,10 @@ async fn import_once() -> Result<()> {
     println!("------");
     println!("fetched  : {}", outcome.fetched);
     println!("ingested : {}", outcome.ingested);
-    if outcome.dropped_no_timestamp > 0 {
+    if outcome.dropped_invalid_timestamp > 0 {
         println!(
-            "dropped  : {} message(s) with no dateCreated (not retried — see the lane docs)",
-            outcome.dropped_no_timestamp
+            "dropped  : {} message(s) with no usable dateCreated (not retried — see the lane docs)",
+            outcome.dropped_invalid_timestamp
         );
     }
     println!(
