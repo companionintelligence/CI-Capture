@@ -298,3 +298,74 @@ pub fn describe(row: &ImessageRow) -> String {
         row.rowid, row.attachment_count
     )
 }
+
+#[cfg(test)]
+mod cursor_tests {
+    use super::*;
+    use crate::imessage::reader::ImessageCursor;
+
+    fn tmp() -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "ci-capture-imessage-cursor-{}-{:?}.json",
+            std::process::id(),
+            std::thread::current().id()
+        ))
+    }
+
+    /// The compound cursor has to survive the file, not just the process. A
+    /// serde regression here would be SILENT: the lane would restart from the
+    /// oldest message on every launch and CI-Server's `source_id` dedup would
+    /// hide it, so nothing would look wrong except the traffic.
+    #[test]
+    fn a_compound_cursor_round_trips_through_the_file() {
+        let path = tmp();
+        let _ = std::fs::remove_file(&path);
+
+        let saved = Cursor {
+            last: Some(ImessageCursor {
+                // Deliberately NOT millisecond-aligned: the whole point of the
+                // raw unit is that sub-millisecond precision survives.
+                date_raw: 745_461_296_373_504_128,
+                rowid: 200_088,
+            }),
+            last_date_created_unix_ms: None,
+        };
+        save_cursor(&path, &saved).expect("save");
+
+        let loaded = load_cursor(&path);
+        assert_eq!(loaded.last, saved.last, "cursor did not survive the file");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A pre-compound cursor file is DISCARDED rather than converted — turning
+    /// Unix ms back into a raw `message.date` means guessing the database's
+    /// unit, the guess this lane exists to stop making. Restarting costs a
+    /// replay that dedup absorbs; guessing wrong skips history silently.
+    #[test]
+    fn a_legacy_cursor_file_restarts_instead_of_guessing() {
+        let path = tmp();
+        std::fs::write(&path, br#"{"last_date_created_unix_ms":1700000000000}"#).expect("write");
+
+        let loaded = load_cursor(&path);
+        assert!(
+            loaded.last.is_none(),
+            "a legacy cursor must not be converted into a compound one"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Garbage on disk restarts the lane rather than killing it — the same
+    /// reasoning `config.rs` documents for a malformed config.
+    #[test]
+    fn an_unreadable_cursor_file_falls_back_to_the_beginning() {
+        let path = tmp();
+        std::fs::write(&path, b"{not json at all").expect("write");
+        assert!(load_cursor(&path).last.is_none());
+
+        let _ = std::fs::remove_file(&path);
+        // A file that was never written is the same "start from the top" case.
+        assert!(load_cursor(&path).last.is_none());
+    }
+}
