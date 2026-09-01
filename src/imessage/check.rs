@@ -32,12 +32,24 @@ pub fn run() -> Result<()> {
         }
     );
 
-    if fda != PermissionStatus::Granted {
-        println!(
-            "\nGrant it in System Settings → Privacy & Security → Full Disk Access\n(add or enable the app/binary running this), then relaunch and retry:\n  {}",
-            permissions::full_disk_access_settings_url()
-        );
-        return Ok(());
+    // The status line above already distinguishes all three states; the advice
+    // below has to as well. `NotRequired` means Messages has never run on this
+    // Mac, so granting Full Disk Access would change nothing.
+    match fda {
+        PermissionStatus::Granted => {}
+        PermissionStatus::NotRequired => {
+            println!(
+                "\nNothing to read: Messages has never stored history on this Mac, so this\nlane has no source. This is not a permissions problem."
+            );
+            return Ok(());
+        }
+        PermissionStatus::Denied => {
+            println!(
+                "\nGrant it in System Settings → Privacy & Security → Full Disk Access\n(add or enable the app/binary running this), then relaunch and retry:\n  {}",
+                permissions::full_disk_access_settings_url()
+            );
+            return Ok(());
+        }
     }
 
     println!("\nLive read");

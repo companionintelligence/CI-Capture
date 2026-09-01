@@ -125,11 +125,27 @@ pub async fn run(config: AppConfig, cursor_path: PathBuf) -> Result<()> {
         return Ok(());
     }
 
-    if permissions::full_disk_access_status() != PermissionStatus::Granted {
-        log::warn!(
-            "imessage: Full Disk Access not granted; lane idle until it is (System Settings → Privacy & Security → Full Disk Access)"
-        );
-        return Ok(());
+    // Three states, not two: `NotRequired` means there is no chat.db on this
+    // Mac at all (Messages has never run here), and telling that user to grant
+    // Full Disk Access sends them to fix a permission that would change
+    // nothing.
+    match permissions::full_disk_access_status() {
+        PermissionStatus::Granted => {}
+        PermissionStatus::NotRequired => {
+            log::info!(
+                "imessage: no {} on this Mac — nothing to read, lane idle",
+                chat_db_path()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|_| "~/Library/Messages/chat.db".to_string())
+            );
+            return Ok(());
+        }
+        PermissionStatus::Denied => {
+            log::warn!(
+                "imessage: Full Disk Access not granted; lane idle until it is (System Settings → Privacy & Security → Full Disk Access)"
+            );
+            return Ok(());
+        }
     }
 
     let device_id = config.identity.device_id.unwrap_or_else(uuid::Uuid::nil);

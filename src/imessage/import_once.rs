@@ -52,11 +52,24 @@ async fn import_once() -> Result<()> {
     println!("{}\n", "=".repeat(TITLE.chars().count()));
 
     let db_path = chat_db_path().context("locating chat.db")?;
-    if permissions::full_disk_access_status() != PermissionStatus::Granted {
-        bail!(
-            "Full Disk Access not granted for this process. Grant it in\nSystem Settings → Privacy & Security → Full Disk Access, then relaunch\nand retry:\n  {}",
-            permissions::full_disk_access_settings_url()
-        );
+    // `NotRequired` is not a permission problem — it means Messages has never
+    // run on this Mac, so there is no chat.db to be denied access to. Sending
+    // that user to the Full Disk Access pane would have them grant a
+    // permission that changes nothing.
+    match permissions::full_disk_access_status() {
+        PermissionStatus::Granted => {}
+        PermissionStatus::NotRequired => {
+            bail!(
+                "no Messages database on this Mac ({}) — nothing to import.\nThis is not a permissions problem: Messages has never stored history here.",
+                db_path.display()
+            );
+        }
+        PermissionStatus::Denied => {
+            bail!(
+                "Full Disk Access not granted for this process. Grant it in\nSystem Settings → Privacy & Security → Full Disk Access, then relaunch\nand retry:\n  {}",
+                permissions::full_disk_access_settings_url()
+            );
+        }
     }
 
     let portal_url = std::env::var("CI_SERVER_URL").unwrap_or_default();
