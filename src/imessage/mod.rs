@@ -19,6 +19,8 @@
 //! shipped at.
 
 pub mod check;
+#[cfg(test)]
+mod e2e;
 pub mod import_once;
 pub mod reader;
 
