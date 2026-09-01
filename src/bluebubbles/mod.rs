@@ -26,6 +26,7 @@
 
 pub mod check;
 pub mod client;
+pub mod import_once;
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -123,37 +124,67 @@ pub async fn run(config: AppConfig, cursor_path: PathBuf) -> Result<()> {
             continue;
         }
 
-        match poll_once(&client, &config, device_id, cursor.last_date_created).await {
-            Ok(Some(new_cursor)) => {
-                cursor.last_date_created = Some(new_cursor);
-                if let Err(err) = save_cursor(&cursor_path, &cursor) {
-                    log::warn!("bluebubbles: failed to persist cursor: {err:?}");
+        match poll_once(
+            &client,
+            &config,
+            device_id,
+            cursor.last_date_created,
+            PAGE_LIMIT,
+        )
+        .await
+        {
+            Ok(outcome) => {
+                if let Some(new_cursor) = outcome.advanced_to {
+                    cursor.last_date_created = Some(new_cursor);
+                    if let Err(err) = save_cursor(&cursor_path, &cursor) {
+                        log::warn!("bluebubbles: failed to persist cursor: {err:?}");
+                    }
                 }
             }
-            Ok(None) => {}
             Err(err) => log::warn!("bluebubbles: poll failed, will retry next tick: {err:?}"),
         }
     }
 }
 
-/// One poll pass: fetch messages after `after`, forward each in order, and
-/// return the highest `dateCreated` actually acknowledged by CI-Server (not
-/// necessarily the whole page — a mid-page ingest failure stops advancing
-/// the cursor there, so the failed message and everything after it is
-/// retried next tick rather than skipped).
-async fn poll_once(
+/// What one [`poll_once`] pass actually did — returned (not just logged) so
+/// both the background lane and `--import-bluebubbles-once` can report on
+/// the same call rather than one of them re-deriving it from log lines.
+#[derive(Debug, Default)]
+pub struct PollOutcome {
+    /// Messages BlueBubbles returned for this page.
+    pub fetched: usize,
+    /// Of those, how many CI-Server acknowledged.
+    pub ingested: usize,
+    /// Highest `dateCreated` actually acknowledged by CI-Server — `None`
+    /// means nothing new landed (empty page, or the very first message
+    /// failed). Not necessarily the whole page: a mid-page ingest failure
+    /// stops advancing here, so the failed message and everything after it
+    /// is retried next call rather than skipped.
+    pub advanced_to: Option<i64>,
+}
+
+/// One poll pass: fetch up to `limit` messages after `after`, forward each
+/// in order, and report what happened. `pub(crate)` rather than private so
+/// `import_once` can drive the exact same call the background lane makes.
+pub(crate) async fn poll_once(
     client: &BlueBubblesClient,
     config: &AppConfig,
     device_id: uuid::Uuid,
     after: Option<i64>,
-) -> Result<Option<i64>> {
+    limit: u32,
+) -> Result<PollOutcome> {
     let page = client
-        .query_messages(after, PAGE_LIMIT)
+        .query_messages(after, limit)
         .await
         .context("querying BlueBubbles for new messages")?;
 
+    let mut outcome = PollOutcome {
+        fetched: page.len(),
+        ..PollOutcome::default()
+    };
+
     if page.is_empty() {
-        return Ok(None);
+        return Ok(outcome);
     }
 
     log::info!(
@@ -161,7 +192,6 @@ async fn poll_once(
         page.len()
     );
 
-    let mut advanced_to = None;
     for message in &page {
         let Some(date_created) = message.date_created else {
             log::debug!(
@@ -172,7 +202,10 @@ async fn poll_once(
         };
 
         match server_ingest::ingest_bluebubbles_message(config, device_id, message).await {
-            Ok(()) => advanced_to = Some(date_created),
+            Ok(()) => {
+                outcome.ingested += 1;
+                outcome.advanced_to = Some(date_created);
+            }
             Err(err) => {
                 log::warn!(
                     "bluebubbles: failed to ingest message {}, stopping this page here: {err:?}",
@@ -183,7 +216,7 @@ async fn poll_once(
         }
     }
 
-    Ok(advanced_to)
+    Ok(outcome)
 }
 
 /// Human-readable summary of one message, for the `--check-bluebubbles`

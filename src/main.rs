@@ -110,6 +110,11 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    if std::env::args().any(|arg| arg == "--import-bluebubbles-once") {
+        bluebubbles::import_once::run()?;
+        return Ok(());
+    }
+
     // Scriptable entry points. These exist to be driven by macOS Shortcuts'
     // "Run Shell Script" action — which is what people mean when they ask for
     // Siri, since Siri runs Shortcuts by name. Cheap, and they work on every
