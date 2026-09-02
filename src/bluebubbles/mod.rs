@@ -283,3 +283,49 @@ pub fn describe(message: &BlueBubblesMessage) -> String {
         message.attachments.len()
     )
 }
+
+#[cfg(test)]
+mod cursor_tests {
+    use super::*;
+
+    fn tmp() -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "ci-capture-bluebubbles-cursor-{}-{:?}.json",
+            std::process::id(),
+            std::thread::current().id()
+        ))
+    }
+
+    /// Same reasoning as the imessage lane's: a serde regression here is
+    /// invisible from the outside, because re-polling from the start produces
+    /// duplicates that CI-Server's `source_id` dedup silently absorbs.
+    #[test]
+    fn the_cursor_round_trips_through_the_file() {
+        let path = tmp();
+        let _ = std::fs::remove_file(&path);
+
+        let saved = Cursor {
+            last_date_created: Some(1_700_000_000_123),
+        };
+        save_cursor(&path, &saved).expect("save");
+
+        assert_eq!(
+            load_cursor(&path).last_date_created,
+            saved.last_date_created
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_missing_or_unreadable_cursor_starts_from_the_beginning() {
+        let path = tmp();
+        let _ = std::fs::remove_file(&path);
+        assert!(load_cursor(&path).last_date_created.is_none());
+
+        std::fs::write(&path, b"{ truncated").expect("write");
+        assert!(load_cursor(&path).last_date_created.is_none());
+
+        let _ = std::fs::remove_file(&path);
+    }
+}

@@ -27,9 +27,15 @@ pub enum PermissionStatus {
     Granted,
     /// Confirmed missing — capture will silently fail until the user grants it.
     Denied,
-    /// This OS does not gate the capability behind a permission. (Constructed
-    /// only in the non-macOS backend; on macOS every check is Granted/Denied.)
-    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    /// Nothing to grant: either this OS does not gate the capability behind a
+    /// permission at all, or the resource the permission would protect does
+    /// not exist on this machine.
+    ///
+    /// Reached on macOS too, which is what the three consumers of this enum
+    /// depend on: `full_disk_access_status` returns it when there is no
+    /// `~/Library/Messages/chat.db`, i.e. Messages has never run here. That
+    /// user must not be sent to the Full Disk Access pane — granting it would
+    /// change nothing — so it is deliberately NOT a flavour of `Denied`.
     NotRequired,
 }
 
