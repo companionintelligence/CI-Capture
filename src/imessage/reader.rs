@@ -109,6 +109,34 @@ pub struct ImessageRow {
     pub chat_identifier: Option<String>,
     pub chat_display_name: Option<String>,
     pub attachment_count: i64,
+    /// Everyone in this message's chat, as handle addresses. Empty for a chat
+    /// the join resolves to nothing. On the corpus this was measured against,
+    /// 106,880 messages sit in 513 group chats — resolving only the chat and
+    /// not its members left every one of those without a membership, and left
+    /// outbound messages with no recipient edges at all.
+    pub participants: Vec<String>,
+    /// `message.associated_message_type`. Non-zero means this row is a tapback
+    /// on another message, not a message of its own — 34,332 of them in the
+    /// reference corpus, 33,079 carrying generated text that quotes the
+    /// original, so ingesting them as ordinary messages fills the corpus with
+    /// near-duplicates of messages it already has.
+    pub associated_message_type: i64,
+    /// The message this one reacts to or replies under, when it does.
+    pub associated_message_guid: Option<String>,
+    pub thread_originator_guid: Option<String>,
+    /// Set when the sender edited the message after sending. Without it the
+    /// current wording is stored as though it were the original.
+    pub date_edited_unix_ms: Option<i64>,
+    /// Set when the sender unsent the message. Its `text` is then a body the
+    /// sender explicitly withdrew.
+    pub date_retracted_unix_ms: Option<i64>,
+}
+
+impl ImessageRow {
+    /// True when this row is a tapback rather than a message.
+    pub fn is_reaction(&self) -> bool {
+        self.associated_message_type != 0
+    }
 }
 
 impl ImessageRow {
@@ -184,14 +212,28 @@ pub fn read_messages(
                 message.ROWID AS rowid,
                 message.guid AS guid,
                 message.text AS text,
+                message.attributedBody AS attributed_body,
                 message.is_from_me AS is_from_me,
                 message.service AS service,
                 message.date AS date_raw,
+                message.associated_message_type AS associated_message_type,
+                message.associated_message_guid AS associated_message_guid,
+                message.thread_originator_guid AS thread_originator_guid,
+                message.date_edited AS date_edited,
+                message.date_retracted AS date_retracted,
                 handle.id AS handle,
                 chat.chat_identifier AS chat_identifier,
                 chat.display_name AS chat_display_name,
                 (SELECT COUNT(*) FROM message_attachment_join maj WHERE maj.message_id = message.ROWID)
-                    AS attachment_count
+                    AS attachment_count,
+                -- Chat membership, as one delimited string rather than a second
+                -- query per row: the lane pages 1000 messages at a time, and a
+                -- per-row round trip is what made the old chat lookup a full
+                -- scan. US (0x1F) because a handle address can contain a comma.
+                (SELECT group_concat(h2.id, char(31))
+                   FROM chat_handle_join chj
+                   JOIN handle h2 ON h2.ROWID = chj.handle_id
+                  WHERE chj.chat_id = chat.ROWID) AS participants
              FROM message
              LEFT JOIN handle ON handle.ROWID = message.handle_id
              LEFT JOIN chat ON chat.ROWID = (
@@ -220,10 +262,35 @@ pub fn read_messages(
                 return Ok((seen, None));
             };
 
+            // `text` first, `attributedBody` only as a fallback: where both
+            // exist they agree (CI-Server's decoder reproduced `text`
+            // byte-for-byte across 40,000 such messages), so preferring the
+            // plain column keeps the cheap path cheap and the decode for the
+            // 40,961 rows that actually need it.
+            let text: Option<String> = row.get("text")?;
+            let text = match text {
+                Some(t) if !t.trim().is_empty() => Some(t),
+                _ => {
+                    let blob: Option<Vec<u8>> = row.get("attributed_body")?;
+                    super::attributed_body::decode_attributed_body(blob.as_deref())
+                }
+            };
+
+            let participants = row
+                .get::<_, Option<String>>("participants")?
+                .map(|joined| {
+                    joined
+                        .split('\u{1F}')
+                        .filter(|p| !p.trim().is_empty())
+                        .map(str::to_owned)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+
             Ok((seen, Some(ImessageRow {
                 rowid,
                 guid: row.get("guid")?,
-                text: row.get("text")?,
+                text,
                 // Nullable in the real schema despite always being 0/1 in
                 // practice; a strict `i64` get failed the *entire* page on the
                 // one row that wasn't.
@@ -235,6 +302,24 @@ pub fn read_messages(
                 chat_identifier: row.get("chat_identifier")?,
                 chat_display_name: row.get("chat_display_name")?,
                 attachment_count: row.get("attachment_count")?,
+                participants,
+                // Nullable in the real schema, and 0 is "not a reaction".
+                associated_message_type: row
+                    .get::<_, Option<i64>>("associated_message_type")?
+                    .unwrap_or(0),
+                associated_message_guid: row.get("associated_message_guid")?,
+                thread_originator_guid: row.get("thread_originator_guid")?,
+                // Same Cocoa-epoch units as `date`, and 0 means "never edited"
+                // rather than "edited at the epoch" — so it must not become
+                // Some(2001-01-01).
+                date_edited_unix_ms: row
+                    .get::<_, Option<i64>>("date_edited")?
+                    .filter(|&d| d != 0)
+                    .and_then(cocoa_raw_to_unix_ms),
+                date_retracted_unix_ms: row
+                    .get::<_, Option<i64>>("date_retracted")?
+                    .filter(|&d| d != 0)
+                    .and_then(cocoa_raw_to_unix_ms),
             })))
         })
         .context("running message query")?;
@@ -276,6 +361,11 @@ pub(crate) const FIXTURE_SCHEMA: &str = "
         service_name TEXT,
         room_name TEXT,
         display_name TEXT
+    );
+    CREATE TABLE chat_handle_join (
+        chat_id INTEGER REFERENCES chat (ROWID) ON DELETE CASCADE,
+        handle_id INTEGER REFERENCES handle (ROWID) ON DELETE CASCADE,
+        UNIQUE (chat_id, handle_id)
     );
     CREATE TABLE chat_message_join (
         chat_id INTEGER REFERENCES chat (ROWID) ON DELETE CASCADE,
@@ -320,7 +410,9 @@ pub(crate) const FIXTURE_SCHEMA: &str = "
         item_type INTEGER DEFAULT 0,
         associated_message_guid TEXT,
         associated_message_type INTEGER DEFAULT 0,
-        thread_originator_guid TEXT
+        thread_originator_guid TEXT,
+        date_edited INTEGER DEFAULT 0,
+        date_retracted INTEGER DEFAULT 0
     );
     CREATE INDEX chat_message_join_idx_message_id_only ON chat_message_join (message_id);
 ";
@@ -654,5 +746,213 @@ mod tests {
         assert_eq!(page.rows.len(), 1);
         assert_eq!(page.rows[0].chat_identifier, None);
         assert_eq!(page.rows[0].chat_display_name, None);
+    }
+}
+
+#[cfg(test)]
+mod fidelity_tests {
+    use super::*;
+    use rusqlite::params;
+
+    fn db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(FIXTURE_SCHEMA).unwrap();
+        conn
+    }
+
+    /// A blob in the shape `attributedBody` actually takes — see
+    /// `super::super::attributed_body` for the format.
+    fn attributed(body: &str) -> Vec<u8> {
+        let mut out = Vec::from(&b"\x04\x0Bstreamtyped\x81\xE8\x03"[..]);
+        out.extend_from_slice(b"NSString");
+        out.push(0x2b);
+        out.push(body.len() as u8);
+        out.extend_from_slice(body.as_bytes());
+        out
+    }
+
+    fn only_row(conn: &Connection) -> ImessageRow {
+        let page = read_messages(conn, None, 10).unwrap();
+        assert_eq!(page.rows.len(), 1, "expected exactly one row");
+        page.rows.into_iter().next().unwrap()
+    }
+
+    /// The gap that costs the most: 40,961 of 433,411 messages in the
+    /// reference corpus carry no `text` at all, and shipped as empty rows.
+    #[test]
+    fn a_message_with_no_text_recovers_its_body_from_attributedbody() {
+        let conn = db();
+        conn.execute(
+            "INSERT INTO message (ROWID, guid, text, attributedBody, is_from_me, date)
+             VALUES (1, 'M1', NULL, ?1, 0, 788918400000000000)",
+            params![attributed("recovered from the blob")],
+        )
+        .unwrap();
+
+        assert_eq!(
+            only_row(&conn).text.as_deref(),
+            Some("recovered from the blob")
+        );
+    }
+
+    /// `text` wins where both exist. They agree in practice, and preferring
+    /// the plain column keeps the decode off the hot path.
+    #[test]
+    fn plain_text_is_preferred_over_the_blob() {
+        let conn = db();
+        conn.execute(
+            "INSERT INTO message (ROWID, guid, text, attributedBody, is_from_me, date)
+             VALUES (1, 'M1', 'the plain column', ?1, 0, 788918400000000000)",
+            params![attributed("the blob")],
+        )
+        .unwrap();
+
+        assert_eq!(only_row(&conn).text.as_deref(), Some("the plain column"));
+    }
+
+    /// Whitespace-only `text` is not a body — these fall through to the blob
+    /// rather than shipping a message made of spaces.
+    #[test]
+    fn blank_text_falls_through_to_the_blob() {
+        let conn = db();
+        conn.execute(
+            "INSERT INTO message (ROWID, guid, text, attributedBody, is_from_me, date)
+             VALUES (1, 'M1', '   ', ?1, 0, 788918400000000000)",
+            params![attributed("the real body")],
+        )
+        .unwrap();
+
+        assert_eq!(only_row(&conn).text.as_deref(), Some("the real body"));
+    }
+
+    /// Neither source usable: still a row (it happened, and it has a sender
+    /// and a time), just without words. Must not panic or drop.
+    #[test]
+    fn a_message_with_neither_text_nor_a_decodable_blob_survives_without_a_body() {
+        let conn = db();
+        conn.execute(
+            "INSERT INTO message (ROWID, guid, text, attributedBody, is_from_me, date)
+             VALUES (1, 'M1', NULL, NULL, 0, 788918400000000000)",
+            [],
+        )
+        .unwrap();
+
+        assert_eq!(only_row(&conn).text, None);
+    }
+
+    /// 106,880 messages sit in group chats in the reference corpus, and
+    /// resolving only the chat left every one of them with no membership.
+    #[test]
+    fn a_group_chat_message_carries_its_participants() {
+        let conn = db();
+        conn.execute_batch(
+            "INSERT INTO handle (ROWID, id, service) VALUES (1, '+15550001', 'iMessage'), (2, '+15550002', 'iMessage'), (3, 'a@b.com', 'iMessage');
+             INSERT INTO chat (ROWID, guid, chat_identifier, display_name, style)
+                VALUES (1, 'chat;+;group', 'group-1', 'Weekend Plans', 43);
+             INSERT INTO chat_handle_join (chat_id, handle_id) VALUES (1,1),(1,2),(1,3);
+             INSERT INTO message (ROWID, guid, text, handle_id, is_from_me, date)
+                VALUES (1, 'M1', 'hi all', 1, 0, 788918400000000000);
+             INSERT INTO chat_message_join (chat_id, message_id) VALUES (1, 1);",
+        )
+        .unwrap();
+
+        let row = only_row(&conn);
+        let mut got = row.participants.clone();
+        got.sort();
+        assert_eq!(got, vec!["+15550001", "+15550002", "a@b.com"]);
+        assert_eq!(row.chat_display_name.as_deref(), Some("Weekend Plans"));
+    }
+
+    /// A handle address can contain a comma, so the participant list is joined
+    /// on US (0x1F) rather than a comma — splitting on the wrong delimiter
+    /// would shred one address into two.
+    #[test]
+    fn a_participant_address_containing_a_comma_stays_one_participant() {
+        let conn = db();
+        conn.execute_batch(
+            "INSERT INTO handle (ROWID, id, service) VALUES (1, 'weird,address@example.com', 'iMessage');
+             INSERT INTO chat (ROWID, guid, chat_identifier, style) VALUES (1, 'c', 'c1', 45);
+             INSERT INTO chat_handle_join (chat_id, handle_id) VALUES (1, 1);
+             INSERT INTO message (ROWID, guid, text, is_from_me, date)
+                VALUES (1, 'M1', 'hi', 0, 788918400000000000);
+             INSERT INTO chat_message_join (chat_id, message_id) VALUES (1, 1);",
+        )
+        .unwrap();
+
+        assert_eq!(
+            only_row(&conn).participants,
+            vec!["weird,address@example.com"]
+        );
+    }
+
+    /// A one-to-one chat with no membership rows must yield an empty list, not
+    /// a list containing one empty string.
+    #[test]
+    fn a_chat_with_no_membership_rows_yields_no_participants() {
+        let conn = db();
+        conn.execute_batch(
+            "INSERT INTO chat (ROWID, guid, chat_identifier, style) VALUES (1, 'c', 'c1', 45);
+             INSERT INTO message (ROWID, guid, text, is_from_me, date)
+                VALUES (1, 'M1', 'hi', 0, 788918400000000000);
+             INSERT INTO chat_message_join (chat_id, message_id) VALUES (1, 1);",
+        )
+        .unwrap();
+
+        assert!(only_row(&conn).participants.is_empty());
+    }
+
+    /// 34,332 tapbacks in the reference corpus. The reader surfaces the type
+    /// so the lane can refuse them; it does not filter them itself, because
+    /// the cursor still has to advance over them.
+    #[test]
+    fn a_tapback_is_identifiable_as_a_reaction() {
+        let conn = db();
+        conn.execute_batch(
+            "INSERT INTO message (ROWID, guid, text, is_from_me, date,
+                                  associated_message_type, associated_message_guid)
+             VALUES (1, 'M1', 'Liked a message', 0, 788918400000000000, 2000, 'p:0/M0'),
+                    (2, 'M2', 'an actual message', 0, 788918400000000001, 0, NULL);",
+        )
+        .unwrap();
+
+        let page = read_messages(&conn, None, 10).unwrap();
+        assert!(page.rows[0].is_reaction());
+        assert_eq!(
+            page.rows[0].associated_message_guid.as_deref(),
+            Some("p:0/M0")
+        );
+        assert!(!page.rows[1].is_reaction());
+    }
+
+    #[test]
+    fn replies_and_edits_are_carried() {
+        let conn = db();
+        conn.execute_batch(
+            "INSERT INTO message (ROWID, guid, text, is_from_me, date,
+                                  thread_originator_guid, date_edited)
+             VALUES (1, 'M1', 'a reply', 0, 788918400000000000, 'ORIGIN-GUID', 788918500000000000);",
+        )
+        .unwrap();
+
+        let row = only_row(&conn);
+        assert_eq!(row.thread_originator_guid.as_deref(), Some("ORIGIN-GUID"));
+        assert!(row.date_edited_unix_ms.is_some());
+    }
+
+    /// `date_edited = 0` means "never edited", not "edited at the Cocoa
+    /// epoch". Mapping it to Some(2001-01-01) would mark every unedited
+    /// message as edited — which is most of them.
+    #[test]
+    fn an_unedited_message_reports_no_edit_time() {
+        let conn = db();
+        conn.execute_batch(
+            "INSERT INTO message (ROWID, guid, text, is_from_me, date, date_edited, date_retracted)
+             VALUES (1, 'M1', 'never touched', 0, 788918400000000000, 0, 0);",
+        )
+        .unwrap();
+
+        let row = only_row(&conn);
+        assert_eq!(row.date_edited_unix_ms, None);
+        assert_eq!(row.date_retracted_unix_ms, None);
     }
 }
