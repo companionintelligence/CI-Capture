@@ -120,6 +120,12 @@ async fn import_once() -> Result<()> {
     println!("------");
     println!("fetched  : {}", outcome.fetched);
     println!("ingested : {}", outcome.ingested);
+    if outcome.skipped_reactions > 0 {
+        println!(
+            "reactions: {} tapback(s) skipped — they quote the message they react to",
+            outcome.skipped_reactions
+        );
+    }
     if outcome.skipped_invalid_timestamp > 0 {
         println!(
             "dropped  : {} row(s) with an unreadable message.date",
@@ -133,13 +139,18 @@ async fn import_once() -> Result<()> {
             .map(|c| format!("date_raw={} rowid={}", c.date_raw, c.rowid))
             .unwrap_or_else(|| "(none — first message failed)".to_string())
     );
-    if outcome.ingested < outcome.fetched {
+    // Skipped reactions and unreadable timestamps are decisions, not failures,
+    // so they must not be reported as "did not make it" — that reads as an
+    // outage and sends someone looking for a warning that was never logged.
+    let accounted =
+        outcome.ingested + outcome.skipped_reactions + outcome.skipped_invalid_timestamp;
+    if accounted < outcome.fetched {
         println!(
             "\n{} message(s) did not make it — see the warnings above for why.",
-            outcome.fetched - outcome.ingested
+            outcome.fetched - accounted
         );
     } else {
-        println!("\nAll fetched messages were accepted by CI-Server.");
+        println!("\nEvery fetched message was accepted, skipped or dropped as reported above.");
     }
 
     Ok(())
