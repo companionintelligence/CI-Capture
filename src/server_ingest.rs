@@ -483,6 +483,17 @@ pub async fn ingest_imessage_message(
         "handle": row.handle,
         "service": row.service,
         "attachment_count": row.attachment_count,
+        // Chat membership, so a group thread arrives with the people in it
+        // rather than just a name. Outbound messages have no `handle`, so
+        // without this they carried no recipient at all.
+        "participants": row.participants,
+        // Threading and edit state. A reply that flattens into the main thread
+        // and an edit presented as the original are both silent corruptions of
+        // what was actually said.
+        "thread_originator_guid": row.thread_originator_guid,
+        "associated_message_guid": row.associated_message_guid,
+        "date_edited": row.date_edited_unix_ms,
+        "date_retracted": row.date_retracted_unix_ms,
     });
 
     post_capture_event(

@@ -18,6 +18,7 @@
 //! read + forward pipeline works, matching the scope `bluebubbles`'s prototype
 //! shipped at.
 
+pub mod attributed_body;
 pub mod check;
 #[cfg(test)]
 mod e2e;
@@ -205,6 +206,10 @@ pub struct PollOutcome {
     /// timestamp. They are dropped, so they are counted here rather than only
     /// shrinking `fetched` — see [`reader::MessagePage`].
     pub skipped_invalid_timestamp: usize,
+    /// Tapbacks passed over rather than ingested as messages. Reported rather
+    /// than silent so `fetched > ingested` is explainable — a page that
+    /// quietly shrinks is indistinguishable from one that had less in it.
+    pub skipped_reactions: usize,
     pub advanced_to: Option<ImessageCursor>,
 }
 
@@ -260,6 +265,22 @@ pub(crate) async fn poll_once(
     );
 
     for row in &page.rows {
+        // A tapback is not a message. It carries generated text that quotes
+        // the message it reacts to ("Liked \u{201C}…\u{201D}"), so ingesting one as an
+        // ordinary message adds a near-duplicate of something the corpus
+        // already has — 34,332 of them in the reference corpus, 33,079 of
+        // those carrying quoting text.
+        //
+        // The cursor still advances over it: it was read, it will never
+        // become ingestible, and leaving it behind the cursor would re-read
+        // it forever. Counted so the skip is visible rather than a silent
+        // shrink of the page.
+        if row.is_reaction() {
+            outcome.skipped_reactions += 1;
+            outcome.advanced_to = Some(row.cursor());
+            continue;
+        }
+
         match server_ingest::ingest_imessage_message(config, device_id, row).await {
             Ok(()) => {
                 outcome.ingested += 1;
