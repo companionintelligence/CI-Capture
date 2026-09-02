@@ -14,6 +14,7 @@ use vizier::observation::Observation;
 use vizier::observer::{Observer, ObserverConfig, create_observer};
 
 use crate::analysis::{AnalysisResult, VisionAnalyzer};
+use crate::bluebubbles;
 use crate::capture::{CapturedImage, capture_primary, diff_percent, save_to_path};
 use crate::config::AppConfig;
 #[cfg(feature = "legacy-postgres")]
@@ -22,6 +23,7 @@ use crate::db::PostgresRecorder;
 use crate::db::ScreenshotRecord;
 use crate::db::VizierEventRecord;
 use crate::file_tracker;
+use crate::imessage;
 #[cfg(feature = "legacy-minio")]
 use crate::minio::MinioUploader;
 use crate::server_ingest;
@@ -130,6 +132,8 @@ async fn run_worker(
 
     let mut state = WorkerState::new(initial_config, running_flag, analysis_tx, config_watch_tx);
     state.restart_file_tracker().await;
+    state.restart_bluebubbles().await;
+    state.restart_imessage().await;
     let mut interval = build_interval(state.config.capture.screenshot_interval_secs);
 
     loop {
@@ -515,6 +519,10 @@ struct WorkerState {
     sensitive_paths: crate::watcher::ignore::IgnoreRules,
     /// Background task running the file-tracking lane, when active.
     file_tracker: Option<tokio::task::JoinHandle<()>>,
+    /// Background task running the BlueBubbles lane, when active.
+    bluebubbles: Option<tokio::task::JoinHandle<()>>,
+    /// Background task running the local iMessage lane, when active.
+    imessage: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl WorkerState {
@@ -544,6 +552,8 @@ impl WorkerState {
                 .expect("building sensitive-path rules"),
             vizier_session_id: Uuid::new_v4(),
             file_tracker: None,
+            bluebubbles: None,
+            imessage: None,
         }
     }
 
@@ -593,6 +603,81 @@ impl WorkerState {
         }));
     }
 
+    /// Same lifecycle as [`Self::stop_file_tracker`] — abort and await so a
+    /// stale poll can't race an in-flight one after a reconfigure.
+    async fn stop_bluebubbles(&mut self) {
+        if let Some(handle) = self.bluebubbles.take() {
+            handle.abort();
+            let _ = handle.await;
+            log::info!("bluebubbles lane stopped");
+        }
+    }
+
+    /// (Re)start the BlueBubbles lane to match the current config. No-op
+    /// (after stopping any prior task) when `bluebubbles::is_runnable` says
+    /// no — disabled, or no host/password entered yet.
+    async fn restart_bluebubbles(&mut self) {
+        self.stop_bluebubbles().await;
+        if !bluebubbles::is_runnable(&self.config) {
+            log::debug!(
+                "bluebubbles lane idle (enabled={}, host={:?})",
+                self.config.bluebubbles.enabled,
+                self.config.bluebubbles.host,
+            );
+            return;
+        }
+        let cursor_path = match crate::config::bluebubbles_cursor_path() {
+            Ok(p) => p,
+            Err(err) => {
+                log::error!("cannot locate bluebubbles cursor path: {err:?}");
+                return;
+            }
+        };
+        let config = self.config.clone();
+        self.bluebubbles = Some(tokio::spawn(async move {
+            if let Err(err) = bluebubbles::run(config, cursor_path).await {
+                log::error!("bluebubbles lane terminated: {err:?}");
+            }
+        }));
+    }
+
+    /// Same lifecycle as [`Self::stop_bluebubbles`].
+    async fn stop_imessage(&mut self) {
+        if let Some(handle) = self.imessage.take() {
+            handle.abort();
+            let _ = handle.await;
+            log::info!("imessage lane stopped");
+        }
+    }
+
+    /// (Re)start the local iMessage lane. No-op when `imessage::is_runnable`
+    /// says no (disabled) — a missing Full Disk Access grant is instead
+    /// checked and logged once *inside* `imessage::run`, so re-toggling the
+    /// setting doesn't need its own permission-recheck path here.
+    async fn restart_imessage(&mut self) {
+        self.stop_imessage().await;
+        if !imessage::is_runnable(&self.config) {
+            log::debug!(
+                "imessage lane idle (enabled={})",
+                self.config.imessage.enabled
+            );
+            return;
+        }
+        let cursor_path = match crate::config::imessage_cursor_path() {
+            Ok(p) => p,
+            Err(err) => {
+                log::error!("cannot locate imessage cursor path: {err:?}");
+                return;
+            }
+        };
+        let config = self.config.clone();
+        self.imessage = Some(tokio::spawn(async move {
+            if let Err(err) = imessage::run(config, cursor_path).await {
+                log::error!("imessage lane terminated: {err:?}");
+            }
+        }));
+    }
+
     async fn handle_command(
         &mut self,
         command: WorkerCommand,
@@ -607,6 +692,16 @@ impl WorkerState {
                 // autonomously (~hourly), and tearing the watcher down for an
                 // unrelated change silently misses file events in the gap.
                 let file_lane_changed = self.config.file_tracker != config.file_tracker
+                    || self.config.identity != config.identity
+                    || self.config.server != config.server;
+                // Same reasoning as `file_lane_changed`: `server`/`identity`
+                // churn the lane too (it needs both to actually ingest), so
+                // it's folded into one flag rather than duplicating the
+                // condition and risking the two drifting apart.
+                let bluebubbles_changed = self.config.bluebubbles != config.bluebubbles
+                    || self.config.identity != config.identity
+                    || self.config.server != config.server;
+                let imessage_changed = self.config.imessage != config.imessage
                     || self.config.identity != config.identity
                     || self.config.server != config.server;
 
@@ -625,18 +720,28 @@ impl WorkerState {
                 if file_lane_changed && self.is_active() {
                     self.restart_file_tracker().await;
                 }
+                if bluebubbles_changed && self.is_active() {
+                    self.restart_bluebubbles().await;
+                }
+                if imessage_changed && self.is_active() {
+                    self.restart_imessage().await;
+                }
             }
             WorkerCommand::Pause => {
                 self.paused = true;
                 self.running_flag.store(false, Ordering::SeqCst);
                 self.publish_sweep_context();
                 self.stop_file_tracker().await;
+                self.stop_bluebubbles().await;
+                self.stop_imessage().await;
             }
             WorkerCommand::Resume => {
                 self.paused = false;
                 self.running_flag.store(true, Ordering::SeqCst);
                 self.publish_sweep_context();
                 self.restart_file_tracker().await;
+                self.restart_bluebubbles().await;
+                self.restart_imessage().await;
             }
             WorkerCommand::CaptureNow => {
                 let capture_tick_id = Uuid::new_v4();
@@ -652,6 +757,8 @@ impl WorkerState {
             }
             WorkerCommand::Shutdown => {
                 self.stop_file_tracker().await;
+                self.stop_bluebubbles().await;
+                self.stop_imessage().await;
                 return Ok(true);
             }
         }

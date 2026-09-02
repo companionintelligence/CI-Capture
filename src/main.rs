@@ -1,5 +1,6 @@
 mod analysis;
 mod backlog;
+mod bluebubbles;
 mod capture;
 mod capture_store;
 mod config;
@@ -10,6 +11,7 @@ mod error_body;
 mod extractors;
 mod file_tracker;
 mod helper_window;
+mod imessage;
 mod locale;
 #[cfg(feature = "legacy-minio")]
 mod minio;
@@ -101,6 +103,26 @@ fn main() -> Result<()> {
 
     if std::env::args().any(|arg| arg == "--check-server") {
         server_check::run(parse_portal_override())?;
+        return Ok(());
+    }
+
+    if std::env::args().any(|arg| arg == "--check-bluebubbles") {
+        bluebubbles::check::run()?;
+        return Ok(());
+    }
+
+    if std::env::args().any(|arg| arg == "--import-bluebubbles-once") {
+        bluebubbles::import_once::run()?;
+        return Ok(());
+    }
+
+    if std::env::args().any(|arg| arg == "--check-imessage") {
+        imessage::check::run()?;
+        return Ok(());
+    }
+
+    if std::env::args().any(|arg| arg == "--import-imessage-once") {
+        imessage::import_once::run()?;
         return Ok(());
     }
 

@@ -27,9 +27,15 @@ pub enum PermissionStatus {
     Granted,
     /// Confirmed missing — capture will silently fail until the user grants it.
     Denied,
-    /// This OS does not gate the capability behind a permission. (Constructed
-    /// only in the non-macOS backend; on macOS every check is Granted/Denied.)
-    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    /// Nothing to grant: either this OS does not gate the capability behind a
+    /// permission at all, or the resource the permission would protect does
+    /// not exist on this machine.
+    ///
+    /// Reached on macOS too, which is what the three consumers of this enum
+    /// depend on: `full_disk_access_status` returns it when there is no
+    /// `~/Library/Messages/chat.db`, i.e. Messages has never run here. That
+    /// user must not be sent to the Full Disk Access pane — granting it would
+    /// change nothing — so it is deliberately NOT a flavour of `Denied`.
     NotRequired,
 }
 
@@ -58,7 +64,7 @@ impl fmt::Display for PermissionStatus {
     }
 }
 
-/// The two capture-gating permissions the applet cares about.
+/// The permissions the applet's capture lanes care about.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Permissions {
     /// Screen Recording — required for the screenshot lane.
@@ -66,6 +72,16 @@ pub struct Permissions {
     /// Accessibility — reported for diagnostics only. Nothing reads AX data;
     /// see the module docs before wiring this into any gate.
     pub accessibility: PermissionStatus,
+    /// Full Disk Access — required for the `imessage` lane to read
+    /// `~/Library/Messages/chat.db`. Deliberately excluded from
+    /// [`Self::all_ok`]/[`Self::needs_attention`], same reasoning as
+    /// Accessibility above: those two gate the *original* (screenshot/vizier)
+    /// lanes specifically, and folding a lane-specific grant into them would
+    /// make an install with a perfectly working screenshot lane report a
+    /// permissions problem because iMessage import is off. Read this field
+    /// directly wherever the imessage lane's own readiness is what's being
+    /// reported (see `crate::imessage`).
+    pub full_disk_access: PermissionStatus,
 }
 
 impl Permissions {
@@ -86,6 +102,7 @@ pub fn status() -> Permissions {
     Permissions {
         screen_recording: screen_recording_status(),
         accessibility: accessibility_status(),
+        full_disk_access: full_disk_access_status(),
     }
 }
 
@@ -141,6 +158,40 @@ mod imp {
     // System Settings deep links (stable `x-apple.systempreferences:` scheme).
     pub const SCREEN_RECORDING_PANE: &str =
         "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture";
+    pub const FULL_DISK_ACCESS_PANE: &str =
+        "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles";
+
+    /// Full Disk Access has no TCC preflight API (unlike Screen Recording's
+    /// `CGPreflightScreenCaptureAccess`) — Apple only exposes it as a
+    /// consequence of actually trying to read a protected path, never as a
+    /// query. `stat`/`ls` on a TCC-protected file succeeds either way (they
+    /// don't touch file *contents*), so the only honest check opens the file
+    /// and reads a byte. `~/Library/Messages/chat.db` is the actual resource
+    /// the imessage lane needs, so checking that file directly — rather than
+    /// a generic canary like `TCC.db` — means this reports exactly what the
+    /// lane can and can't do, including the "no Messages history on this Mac
+    /// at all" case (no file → `NotRequired`, not `Denied`, since there is
+    /// nothing to be denied access to).
+    pub fn full_disk_access_status() -> super::PermissionStatus {
+        use std::io::Read;
+
+        let Some(home) = std::env::var_os("HOME") else {
+            return super::PermissionStatus::Denied;
+        };
+        let chat_db = std::path::Path::new(&home).join("Library/Messages/chat.db");
+
+        if !chat_db.exists() {
+            return super::PermissionStatus::NotRequired;
+        }
+
+        match std::fs::File::open(&chat_db).and_then(|mut f| {
+            let mut buf = [0u8; 16];
+            f.read_exact(&mut buf)
+        }) {
+            Ok(()) => super::PermissionStatus::Granted,
+            Err(_) => super::PermissionStatus::Denied,
+        }
+    }
 }
 
 // ── non-macOS: nothing gates screen/AX capture behind a grant ───────────────
@@ -159,6 +210,10 @@ mod imp {
         PermissionStatus::NotRequired
     }
     pub const SCREEN_RECORDING_PANE: &str = "";
+    pub const FULL_DISK_ACCESS_PANE: &str = "";
+    pub fn full_disk_access_status() -> PermissionStatus {
+        PermissionStatus::NotRequired
+    }
 }
 
 pub fn screen_recording_status() -> PermissionStatus {
@@ -177,6 +232,20 @@ pub fn request_screen_recording() -> PermissionStatus {
 /// The System Settings pane URL for Screen Recording (empty off macOS).
 pub fn screen_recording_settings_url() -> &'static str {
     imp::SCREEN_RECORDING_PANE
+}
+
+pub fn full_disk_access_status() -> PermissionStatus {
+    imp::full_disk_access_status()
+}
+
+/// The System Settings pane URL for Full Disk Access (empty off macOS).
+///
+/// No `request_full_disk_access` exists to pair with it — unlike Screen
+/// Recording there is no system prompt to trigger, only this deep link plus
+/// the user manually adding/enabling Companion Capture in the list and (per
+/// Apple's own behavior for this specific pane) relaunching the app.
+pub fn full_disk_access_settings_url() -> &'static str {
+    imp::FULL_DISK_ACCESS_PANE
 }
 
 /// Whether this OS gates capture behind permissions at all (drives whether the
@@ -209,6 +278,7 @@ mod tests {
         let p = Permissions {
             screen_recording: PermissionStatus::Granted,
             accessibility: PermissionStatus::Denied,
+            full_disk_access: PermissionStatus::Denied,
         };
         assert!(p.all_ok());
         assert!(!p.needs_attention());
@@ -219,9 +289,25 @@ mod tests {
         let p = Permissions {
             screen_recording: PermissionStatus::Denied,
             accessibility: PermissionStatus::Granted,
+            full_disk_access: PermissionStatus::Granted,
         };
         assert!(!p.all_ok());
         assert!(p.needs_attention());
+    }
+
+    /// Same reasoning as the Accessibility test above: a missing FDA grant
+    /// must not make an otherwise-working install (screenshot lane fine)
+    /// report a permissions problem — imessage is a separate, off-by-default
+    /// lane with its own readiness check.
+    #[test]
+    fn full_disk_access_does_not_gate_capture_readiness() {
+        let p = Permissions {
+            screen_recording: PermissionStatus::Granted,
+            accessibility: PermissionStatus::Granted,
+            full_disk_access: PermissionStatus::Denied,
+        };
+        assert!(p.all_ok());
+        assert!(!p.needs_attention());
     }
 
     #[test]
@@ -249,8 +335,13 @@ mod tests {
     fn macos_gates_capture_and_has_settings_links() {
         assert!(permissions_relevant());
         assert!(screen_recording_settings_url().starts_with("x-apple.systempreferences:"));
+        assert!(full_disk_access_settings_url().starts_with("x-apple.systempreferences:"));
         // Status resolves to a definite Granted/Denied (never NotRequired) on macOS.
         assert_ne!(accessibility_status(), PermissionStatus::NotRequired);
         assert_ne!(screen_recording_status(), PermissionStatus::NotRequired);
+        // full_disk_access_status CAN be NotRequired here (no chat.db on this
+        // Mac at all), unlike the other two — just check it doesn't panic and
+        // returns something.
+        let _ = full_disk_access_status();
     }
 }

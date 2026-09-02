@@ -17,8 +17,19 @@ struct CaptureEvent {
     source_id: String,
     kind: String,
     occurred_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     observed_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     title: Option<String>,
+    /// CI-Server's `/v1/events` schema types this `z.string().optional()`,
+    /// which — a common zod trap — accepts an *absent* key but rejects an
+    /// explicit JSON `null` ("Expected string, received null"). `None` must
+    /// therefore be omitted, not serialized, same as `capture_tick_id`
+    /// below. Found live: an iMessage row with `text IS NULL` (see
+    /// `imessage::reader`'s `attributedBody` gap) sent `description: null`
+    /// and every such message in the batch was rejected — silently, until
+    /// something actually read the response body.
+    #[serde(skip_serializing_if = "Option::is_none")]
     description: Option<String>,
     payload: Value,
     /// Per-tick correlator shared with the screenshot uploaded via the same
@@ -368,6 +379,141 @@ pub async fn ingest_vizier_event(
     // The worker parks a failed send on disk and retries from the store
     // sweep, so flatten to anyhow the same way screenshot ingest does.
     .map_err(anyhow::Error::from)
+}
+
+/// Ship one BlueBubbles message to CI-Server via the generic capture-event
+/// pipeline (see `crate::bluebubbles`'s module doc for the known gap this
+/// leaves — it lands as an event blob, not a `ci.communications` row).
+///
+/// `title`/`description` (the two fields CI-Server's search indexer actually
+/// embeds — see `file_event_description`'s doc comment above for the same
+/// reasoning applied to file events) carry the chat name and message text.
+/// Message *content* therefore reaches the server and, from there, disk and
+/// logs on that machine — same trust boundary as every other capture lane,
+/// but worth being explicit about for a lane that carries someone else's
+/// words, not just this device's own activity.
+pub async fn ingest_bluebubbles_message(
+    config: &AppConfig,
+    device_id: Uuid,
+    message: &crate::bluebubbles::client::BlueBubblesMessage,
+) -> Result<(), IngestError> {
+    let chat = message.chats.first();
+    // Never `unwrap_or_else(Utc::now)`: stamping an unreadable timestamp with
+    // the current time gets the event acknowledged, which advances the caller's
+    // cursor past it — a garbage value would then silently redate the message
+    // and, in the imessage lane, strand every real row behind it.
+    let occurred_at = message
+        .date_created
+        .and_then(chrono::DateTime::from_timestamp_millis)
+        .ok_or_else(|| {
+            IngestError::permanent(format!(
+                "BlueBubbles message {} has no usable dateCreated ({:?})",
+                message.guid, message.date_created
+            ))
+        })?
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+
+    let title = chat
+        .and_then(|c| c.display_name.clone().or_else(|| c.chat_identifier.clone()))
+        .or_else(|| message.handle.as_ref().map(|h| h.address.clone()));
+
+    let payload = serde_json::json!({
+        "device_id": device_id,
+        "guid": message.guid,
+        "chat_guid": chat.map(|c| c.guid.clone()),
+        "is_from_me": message.is_from_me,
+        "handle": message.handle,
+        "attachments": message.attachments,
+    });
+
+    post_capture_event(
+        config,
+        CaptureEvent {
+            source_system: "ci-applet",
+            source_id: format!("bluebubbles:{}", message.guid),
+            kind: "bluebubbles_message".to_string(),
+            occurred_at: occurred_at.clone(),
+            observed_at: Some(occurred_at),
+            title,
+            description: message.text.clone(),
+            payload,
+            capture_tick_id: None,
+        },
+    )
+    .await
+}
+
+/// Ship one locally-read iMessage/SMS row to CI-Server via the generic
+/// capture-event pipeline. Structurally close to `ingest_bluebubbles_message`
+/// (same underlying kind of data, same transport) but kept separate and
+/// tagged with a distinct `kind`/`source_id` prefix — this row came from
+/// reading a file on disk, not from a network API, and that provenance is
+/// worth keeping distinguishable server-side. See `crate::imessage`'s module
+/// doc for the same message-content-reaches-the-server caveat
+/// `ingest_bluebubbles_message` documents above.
+pub async fn ingest_imessage_message(
+    config: &AppConfig,
+    device_id: Uuid,
+    row: &crate::imessage::reader::ImessageRow,
+) -> Result<(), IngestError> {
+    // `reader::read_messages` already refuses to emit a row whose timestamp
+    // cannot be represented, so this is a belt-and-braces guard — but an
+    // explicit error rather than `Utc::now()` for the reason spelled out on
+    // `ingest_bluebubbles_message` above.
+    let occurred_at = chrono::DateTime::from_timestamp_millis(row.date_created_unix_ms)
+        .ok_or_else(|| {
+            IngestError::permanent(format!(
+                "iMessage rowid={} has an unrepresentable timestamp ({}ms)",
+                row.rowid, row.date_created_unix_ms
+            ))
+        })?
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+
+    let title = row
+        .chat_display_name
+        .clone()
+        .or_else(|| row.chat_identifier.clone())
+        .or_else(|| row.handle.clone());
+
+    let payload = serde_json::json!({
+        "device_id": device_id,
+        "rowid": row.rowid,
+        "chat_identifier": row.chat_identifier,
+        "is_from_me": row.is_from_me,
+        "handle": row.handle,
+        "service": row.service,
+        "attachment_count": row.attachment_count,
+        // Chat membership, so a group thread arrives with the people in it
+        // rather than just a name. Outbound messages have no `handle`, so
+        // without this they carried no recipient at all.
+        "participants": row.participants,
+        // Threading and edit state. A reply that flattens into the main thread
+        // and an edit presented as the original are both silent corruptions of
+        // what was actually said.
+        "thread_originator_guid": row.thread_originator_guid,
+        "associated_message_guid": row.associated_message_guid,
+        "date_edited": row.date_edited_unix_ms,
+        "date_retracted": row.date_retracted_unix_ms,
+    });
+
+    post_capture_event(
+        config,
+        CaptureEvent {
+            source_system: "ci-applet",
+            source_id: format!(
+                "imessage:{}",
+                row.guid.clone().unwrap_or_else(|| row.rowid.to_string())
+            ),
+            kind: "imessage_message".to_string(),
+            occurred_at: occurred_at.clone(),
+            observed_at: Some(occurred_at),
+            title,
+            description: row.text.clone(),
+            payload,
+            capture_tick_id: None,
+        },
+    )
+    .await
 }
 
 // ── Internal ──────────────────────────────────────────────────────────────────
