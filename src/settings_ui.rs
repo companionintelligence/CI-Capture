@@ -170,16 +170,8 @@ impl From<&AppConfig> for SettingsFormState {
                 .map(|id| id.to_string())
                 .unwrap_or_default(),
             portal_url: config.server.portal_url.clone(),
-            bound_device_slug: config
-                .server
-                .bound_device_slug
-                .clone()
-                .unwrap_or_default(),
-            bound_device_name: config
-                .server
-                .bound_device_name
-                .clone()
-                .unwrap_or_default(),
+            bound_device_slug: config.server.bound_device_slug.clone().unwrap_or_default(),
+            bound_device_name: config.server.bound_device_name.clone().unwrap_or_default(),
             memory_from_discovery: config.server.url_source
                 == crate::config::ServerUrlSource::Discovered,
             oidc_issuer: config.oidc.issuer.clone(),
@@ -412,10 +404,10 @@ impl SettingsApp {
             .unwrap_or_else(|_| self.form.portal_url.trim().to_string());
         if self.form.memory_from_discovery {
             c.server.url_source = crate::config::ServerUrlSource::Discovered;
-            c.server.bound_device_slug = Some(self.form.bound_device_slug.trim().to_string())
-                .filter(|s| !s.is_empty());
-            c.server.bound_device_name = Some(self.form.bound_device_name.trim().to_string())
-                .filter(|s| !s.is_empty());
+            c.server.bound_device_slug =
+                Some(self.form.bound_device_slug.trim().to_string()).filter(|s| !s.is_empty());
+            c.server.bound_device_name =
+                Some(self.form.bound_device_name.trim().to_string()).filter(|s| !s.is_empty());
         } else if typed != c.server.portal_url {
             // Typed address — Portal discovery must not move it later.
             c.server.url_source = crate::config::ServerUrlSource::Manual;
@@ -507,16 +499,20 @@ impl SettingsApp {
                 Ok(apps) => {
                     let candidates = portal_apps::memory_candidates(&apps);
                     if candidates.is_empty() {
-                        self.memory_status =
-                            Some(rust_i18n::t!("settings.connection.memory_pick.empty").to_string());
+                        self.memory_status = Some(
+                            rust_i18n::t!("settings.connection.memory_pick.empty").to_string(),
+                        );
                         self.memory_choices = candidates;
                     } else {
                         self.memory_status = None;
                         let prior = self.form.bound_device_slug.clone();
-                        match portal_apps::select_memory(&candidates, Some(prior.as_str()).filter(|s| !s.is_empty()))
-                        {
+                        match portal_apps::select_memory(
+                            &candidates,
+                            Some(prior.as_str()).filter(|s| !s.is_empty()),
+                        ) {
                             portal_apps::MemorySelection::Chosen(core)
-                                if self.form.portal_url.trim().is_empty() && !self.switching_memory =>
+                                if self.form.portal_url.trim().is_empty()
+                                    && !self.switching_memory =>
                             {
                                 self.memory_choices = candidates;
                                 self.apply_memory_choice(&core, ctx);
@@ -556,9 +552,8 @@ impl SettingsApp {
             (portal, token)
         };
         let Some(token) = token else {
-            self.memory_status = Some(
-                rust_i18n::t!("settings.connection.memory_pick.need_signin").to_string(),
-            );
+            self.memory_status =
+                Some(rust_i18n::t!("settings.connection.memory_pick.need_signin").to_string());
             return;
         };
         self.discovering = true;
@@ -567,18 +562,19 @@ impl SettingsApp {
         let tx = self.discover_tx.clone();
         let ctx = ctx.clone();
         self.runtime.spawn(async move {
-            let result = match portal_apps::fetch_portal_apps(
-                &portal,
-                &token,
-                portal_apps::MEMORY_APP_SLUG,
-            )
-            .await
-            {
-                portal_apps::Discovery::Ok(apps) => Ok(apps),
-                portal_apps::Discovery::Unsupported => Err("Portal has no app discovery".into()),
-                portal_apps::Discovery::Unauthorized => Err("Portal refused the session".into()),
-                portal_apps::Discovery::Error(e) => Err(e),
-            };
+            let result =
+                match portal_apps::fetch_portal_apps(&portal, &token, portal_apps::MEMORY_APP_SLUG)
+                    .await
+                {
+                    portal_apps::Discovery::Ok(apps) => Ok(apps),
+                    portal_apps::Discovery::Unsupported => {
+                        Err("Portal has no app discovery".into())
+                    }
+                    portal_apps::Discovery::Unauthorized => {
+                        Err("Portal refused the session".into())
+                    }
+                    portal_apps::Discovery::Error(e) => Err(e),
+                };
             let _ = tx.send(result);
             ctx.request_repaint();
         });
@@ -590,9 +586,11 @@ impl SettingsApp {
         }
         // Persist issuer edits from Advanced before the browser flow reads disk.
         if let Err(err) = self.manager.save(&self.build_config()) {
-            self.login_status = Some(Err(
-                rust_i18n::t!("settings.error.save_failed", error = err.to_string()).to_string(),
-            ));
+            self.login_status = Some(Err(rust_i18n::t!(
+                "settings.error.save_failed",
+                error = err.to_string()
+            )
+            .to_string()));
             return;
         }
         self.login_busy = true;
@@ -647,7 +645,8 @@ impl SettingsApp {
             Ok(c) => c,
             Err(err) => {
                 self.error = Some(
-                    rust_i18n::t!("settings.error.save_failed", error = err.to_string()).to_string(),
+                    rust_i18n::t!("settings.error.save_failed", error = err.to_string())
+                        .to_string(),
                 );
                 return;
             }
@@ -682,7 +681,8 @@ impl SettingsApp {
             Ok(c) => c,
             Err(err) => {
                 self.error = Some(
-                    rust_i18n::t!("settings.error.save_failed", error = err.to_string()).to_string(),
+                    rust_i18n::t!("settings.error.save_failed", error = err.to_string())
+                        .to_string(),
                 );
                 return;
             }
@@ -1032,11 +1032,11 @@ impl SettingsApp {
                             ui.add_space(4.0);
                             theme::caption(
                                 ui,
-                                &rust_i18n::t!(
+                                rust_i18n::t!(
                                     "settings.backlog.sidebar",
                                     count = self.local_backlog.waiting_count()
                                 )
-                                .to_string(),
+                                .as_ref(),
                             );
                         }
                         ui.add_space(10.0);
@@ -1220,7 +1220,7 @@ fn backlog_warning_copy(app: &SettingsApp) -> (String, String) {
     let extras = files + activity;
     if extras > 0 {
         detail.push(' ');
-        detail.push_str(&rust_i18n::t!("settings.backlog.files", count = extras).to_string());
+        detail.push_str(rust_i18n::t!("settings.backlog.files", count = extras).as_ref());
     }
     (title, detail)
 }
@@ -1233,11 +1233,7 @@ fn page_header(ui: &mut egui::Ui, title: &str, subtitle: &str) {
     ui.add_space(20.0);
 }
 
-fn render_connection_tab(
-    ui: &mut egui::Ui,
-    app: &mut SettingsApp,
-    ctx: &egui::Context,
-) -> bool {
+fn render_connection_tab(ui: &mut egui::Ui, app: &mut SettingsApp, ctx: &egui::Context) -> bool {
     page_header(
         ui,
         &SettingsTab::Connection.label(),
@@ -1397,11 +1393,8 @@ fn render_connection_tab(
                             });
                         });
                         ui.add_space(8.0);
-                        if theme::primary_button(
-                            ui,
-                            &rust_i18n::t!("settings.connection.pick_cta"),
-                        )
-                        .clicked()
+                        if theme::primary_button(ui, &rust_i18n::t!("settings.connection.pick_cta"))
+                            .clicked()
                         {
                             app.apply_memory_choice(choice, ctx);
                         }
@@ -1449,19 +1442,13 @@ fn render_connection_tab(
                     Some(TestState::Running) => {
                         ui.add(egui::Spinner::new().size(16.0).color(theme::AMBER()));
                         ui.label(
-                            egui::RichText::new(
-                                rust_i18n::t!("settings.test.running").to_string(),
-                            )
-                            .font(theme::body(13.0))
-                            .color(theme::AMBER()),
+                            egui::RichText::new(rust_i18n::t!("settings.test.running").to_string())
+                                .font(theme::body(13.0))
+                                .color(theme::AMBER()),
                         );
                     }
                     Some(TestState::Ok(_)) => {
-                        theme::status_badge(
-                            ui,
-                            &rust_i18n::t!("settings.test.ok"),
-                            theme::GREEN(),
-                        );
+                        theme::status_badge(ui, &rust_i18n::t!("settings.test.ok"), theme::GREEN());
                     }
                     Some(TestState::Err(_)) => {
                         theme::status_badge(
