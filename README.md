@@ -9,10 +9,10 @@
   <img src="https://img.shields.io/badge/platform-macOS%20%C2%B7%20Linux%20%C2%B7%20Windows-041620" alt="platform macOS, Linux, Windows">
   <img src="https://img.shields.io/badge/Rust-edition%202024-0F717A?logo=rust&logoColor=white" alt="Rust edition 2024">
   <img src="https://img.shields.io/badge/tests-217%20passing-35A05C" alt="217 tests passing">
-  <img src="https://img.shields.io/badge/license-CI--Commercial--1.0-2C676D" alt="license CI-Commercial-1.0">
+  <img src="https://img.shields.io/badge/license-PolyForm--Noncommercial--1.0.0-0a6358" alt="license PolyForm Noncommercial 1.0.0">
 </p>
 
-> **Companion Intelligence — Capture layer.** Licensed under CI-Commercial-1.0. © 2019–2026 LifeScope Inc.
+> **Companion Intelligence — Capture layer.** [PolyForm Noncommercial 1.0.0](LICENSE.md). © 2019–2026 LifeScope Inc. See the [License FAQ](docs/License-FAQ.md).
 
 **Companion Capture** is a lightweight **cross‑platform** menu‑bar / system‑tray app (macOS, Windows, Linux) that grows your **Companion Memory** by perceiving your desktop and streaming it to your CI‑Server.
 

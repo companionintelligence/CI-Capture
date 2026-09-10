@@ -80,7 +80,7 @@ product's core promise.
 | **Auth** | Optional API key on the local REST API; SSO/SAML at Enterprise | OIDC Authorization Code + PKCE, loopback on port 0, background token refresh, or a pasted API key; Portal-driven server auto-discovery | [`oidc.rs`](../src/oidc.rs), [`portal_apps.rs`](../src/portal_apps.rs) |
 | **Proxy policy** | — | Every reqwest client is `.no_proxy()` — an ambient `HTTP_PROXY` can never see screen content or the credential | [`analysis.rs:36-38`](../src/analysis.rs), [`server_ingest.rs:150-154`](../src/server_ingest.rs) |
 | **Platform parity** | macOS (AS + Intel), Windows 10/11, Linux; Intune fleet deployment | Builds and ships all three (dmg/nsis/deb/AppImage) — but **the vizier Windows backend is a stub**: `windows.rs` delegates straight to the generic `BaselineObserver`, which on stock Windows returns an observation with no focus, no windows and no displays (see §4 item 4) | [`vizier/src/observer/windows.rs:1-10`](../vizier/src/observer/windows.rs), [`vizier/src/observer/common.rs:168-232`](../vizier/src/observer/common.rs) |
-| **License / commercial** | Screenpipe Commercial License; $25 / $50-seat / $150-seat published tiers | CI-Commercial-1.0, private repo, no standalone SKU — a component of the CI appliance | [`LICENSE.md:1-8`](../LICENSE.md) |
+| **License / commercial** | Screenpipe Commercial License; $25 / $50-seat / $150-seat published tiers | PolyForm Noncommercial 1.0.0 | [`LICENSE.md`](../LICENSE.md) |
 
 ## 3. What each product is *for*
 
