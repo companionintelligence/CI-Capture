@@ -43,6 +43,9 @@ jobs:
 
       - name: Test
         run: cargo test --locked --verbose
+      # The brand canon is vendored (vendor/brand, CI-Common brand bundle); refuse to build on drift.
+      - name: Verify the vendored brand bundle
+        run: scripts/vendor-brand.sh --check
 
       - name: Test (rich-extractors)
         run: cargo test --locked --features rich-extractors --verbose

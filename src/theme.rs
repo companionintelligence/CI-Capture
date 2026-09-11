@@ -315,17 +315,20 @@ fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
 
 // ── Fonts ─────────────────────────────────────────────────────────────────--
 
-const MONTSERRAT: &[u8] = include_bytes!("../assets/fonts/Montserrat-Regular.ttf");
-const MONTSERRAT_LIGHT: &[u8] = include_bytes!("../assets/fonts/Montserrat-Light.ttf");
-const MONTSERRAT_SEMIBOLD: &[u8] = include_bytes!("../assets/fonts/Montserrat-SemiBold.ttf");
+// Manrope is the Companion Intelligence sans (Montserrat was retired at tokens v0.3.0). egui
+// loads one fixed weight per family, so these are the static instances the brand bundle
+// ships under fonts/static/ (vendor/brand, refreshed by scripts/vendor-brand.sh).
+const MANROPE: &[u8] = include_bytes!("../vendor/brand/fonts/static/manrope-400.ttf");
+const MANROPE_LIGHT: &[u8] = include_bytes!("../vendor/brand/fonts/static/manrope-300.ttf");
+const MANROPE_SEMIBOLD: &[u8] = include_bytes!("../vendor/brand/fonts/static/manrope-600.ttf");
 const SOURCE_CODE_PRO: &[u8] = include_bytes!("../assets/fonts/SourceCodePro-Regular.ttf");
 
-/// Named font families for the non-default Montserrat weights.
+/// Named font families for the non-default Manrope weights.
 pub fn family_light() -> FontFamily {
-    FontFamily::Name("Montserrat-Light".into())
+    FontFamily::Name("Manrope-Light".into())
 }
 pub fn family_semibold() -> FontFamily {
-    FontFamily::Name("Montserrat-SemiBold".into())
+    FontFamily::Name("Manrope-SemiBold".into())
 }
 
 /// `FontId` helpers used throughout the windows.
@@ -342,7 +345,7 @@ pub fn mono(size: f32) -> FontId {
     FontId::new(size, FontFamily::Monospace)
 }
 
-/// Register Montserrat (proportional) and Source Code Pro (monospace). Call
+/// Register Manrope (proportional) and Source Code Pro (monospace). Call
 /// once from each window's eframe creation closure.
 pub fn install_fonts(ctx: &egui::Context) {
     use egui::{FontData, FontDefinitions};
@@ -354,30 +357,30 @@ pub fn install_fonts(ctx: &egui::Context) {
             .font_data
             .insert(name.to_owned(), Arc::new(FontData::from_static(bytes)));
     };
-    add("Montserrat", MONTSERRAT);
-    add("Montserrat-Light", MONTSERRAT_LIGHT);
-    add("Montserrat-SemiBold", MONTSERRAT_SEMIBOLD);
+    add("Manrope", MANROPE);
+    add("Manrope-Light", MANROPE_LIGHT);
+    add("Manrope-SemiBold", MANROPE_SEMIBOLD);
     add("SourceCodePro", SOURCE_CODE_PRO);
 
     fonts
         .families
         .entry(FontFamily::Proportional)
         .or_default()
-        .insert(0, "Montserrat".to_owned());
+        .insert(0, "Manrope".to_owned());
     fonts
         .families
         .entry(FontFamily::Monospace)
         .or_default()
         .insert(0, "SourceCodePro".to_owned());
 
-    // Weight variants get their own families, falling back to regular Montserrat.
+    // Weight variants get their own families, falling back to regular Manrope.
     fonts.families.insert(
-        FontFamily::Name("Montserrat-Light".into()),
-        vec!["Montserrat-Light".to_owned(), "Montserrat".to_owned()],
+        FontFamily::Name("Manrope-Light".into()),
+        vec!["Manrope-Light".to_owned(), "Manrope".to_owned()],
     );
     fonts.families.insert(
-        FontFamily::Name("Montserrat-SemiBold".into()),
-        vec!["Montserrat-SemiBold".to_owned(), "Montserrat".to_owned()],
+        FontFamily::Name("Manrope-SemiBold".into()),
+        vec!["Manrope-SemiBold".to_owned(), "Manrope".to_owned()],
     );
 
     ctx.set_fonts(fonts);

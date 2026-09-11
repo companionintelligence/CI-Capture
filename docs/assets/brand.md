@@ -5,7 +5,7 @@
 # Companion Capture — Brand & assets
 
 Visual identity for the CI-Capture repo. Part of the **Companion Intelligence**
-family; defer to CI-Marketing's master brand for anything beyond this repo.
+family; defer to the Companion Intelligence canon in CI-Common (`styles/UI-STYLE-GUIDE.md`, `@companionintelligence/tokens`); this app consumes it as the brand bundle (`vendor/brand/`, `scripts/vendor-brand.sh`) for anything beyond this repo.
 
 ## Logo
 
@@ -40,7 +40,7 @@ OS appearance — there is no pinned mode.
 | Canvas | `#041620` | `#f3f3f3` |
 | Panel | `#0a222e` | `#f7f7f9` |
 | Border | `#2c676d` | `#e2e8f0` |
-| Primary (teal) | `#abd4d8` | `#0f717a` |
+| Primary | `#c5e8dc` (sage) | `#0a6358` (phthalo) — from `vendor/brand/tokens/tokens.rs`; the `#abd4d8`/`#0f717a` teal was retired at tokens v0.3.0 |
 | Body text | `#f5f8fa` | `#010f16` |
 | Muted text | `#8f98a3` | `#62748e` |
 
@@ -73,7 +73,7 @@ see `tokens::teal` and `tokens::accent`.
 
 ## Typography
 
-- **Display / wordmark:** Abel (CI master brand). Falls back to a tight
+- **Display / wordmark:** Archivo Black (`--font-display` in the canon); UI is Manrope. Falls back to a tight
   `Helvetica Neue` in SVGs so they render anywhere.
 - **Mono / code / terminals:** Source Code Pro → `SF Mono`, Menlo, Consolas.
 - In-app scale lives in `tokens::text` (display 30 → min 12pt); nothing renders
