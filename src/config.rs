@@ -245,6 +245,73 @@ impl Default for ImessageConfig {
     }
 }
 
+/// Device-activity lane — reads this Mac's own Apple "Knowledge" store
+/// (`~/Library/Application Support/Knowledge/knowledgeC.db`: app usage,
+/// media, notifications, Bluetooth, and opt-in Safari domains / synced
+/// intents) and ships each row as a memory event plus a daily digest. See
+/// `crate::knowledge`. Off by default and gated by Full Disk Access, like
+/// `imessage`.
+///
+/// Stream selection is expressed as *deltas* from a code-side default set
+/// (`crate::knowledge::facts::DEFAULT_STREAMS`) rather than as the set
+/// itself: `load_or_default` persists the whole default config on first run,
+/// so a stored `streams: Vec<_>` would freeze today's defaults into every
+/// install and a stream added to the defaults later would never reach them.
+/// Same reasoning as `FileTrackerConfig::ignore_globs` over
+/// `watcher::ignore::DEFAULT_IGNORES`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct KnowledgeConfig {
+    pub enabled: bool,
+    pub poll_interval_secs: u64,
+    /// Default streams the user has switched off (exact `ZSTREAMNAME`s such
+    /// as `/app/mediaUsage`).
+    pub disabled_streams: Vec<String>,
+    /// Non-default streams the user has switched on: `/app/webUsage`
+    /// (Safari domains, never URLs), `/app/intents` (needs
+    /// `include_synced_devices` — every row here is donated by an iPhone or
+    /// iPad), `/display/isBacklit` (only "on" spans of ≥ 5 min are shipped).
+    pub extra_streams: Vec<String>,
+    /// Ship rows the Knowledge store synced *from other devices*
+    /// (`ZSOURCE.ZDEVICEID` set). Off: this Mac's own activity only.
+    pub include_synced_devices: bool,
+    /// Foreground-app and web sessions shorter than this many seconds are
+    /// not shipped as individual events (73% of `/app/usage` rows on a real
+    /// Mac are sub-30 s Cmd-Tab blips). Daily digests still count them.
+    /// `0` ships every non-zero session.
+    pub min_session_secs: u64,
+    /// Bundle ids the user never wants reported (exact, case-insensitive),
+    /// stacked on the non-disableable password-manager list in
+    /// `crate::knowledge::facts::SENSITIVE_BUNDLE_IDS`.
+    pub excluded_bundle_ids: Vec<String>,
+    /// Web domains (suffix match) never reported when `/app/webUsage` is on,
+    /// stacked on `crate::knowledge::facts::SENSITIVE_WEB_DOMAINS`.
+    pub excluded_domains: Vec<String>,
+    /// How far back the first crawl reaches. The store itself only keeps a
+    /// few weeks, so this is a valve, not the usual bound. `0` = everything
+    /// the store holds.
+    pub backfill_days: u32,
+    /// Emit one per-app event plus one summary per completed local day.
+    pub daily_digest: bool,
+}
+
+impl Default for KnowledgeConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            poll_interval_secs: 60,
+            disabled_streams: Vec::new(),
+            extra_streams: Vec::new(),
+            include_synced_devices: false,
+            min_session_secs: 30,
+            excluded_bundle_ids: Vec::new(),
+            excluded_domains: Vec::new(),
+            backfill_days: 30,
+            daily_digest: true,
+        }
+    }
+}
+
 /// The persisted applet configuration.
 ///
 /// Every config struct in this module — this one and each section — carries a
@@ -277,6 +344,7 @@ pub struct AppConfig {
     pub bluebubbles: BlueBubblesConfig,
     #[serde(default)]
     pub imessage: ImessageConfig,
+    pub knowledge: KnowledgeConfig,
     #[serde(default)]
     pub oidc: OidcConfig,
     /// Tokens + claims captured from the last successful portal sign-in.
@@ -331,6 +399,7 @@ impl Default for AppConfig {
             file_tracker: FileTrackerConfig::default(),
             bluebubbles: BlueBubblesConfig::default(),
             imessage: ImessageConfig::default(),
+            knowledge: KnowledgeConfig::default(),
             oidc: OidcConfig::default(),
             oidc_session: None,
             onboarding_completed: false,
@@ -530,6 +599,28 @@ pub fn imessage_cursor_path() -> Result<PathBuf> {
     Ok(data_dir.join("imessage-cursor.json"))
 }
 
+/// Path to the Knowledge (device-activity) lane's sync cursor.
+pub fn knowledge_cursor_path() -> Result<PathBuf> {
+    let dirs = ProjectDirs::from(APP_QUALIFIER, APP_QUALIFIER, APP_NAME)
+        .context("locating data directory")?;
+    let data_dir = dirs.data_dir();
+    fs::create_dir_all(data_dir)
+        .with_context(|| format!("creating data dir {}", data_dir.display()))?;
+    Ok(data_dir.join("knowledge-cursor.json"))
+}
+
+/// Path to the Knowledge lane's park file: one JSON line per event CI-Server
+/// permanently rejected, kept so nothing is dropped and the operator can
+/// replay it (`KNOWLEDGE_REPLAY_REJECTED=<path> --import-knowledge-once`).
+pub fn knowledge_rejected_path() -> Result<PathBuf> {
+    let dirs = ProjectDirs::from(APP_QUALIFIER, APP_QUALIFIER, APP_NAME)
+        .context("locating data directory")?;
+    let data_dir = dirs.data_dir();
+    fs::create_dir_all(data_dir)
+        .with_context(|| format!("creating data dir {}", data_dir.display()))?;
+    Ok(data_dir.join("knowledge-rejected.jsonl"))
+}
+
 pub fn default_storage_dir() -> Result<PathBuf> {
     let dirs = ProjectDirs::from(APP_QUALIFIER, APP_QUALIFIER, APP_NAME)
         .context("locating storage directory")?;
@@ -572,6 +663,13 @@ mod rebrand_tests {
         assert_eq!(cfg.postgres.port, 5432);
         assert!(cfg.server.portal_url.is_empty());
         assert!(!cfg.onboarding_completed);
+        // The knowledge lane is off until switched on, and its stream
+        // deltas start empty so the code-side defaults apply.
+        assert!(!cfg.knowledge.enabled);
+        assert!(cfg.knowledge.extra_streams.is_empty());
+        assert_eq!(cfg.knowledge.min_session_secs, 30);
+        assert_eq!(cfg.knowledge.backfill_days, 30);
+        assert!(cfg.knowledge.daily_digest);
     }
 
     /// Retiring the minio/postgres sections must not brick existing installs.

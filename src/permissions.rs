@@ -173,18 +173,26 @@ mod imp {
     /// at all" case (no file → `NotRequired`, not `Denied`, since there is
     /// nothing to be denied access to).
     pub fn full_disk_access_status() -> super::PermissionStatus {
-        use std::io::Read;
-
         let Some(home) = std::env::var_os("HOME") else {
             return super::PermissionStatus::Denied;
         };
-        let chat_db = std::path::Path::new(&home).join("Library/Messages/chat.db");
+        protected_file_status(&std::path::Path::new(&home).join("Library/Messages/chat.db"))
+    }
 
-        if !chat_db.exists() {
+    /// The open-and-read-a-byte probe behind [`full_disk_access_status`],
+    /// for any other TCC-protected file a lane needs (the `knowledge` lane's
+    /// `knowledgeC.db`). Each lane probes the file it will actually read:
+    /// a Mac that never ran Messages has no `chat.db`, so the imessage probe
+    /// reports `NotRequired` there even though `knowledgeC.db` exists and is
+    /// still gated — one canary cannot speak for another.
+    pub fn protected_file_status(path: &std::path::Path) -> super::PermissionStatus {
+        use std::io::Read;
+
+        if !path.exists() {
             return super::PermissionStatus::NotRequired;
         }
 
-        match std::fs::File::open(&chat_db).and_then(|mut f| {
+        match std::fs::File::open(path).and_then(|mut f| {
             let mut buf = [0u8; 16];
             f.read_exact(&mut buf)
         }) {
@@ -214,6 +222,9 @@ mod imp {
     pub fn full_disk_access_status() -> PermissionStatus {
         PermissionStatus::NotRequired
     }
+    pub fn protected_file_status(_path: &std::path::Path) -> PermissionStatus {
+        PermissionStatus::NotRequired
+    }
 }
 
 pub fn screen_recording_status() -> PermissionStatus {
@@ -236,6 +247,15 @@ pub fn screen_recording_settings_url() -> &'static str {
 
 pub fn full_disk_access_status() -> PermissionStatus {
     imp::full_disk_access_status()
+}
+
+/// Whether this process can read `path`, a TCC-protected file (Full Disk
+/// Access on macOS). Three states, same as [`full_disk_access_status`]:
+/// `NotRequired` when the file does not exist (nothing to be denied access
+/// to), `Granted` when a byte can be read, `Denied` otherwise. Always
+/// `NotRequired` off macOS.
+pub fn protected_file_status(path: &std::path::Path) -> PermissionStatus {
+    imp::protected_file_status(path)
 }
 
 /// The System Settings pane URL for Full Disk Access (empty off macOS).
@@ -317,6 +337,60 @@ mod tests {
         assert!(!PermissionStatus::Denied.is_ok());
         assert!(PermissionStatus::Granted.badge().contains("Granted"));
         assert!(PermissionStatus::Denied.badge().contains("Not granted"));
+    }
+
+    /// The three-state probe behind both the imessage and knowledge FDA
+    /// gates. A missing file is `NotRequired` on every OS — a Mac with no
+    /// store at all must not be sent to the Full Disk Access pane, since
+    /// there is nothing to be denied access to.
+    #[test]
+    fn protected_file_status_missing_file_is_not_required_everywhere() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("does-not-exist.db");
+        assert_eq!(
+            protected_file_status(&missing),
+            PermissionStatus::NotRequired
+        );
+    }
+
+    /// A file this process can open and read a byte from is `Granted` —
+    /// the only positive signal the probe has, since TCC offers no query API
+    /// for Full Disk Access.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn protected_file_status_readable_file_is_granted() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("readable.db");
+        std::fs::write(&path, [0u8; 32]).unwrap();
+        assert_eq!(protected_file_status(&path), PermissionStatus::Granted);
+    }
+
+    /// Deliberate boundary, not an accident: the probe `read_exact`s 16
+    /// bytes, so a 0-byte file the process CAN open is still reported as
+    /// unreadable (`Denied`). A real SQLite store is never 0 bytes (the
+    /// header alone is 100), so this pins the documented choice rather than
+    /// a case a user will hit — and it guards against the probe quietly
+    /// degrading to a bare `File::open`, which TCC does not always refuse.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn protected_file_status_empty_file_is_denied() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("empty.db");
+        std::fs::write(&path, b"").unwrap();
+        assert_eq!(protected_file_status(&path), PermissionStatus::Denied);
+    }
+
+    /// Off macOS there is no TCC, so the probe is a stub: even a perfectly
+    /// readable file is `NotRequired`, never `Granted`, and the imessage
+    /// wrapper agrees.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn protected_file_status_is_stubbed_off_macos() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("readable.db");
+        std::fs::write(&path, [0u8; 32]).unwrap();
+        assert_eq!(protected_file_status(&path), PermissionStatus::NotRequired);
+        assert_eq!(full_disk_access_status(), PermissionStatus::NotRequired);
     }
 
     #[cfg(not(target_os = "macos"))]

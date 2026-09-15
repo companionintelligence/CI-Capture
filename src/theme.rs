@@ -91,10 +91,13 @@ struct Palette {
     /// and never be assumed to be one fixed colour.
     on_teal: Color32,
     /// Capture-lane accent colours, drawn from the token chart ramp so the
-    /// three lanes stay distinguishable and on-brand.
+    /// four lanes stay distinguishable and on-brand. `CHART_3` was the one
+    /// ramp step still unused when the device-activity lane arrived, so it
+    /// took it rather than reshuffling the three colours users already know.
     lane_shot: Color32,
     lane_activity: Color32,
     lane_file: Color32,
+    lane_knowledge: Color32,
 }
 
 /// `SUCCESS` darkened for use as a fill/background rather than small-dot text.
@@ -134,6 +137,7 @@ impl Palette {
             lane_shot: dark::CHART_4,
             lane_activity: dark::CHART_2,
             lane_file: dark::CHART_1,
+            lane_knowledge: dark::CHART_3,
         }
     }
 
@@ -165,6 +169,7 @@ impl Palette {
             lane_shot: tokens::light::CHART_4,
             lane_activity: tokens::light::CHART_2,
             lane_file: tokens::light::CHART_1,
+            lane_knowledge: tokens::light::CHART_3,
         }
     }
 }
@@ -297,6 +302,11 @@ pub fn LANE_ACTIVITY() -> Color32 {
 #[allow(non_snake_case)]
 pub fn LANE_FILE() -> Color32 {
     PALETTE.with(|p| p.get().lane_file)
+}
+/// Accent for the device-activity lane (`crate::knowledge`).
+#[allow(non_snake_case)]
+pub fn LANE_KNOWLEDGE() -> Color32 {
+    PALETTE.with(|p| p.get().lane_knowledge)
 }
 
 /// Return `color` at the given 0–255 alpha so it blends with what's behind it.

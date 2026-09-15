@@ -32,8 +32,8 @@ settings.sidebar.subtitle:
   es: Configuración
 
 settings.sidebar.lanes:
-  en: 3 lanes
-  es: 3 canales
+  en: 4 lanes
+  es: 4 canales
 
 settings.footer.save:
   en: Save
@@ -488,6 +488,14 @@ settings.capture.lane.files.detail:
   en: Documents you edit in the folders below, saved as readable text.
   es: Los documentos que editas en las carpetas de abajo, guardados como texto legible.
 
+settings.capture.lane.knowledge.title:
+  en: Device activity
+  es: Actividad del dispositivo
+
+settings.capture.lane.knowledge.detail:
+  en: Which apps you use and for how long, plus media, notifications and Bluetooth devices, from your Mac's own activity log.
+  es: Qué apps usas y durante cuánto tiempo, además de contenido multimedia, notificaciones y dispositivos Bluetooth, a partir del registro de actividad de tu propio Mac.
+
 # ── Watched folders ───────────────────────────────────────────────────────
 
 settings.folders.label:
@@ -521,6 +529,43 @@ settings.folders.toggle.title:
 settings.folders.toggle.detail:
   en: Turn off to stop watching without losing the folder list.
   es: Desactívalo para dejar de vigilar sin perder la lista de carpetas.
+
+# ── Device activity (knowledge lane) ──────────────────────────────────────
+# The lane reads macOS's own activity log (knowledgeC.db), which sits behind
+# Full Disk Access. There is no system prompt for that grant — only the
+# System Settings pane, and it takes effect on relaunch — so the copy says so.
+
+settings.knowledge.label:
+  en: Device activity
+  es: Actividad del dispositivo
+
+settings.knowledge.toggle.title:
+  en: Record device activity
+  es: Registrar la actividad del dispositivo
+
+settings.knowledge.toggle.detail:
+  en: Adds which apps you use and for how long, media you play, notifications you receive and Bluetooth devices you connect. Reads your Mac's own activity log, so it needs Full Disk Access.
+  es: Añade qué apps usas y durante cuánto tiempo, el contenido que reproduces, las notificaciones que recibes y los dispositivos Bluetooth que conectas. Lee el registro de actividad de tu propio Mac, así que necesita Acceso total al disco.
+
+settings.knowledge.fda.granted:
+  en: Full Disk Access is on, so Companion Capture can read your Mac's activity log.
+  es: El Acceso total al disco está activado, así que Companion Capture puede leer el registro de actividad de tu Mac.
+
+settings.knowledge.fda.denied:
+  en: Full Disk Access is needed to read your Mac's activity log. Nothing is recorded for this lane until you allow it.
+  es: Hace falta Acceso total al disco para leer el registro de actividad de tu Mac. No se registra nada en este canal hasta que lo permitas.
+
+settings.knowledge.fda.missing:
+  en: No activity log was found on this computer. This lane only works on a Mac, where macOS keeps one itself.
+  es: No se ha encontrado ningún registro de actividad en este equipo. Este canal solo funciona en un Mac, donde macOS lo mantiene por sí mismo.
+
+settings.knowledge.fda.open:
+  en: Open System Settings
+  es: Abrir Ajustes del Sistema
+
+settings.knowledge.fda.relaunch:
+  en: Turn on Companion Capture under Full Disk Access, then quit and reopen it — macOS applies this grant on relaunch.
+  es: Activa Companion Capture en Acceso total al disco y luego ciérralo y vuelve a abrirlo — macOS aplica este permiso al reiniciar la app.
 
 # ── Advanced tab ──────────────────────────────────────────────────────────
 

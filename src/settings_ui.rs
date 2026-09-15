@@ -12,6 +12,7 @@ use uuid::Uuid;
 
 use crate::config::{AppConfig, ConfigManager, MinioConfig, PostgresConfig};
 use crate::connection_test;
+use crate::permissions::{self, PermissionStatus};
 use crate::portal_apps::{self, PortalApp};
 use crate::server_common::normalize_server_url;
 use crate::theme;
@@ -112,6 +113,11 @@ pub struct SettingsFormState {
     /// actually arms it.
     pub watched_paths: Vec<PathBuf>,
     pub file_tracking_enabled: bool,
+    /// The device-activity lane (`crate::knowledge`), off by default. Only
+    /// the on/off switch is surfaced here; stream selection, floors and the
+    /// exclusion lists stay `config.json`-only, since the defaults are the
+    /// product decision and a first-time reader has no basis to change them.
+    pub knowledge_enabled: bool,
     pub minio_endpoint: String,
     pub minio_bucket: String,
     pub minio_region: String,
@@ -184,6 +190,7 @@ impl From<&AppConfig> for SettingsFormState {
             diff_threshold_percent: config.capture.diff_threshold_percent,
             watched_paths: config.file_tracker.watched_paths.clone(),
             file_tracking_enabled: config.file_tracker.enabled,
+            knowledge_enabled: config.knowledge.enabled,
             minio_endpoint: config.minio.endpoint.clone(),
             minio_bucket: config.minio.bucket.clone(),
             minio_region: config.minio.region.clone(),
@@ -324,6 +331,13 @@ struct SettingsApp {
     centered: bool,
     local_backlog: crate::backlog::LocalBacklog,
     backlog_scanned_at: Instant,
+    /// Whether this process can read the Knowledge store — the grant the
+    /// device-activity lane needs. Probed at open and re-probed on the
+    /// Capture tab every 15 s (see `update`), not per frame: it is a TCC file
+    /// open, and the answer only changes after the user flips the switch in
+    /// System Settings and relaunches, so a slow poll loses nothing.
+    knowledge_fda: PermissionStatus,
+    knowledge_fda_probed_at: Instant,
 }
 
 impl SettingsApp {
@@ -370,6 +384,8 @@ impl SettingsApp {
             centered: false,
             local_backlog: crate::backlog::LocalBacklog::default(),
             backlog_scanned_at: Instant::now() - Duration::from_secs(60),
+            knowledge_fda: crate::knowledge::db_access_status(),
+            knowledge_fda_probed_at: Instant::now(),
         }
     }
 
@@ -377,6 +393,11 @@ impl SettingsApp {
         let config = self.base_config.lock().clone();
         self.local_backlog = crate::backlog::collect(&config);
         self.backlog_scanned_at = Instant::now();
+    }
+
+    fn refresh_knowledge_fda(&mut self) {
+        self.knowledge_fda = crate::knowledge::db_access_status();
+        self.knowledge_fda_probed_at = Instant::now();
     }
 
     fn memory_looks_disconnected(&self) -> bool {
@@ -444,6 +465,7 @@ impl SettingsApp {
         c.capture.diff_threshold_percent = self.form.diff_threshold_percent;
         c.file_tracker.watched_paths = self.form.watched_paths.clone();
         c.file_tracker.enabled = self.form.file_tracking_enabled;
+        c.knowledge.enabled = self.form.knowledge_enabled;
         c.minio = MinioConfig {
             endpoint: self.form.minio_endpoint.clone(),
             bucket: self.form.minio_bucket.clone(),
@@ -918,6 +940,15 @@ impl eframe::App for SettingsApp {
         if self.backlog_scanned_at.elapsed() >= Duration::from_secs(15) {
             self.refresh_backlog();
         }
+        // Only the Capture tab shows the Full Disk Access card, so only it
+        // pays for the probe. Rides the 15 s repaint below rather than adding
+        // a faster one: Settings is its own process and the grant is picked
+        // up on relaunch anyway, so polling harder would change nothing.
+        if self.current_tab == SettingsTab::Capture
+            && self.knowledge_fda_probed_at.elapsed() >= Duration::from_secs(15)
+        {
+            self.refresh_knowledge_fda();
+        }
         ctx.request_repaint_after(Duration::from_secs(15));
         self.render_sidebar(ctx);
         self.render_footer(ctx);
@@ -936,7 +967,9 @@ impl eframe::App for SettingsApp {
                         let tab = self.current_tab;
                         let changed = match tab {
                             SettingsTab::Connection => render_connection_tab(ui, self, ctx),
-                            SettingsTab::Capture => render_capture_tab(ui, &mut self.form),
+                            SettingsTab::Capture => {
+                                render_capture_tab(ui, &mut self.form, self.knowledge_fda)
+                            }
                             SettingsTab::Advanced => render_advanced_tab(ui, &mut self.form),
                             #[cfg(feature = "legacy-minio")]
                             SettingsTab::Minio => render_minio_tab(ui, &mut self.form),
@@ -1046,6 +1079,7 @@ impl SettingsApp {
                                 theme::LANE_SHOT(),
                                 theme::LANE_ACTIVITY(),
                                 theme::LANE_FILE(),
+                                theme::LANE_KNOWLEDGE(),
                             ] {
                                 let (r, _) = ui.allocate_exact_size(
                                     egui::Vec2::splat(7.0),
@@ -1922,7 +1956,13 @@ fn render_advanced_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bool 
     changed
 }
 
-fn render_capture_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bool {
+/// `fda` is the caller's cached Full Disk Access probe (see
+/// `SettingsApp::knowledge_fda`); this function never probes TCC itself.
+fn render_capture_tab(
+    ui: &mut egui::Ui,
+    form: &mut SettingsFormState,
+    fda: PermissionStatus,
+) -> bool {
     let mut changed = false;
     page_header(
         ui,
@@ -2054,8 +2094,21 @@ fn render_capture_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bool {
             rust_i18n::t!("settings.capture.lane.on")
         },
     );
+    ui.add_space(10.0);
+    theme::lane_row(
+        ui,
+        theme::LANE_KNOWLEDGE(),
+        &rust_i18n::t!("settings.capture.lane.knowledge.title"),
+        &rust_i18n::t!("settings.capture.lane.knowledge.detail"),
+        &if form.knowledge_enabled {
+            rust_i18n::t!("settings.capture.lane.on")
+        } else {
+            rust_i18n::t!("settings.capture.lane.off")
+        },
+    );
 
     changed |= render_watched_folders(ui, form);
+    changed |= render_device_activity(ui, form, fda);
     changed
 }
 
@@ -2182,6 +2235,92 @@ fn render_watched_folders(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bo
             &rust_i18n::t!("settings.folders.toggle.detail"),
         );
     }
+
+    changed
+}
+
+/// The device-activity lane's controls: its on/off switch and the Full Disk
+/// Access state it cannot run without.
+///
+/// Full Disk Access has no system prompt to trigger — unlike Screen Recording,
+/// macOS only offers the System Settings pane, and it applies the grant when
+/// the app is next launched (the tray checks once when the lane starts, the
+/// same contract as `crate::imessage`). So the card says both things plainly
+/// rather than implying a click here fixes it, and the button only appears
+/// where it can do anything: on macOS, with the grant actually missing.
+/// `NotRequired` on a Mac means the store file itself is absent, which no
+/// visit to System Settings can change, so it gets an explanation and no
+/// button. The toggle is shown regardless of the grant so a user can arm the
+/// lane first and grant second — the tray reports the missing grant on its
+/// own.
+fn render_device_activity(
+    ui: &mut egui::Ui,
+    form: &mut SettingsFormState,
+    fda: PermissionStatus,
+) -> bool {
+    let mut changed = false;
+
+    ui.add_space(20.0);
+    theme::field_label(ui, &rust_i18n::t!("settings.knowledge.label"));
+    ui.add_space(10.0);
+
+    changed |= theme::toggle_row(
+        ui,
+        &mut form.knowledge_enabled,
+        &rust_i18n::t!("settings.knowledge.toggle.title"),
+        &rust_i18n::t!("settings.knowledge.toggle.detail"),
+    );
+    ui.add_space(8.0);
+
+    let needs_grant = permissions::permissions_relevant() && fda == PermissionStatus::Denied;
+    theme::card(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.horizontal(|ui| {
+            theme::status_dot(
+                ui,
+                match fda {
+                    PermissionStatus::Granted => theme::GREEN(),
+                    PermissionStatus::Denied => theme::AMBER(),
+                    PermissionStatus::NotRequired => theme::FAINT(),
+                },
+                needs_grant,
+            );
+            ui.add_space(8.0);
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 3.0;
+                ui.label(
+                    egui::RichText::new(fda.badge())
+                        .font(theme::semibold(tokens::text::BODY))
+                        .color(theme::TEXT()),
+                );
+                theme::caption(
+                    ui,
+                    &match fda {
+                        PermissionStatus::Granted => {
+                            rust_i18n::t!("settings.knowledge.fda.granted")
+                        }
+                        PermissionStatus::Denied => rust_i18n::t!("settings.knowledge.fda.denied"),
+                        PermissionStatus::NotRequired => {
+                            rust_i18n::t!("settings.knowledge.fda.missing")
+                        }
+                    },
+                );
+            });
+            if needs_grant {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if theme::primary_button(ui, &rust_i18n::t!("settings.knowledge.fda.open"))
+                        .clicked()
+                    {
+                        let _ = crate::open_url(permissions::full_disk_access_settings_url());
+                    }
+                });
+            }
+        });
+        if needs_grant {
+            ui.add_space(8.0);
+            theme::caption(ui, &rust_i18n::t!("settings.knowledge.fda.relaunch"));
+        }
+    });
 
     changed
 }
@@ -2371,6 +2510,39 @@ mod tests {
         let mut config = AppConfig::default();
         config.oidc.issuer = "https://hub.example.com/api/auth".to_string();
         assert_eq!(SettingsFormState::from(&config).auth_mode, AuthMode::Oidc);
+    }
+
+    /// The device-activity switch must be hydrated from `config.knowledge`,
+    /// not left at the form's default. A forgotten hydration is silent and
+    /// destructive: the toggle would render "off" for a lane the user had
+    /// turned on, and the next Save — which writes the whole form back —
+    /// would actually turn the lane off. Off-by-default is checked too so the
+    /// lane cannot be armed by a settings visit alone.
+    #[test]
+    fn knowledge_toggle_hydrates_from_config_in_both_states() {
+        let config = AppConfig::default();
+        assert!(
+            !config.knowledge.enabled,
+            "the device-activity lane is off by default; this test assumes that"
+        );
+        assert!(!SettingsFormState::from(&config).knowledge_enabled);
+
+        let mut config = AppConfig::default();
+        config.knowledge.enabled = true;
+        assert!(SettingsFormState::from(&config).knowledge_enabled);
+    }
+
+    /// `SettingsFormState` derives serde like every other form field, so the
+    /// switch has to survive a round trip with its value intact — a `skip`
+    /// or a renamed field would quietly reset the lane to off.
+    #[test]
+    fn knowledge_toggle_survives_form_serde_round_trip() {
+        let mut config = AppConfig::default();
+        config.knowledge.enabled = true;
+        let form = SettingsFormState::from(&config);
+        let json = serde_json::to_string(&form).unwrap();
+        let back: SettingsFormState = serde_json::from_str(&json).unwrap();
+        assert!(back.knowledge_enabled);
     }
 
     #[test]
