@@ -11,16 +11,27 @@ use crate::server_common::{AuthCredential, events_urls, files_urls, upload_urls}
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
+/// One row of CI-Server's `POST /v1/events` envelope. `pub(crate)` so lanes
+/// whose per-row mapping is large enough to deserve its own module (the
+/// `knowledge` lane's per-stream table) can build events themselves and hand
+/// them to [`post_capture_events`]; the smaller lanes keep their mapping in
+/// the `ingest_*` functions below.
 #[derive(Debug, Serialize)]
-struct CaptureEvent {
-    source_system: &'static str,
-    source_id: String,
-    kind: String,
-    occurred_at: String,
+pub(crate) struct CaptureEvent {
+    pub(crate) source_system: &'static str,
+    pub(crate) source_id: String,
+    pub(crate) kind: String,
+    pub(crate) occurred_at: String,
+    /// When the event ended — CI-Server materializes it as `events.end_time`
+    /// and derives `duration_minutes` from it. Only the `knowledge` lane's
+    /// interval streams (app usage, Bluetooth spans, …) carry one today.
+    /// Same zod-null trap as `description` below: omitted, never `null`.
     #[serde(skip_serializing_if = "Option::is_none")]
-    observed_at: Option<String>,
+    pub(crate) ended_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    title: Option<String>,
+    pub(crate) observed_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) title: Option<String>,
     /// CI-Server's `/v1/events` schema types this `z.string().optional()`,
     /// which — a common zod trap — accepts an *absent* key but rejects an
     /// explicit JSON `null` ("Expected string, received null"). `None` must
@@ -30,8 +41,8 @@ struct CaptureEvent {
     /// and every such message in the batch was rejected — silently, until
     /// something actually read the response body.
     #[serde(skip_serializing_if = "Option::is_none")]
-    description: Option<String>,
-    payload: Value,
+    pub(crate) description: Option<String>,
+    pub(crate) payload: Value,
     /// Per-tick correlator shared with the screenshot uploaded via the same
     /// worker tick (see `WorkerState::capture_once`'s `captureTickId` form
     /// field) — lets CI-Server link `ci.events` back to the `ci.files` row it
@@ -40,12 +51,24 @@ struct CaptureEvent {
     /// 20260830042159_add_capture_correlation_to_files_and_events). Only
     /// vizier events carry one today.
     #[serde(skip_serializing_if = "Option::is_none")]
-    capture_tick_id: Option<String>,
+    pub(crate) capture_tick_id: Option<String>,
 }
 
+/// Borrows the slice so a caller can bisect a failing batch by re-posting
+/// sub-ranges of the same owned `Vec` without cloning events.
 #[derive(Debug, Serialize)]
-struct IngestEventsRequest {
-    events: Vec<CaptureEvent>,
+struct IngestEventsRequest<'a> {
+    events: &'a [CaptureEvent],
+}
+
+/// What CI-Server acknowledged for one `POST /v1/events`. Never a partial
+/// success: the server's `rejected[]` path always answers `ingested: 0` (see
+/// [`post_capture_events`]), so a returned ack means every event in the
+/// request is now either stored or a known duplicate.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct BatchAck {
+    pub(crate) ingested: u32,
+    pub(crate) duplicate: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -68,29 +91,52 @@ struct UploadResponse {
 
 /// An event-ingest failure, classified for the retry-vs-dead-letter decision.
 ///
-/// `permanent = true` means the server rejected *this event's payload*
-/// (validation 4xx or an explicit per-event rejection) — retrying the same
-/// bytes can never succeed, so the caller should park it. Everything that can
-/// heal without changing the event is transient: transport errors, timeouts,
-/// 5xx, missing routes (server too old), and auth failures (401/403 — the
-/// token refresh loop fixes those; the event is not at fault).
+/// `permanent = true` means the server rejected *this request's payload*
+/// (validation 4xx) — retrying the same bytes can never succeed, so the
+/// caller should park it. Everything that can heal without changing the
+/// event is transient: transport errors, timeouts, 5xx, missing routes
+/// (server too old), auth failures (401/403 — the token refresh loop fixes
+/// those; the event is not at fault), and an HTTP 200 whose body lists
+/// `rejected[]` entries — CI-Server reports a failed *materialize* step that
+/// way, having already compensated its capture log so the same events can be
+/// re-sent verbatim (`BulkIngestController.ts` `envelopeResponse`). That
+/// last one is transient by *classification*, not by nature: the body does
+/// not say whether the materialize step tripped over the server's own state
+/// (a database blip) or over one row of this payload (a column constraint),
+/// so the client cannot tell a one-off from a poison. A repeating
+/// `rejected[]` is bounded by the knowledge lane's head-of-line valve, which
+/// bisects the chunk after `STALL_AFTER` and parks the one event that still
+/// fails on its own.
 #[derive(Debug)]
 pub struct IngestError {
     pub permanent: bool,
+    /// True when the server answered (any HTTP status, or a 200 whose body
+    /// lists `rejected[]`); false when the request never got a reply —
+    /// transport failure, timeout, DNS, a client that could not even be
+    /// built. The knowledge lane's head-of-line valve keys on this: a
+    /// transient verdict the *server* gave is evidence about the event at
+    /// the head, an outage is not, and the two must not be confused or a
+    /// day-long outage would mature into a park of a healthy event.
+    pub reached_server: bool,
     message: String,
 }
 
 impl IngestError {
+    /// A verdict on the payload itself — nothing to reach, so it counts as
+    /// answered (the local check stands in for the server's).
     fn permanent(message: impl Into<String>) -> Self {
         Self {
             permanent: true,
+            reached_server: true,
             message: message.into(),
         }
     }
 
+    /// A failure with no reply from the server at all.
     fn transient(message: impl Into<String>) -> Self {
         Self {
             permanent: false,
+            reached_server: false,
             message: message.into(),
         }
     }
@@ -120,7 +166,11 @@ impl IngestError {
                 | StatusCode::UNSUPPORTED_MEDIA_TYPE
                 | StatusCode::UNPROCESSABLE_ENTITY // schema rejection
         );
-        Self { permanent, message }
+        Self {
+            permanent,
+            reached_server: true,
+            message,
+        }
     }
 }
 
@@ -142,6 +192,26 @@ impl std::fmt::Display for IngestError {
 impl std::error::Error for IngestError {}
 
 // ── Public API ─────────────────────────────────────────────────────────────────
+
+/// Format a Unix-millisecond instant the one way CI-Server's `/v1/events`
+/// accepts. The schema validates every timestamp with `z.string().datetime()`
+/// and no `{ offset: true }`, which admits only the literal `Z` suffix —
+/// `+00:00` and `-07:00` both fail validation and, because the request is
+/// all-or-nothing, 400 the entire batch. Hence the parameter is a UTC
+/// instant and the formatter is `use_z = true`; chrono only substitutes `Z`
+/// when the offset is exactly zero, so a `DateTime<FixedOffset>` must never
+/// reach this function without `.to_utc()` first.
+///
+/// `None` when the value is outside chrono's representable range — callers
+/// treat that as an unreadable row (log and skip), never as "now".
+pub(crate) fn wire_ts(unix_ms: i64) -> Option<String> {
+    chrono::DateTime::from_timestamp_millis(unix_ms).map(wire_ts_utc)
+}
+
+/// [`wire_ts`] for an instant that is already a `DateTime<Utc>`.
+pub(crate) fn wire_ts_utc(instant: chrono::DateTime<chrono::Utc>) -> String {
+    instant.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+}
 
 pub fn is_configured(config: &AppConfig) -> bool {
     config
@@ -282,14 +352,9 @@ pub async fn ingest_file_event(
             source_system: "ci-applet",
             source_id: event.event_id.clone(),
             kind: "file_event".to_string(),
-            occurred_at: event
-                .occurred_at
-                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
-            observed_at: Some(
-                event
-                    .observed_at
-                    .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
-            ),
+            occurred_at: wire_ts_utc(event.occurred_at),
+            ended_at: None,
+            observed_at: Some(wire_ts_utc(event.observed_at)),
             title: path,
             description: Some(file_event_description(event.event_type, content)),
             payload,
@@ -358,14 +423,9 @@ pub async fn ingest_vizier_event(
                 event.session_id, event.monotonic_ms, event.event_kind
             ),
             kind: format!("vizier_{}", event.event_kind),
-            occurred_at: event
-                .observed_at
-                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
-            observed_at: Some(
-                event
-                    .observed_at
-                    .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
-            ),
+            occurred_at: wire_ts_utc(event.observed_at),
+            ended_at: None,
+            observed_at: Some(wire_ts_utc(event.observed_at)),
             title: event
                 .focus_title
                 .clone()
@@ -402,16 +462,12 @@ pub async fn ingest_bluebubbles_message(
     // the current time gets the event acknowledged, which advances the caller's
     // cursor past it — a garbage value would then silently redate the message
     // and, in the imessage lane, strand every real row behind it.
-    let occurred_at = message
-        .date_created
-        .and_then(chrono::DateTime::from_timestamp_millis)
-        .ok_or_else(|| {
-            IngestError::permanent(format!(
-                "BlueBubbles message {} has no usable dateCreated ({:?})",
-                message.guid, message.date_created
-            ))
-        })?
-        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let occurred_at = message.date_created.and_then(wire_ts).ok_or_else(|| {
+        IngestError::permanent(format!(
+            "BlueBubbles message {} has no usable dateCreated ({:?})",
+            message.guid, message.date_created
+        ))
+    })?;
 
     let title = chat
         .and_then(|c| c.display_name.clone().or_else(|| c.chat_identifier.clone()))
@@ -433,6 +489,7 @@ pub async fn ingest_bluebubbles_message(
             source_id: format!("bluebubbles:{}", message.guid),
             kind: "bluebubbles_message".to_string(),
             occurred_at: occurred_at.clone(),
+            ended_at: None,
             observed_at: Some(occurred_at),
             title,
             description: message.text.clone(),
@@ -460,14 +517,12 @@ pub async fn ingest_imessage_message(
     // cannot be represented, so this is a belt-and-braces guard — but an
     // explicit error rather than `Utc::now()` for the reason spelled out on
     // `ingest_bluebubbles_message` above.
-    let occurred_at = chrono::DateTime::from_timestamp_millis(row.date_created_unix_ms)
-        .ok_or_else(|| {
-            IngestError::permanent(format!(
-                "iMessage rowid={} has an unrepresentable timestamp ({}ms)",
-                row.rowid, row.date_created_unix_ms
-            ))
-        })?
-        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let occurred_at = wire_ts(row.date_created_unix_ms).ok_or_else(|| {
+        IngestError::permanent(format!(
+            "iMessage rowid={} has an unrepresentable timestamp ({}ms)",
+            row.rowid, row.date_created_unix_ms
+        ))
+    })?;
 
     let title = row
         .chat_display_name
@@ -506,6 +561,7 @@ pub async fn ingest_imessage_message(
             ),
             kind: "imessage_message".to_string(),
             occurred_at: occurred_at.clone(),
+            ended_at: None,
             observed_at: Some(occurred_at),
             title,
             description: row.text.clone(),
@@ -519,6 +575,37 @@ pub async fn ingest_imessage_message(
 // ── Internal ──────────────────────────────────────────────────────────────────
 
 async fn post_capture_event(config: &AppConfig, event: CaptureEvent) -> Result<(), IngestError> {
+    post_capture_events(config, std::slice::from_ref(&event))
+        .await
+        .map(|_| ())
+}
+
+/// Ship a batch of events in one `POST /v1/events`. The server's contract
+/// makes this all-or-nothing:
+///
+/// - a validation failure on *any* event is an HTTP 400 for the whole
+///   request and nothing is stored (`permanent` — the caller bisects to find
+///   the offending event);
+/// - an HTTP 200 whose `rejected[]` is non-empty means the materialize step
+///   failed after the capture log was written: `ingested` is always 0, every
+///   non-duplicate index is listed with the same reason, and the server has
+///   compensated its log so re-sending the identical batch is safe
+///   (`transient` — the caller retries next tick);
+/// - otherwise every event is stored or a known duplicate, and the returned
+///   [`BatchAck`] says which.
+///
+/// An empty slice is answered locally with an empty ack: the schema requires
+/// `events.min(1)`, so posting it would be a 400 the caller would misread as
+/// a payload rejection. At most 1000 events per request (`events.max(1000)`).
+pub(crate) async fn post_capture_events(
+    config: &AppConfig,
+    events: &[CaptureEvent],
+) -> Result<BatchAck, IngestError> {
+    if events.is_empty() {
+        return Ok(BatchAck::default());
+    }
+    debug_assert!(events.len() <= 1000, "CI-Server caps /v1/events at 1000");
+
     // Setup failures (no credential, bad portal URL) are config problems, not
     // event problems — always transient.
     let credential =
@@ -529,9 +616,7 @@ async fn post_capture_event(config: &AppConfig, event: CaptureEvent) -> Result<(
         .timeout(std::time::Duration::from_secs(30))
         .build()
         .map_err(|e| IngestError::transient(format!("building event ingest client: {e}")))?;
-    let request = IngestEventsRequest {
-        events: vec![event],
-    };
+    let request = IngestEventsRequest { events };
 
     let mut last_error = None;
     for url in
@@ -570,16 +655,8 @@ async fn post_capture_event(config: &AppConfig, event: CaptureEvent) -> Result<(
             .json()
             .await
             .map_err(|e| IngestError::transient(format!("decoding event ingest response: {e}")))?;
-        if let Some(rejected) = body.rejected.first() {
-            // The server accepted the request but rejected this event's
-            // payload — the one unambiguously permanent per-event outcome.
-            // `reason` is the server's free text about *our* event, so it only
-            // survives when it is code-shaped; the index always does.
-            return Err(IngestError::permanent(format!(
-                "event ingest rejected event {}{}",
-                rejected.index,
-                error_code_suffix(&rejected.reason)
-            )));
+        if !body.rejected.is_empty() {
+            return Err(rejected_batch_error(&body, events.len()));
         }
 
         log::debug!(
@@ -588,10 +665,46 @@ async fn post_capture_event(config: &AppConfig, event: CaptureEvent) -> Result<(
             body.duplicate
         );
 
-        return Ok(());
+        return Ok(BatchAck {
+            ingested: body.ingested,
+            duplicate: body.duplicate,
+        });
     }
 
     Err(last_error.unwrap_or_else(|| IngestError::transient("no event ingest endpoint candidates")))
+}
+
+/// The error for an HTTP 200 that carries `rejected[]`. Transient, not
+/// permanent: CI-Server's `envelopeResponse` (`BulkIngestController.ts`)
+/// only produces this list from a `BulkMaterializeError`, which wraps *any*
+/// throw from the materialize step, lists every fresh index with one shared
+/// reason, and has already deleted the matching capture-log rows — so the
+/// same bytes are always safe to re-send. Whether they will *succeed* the
+/// body cannot say: the throw may be the server's own (a database blip
+/// that clears) or a row-level rejection of one event in this batch (a
+/// column constraint the schema validator does not pre-check), and the two
+/// arrive identical. Calling every one permanent would park a whole batch
+/// of good events on the first blip; calling every one transient leaves a
+/// poison row to the knowledge lane's head-of-line valve, which bisects the
+/// stalled chunk after `STALL_AFTER` and parks only the event that fails
+/// alone — the same bound a server that 500s on one event gets. `reason`
+/// is the server's free text about *our* event, so it only survives when it
+/// is code-shaped; the counts always do.
+fn rejected_batch_error(body: &IngestEventsResponse, sent: usize) -> IngestError {
+    let first = &body.rejected[0];
+    IngestError {
+        permanent: false,
+        // The server did answer — with a 200 — so this is a verdict the
+        // head-of-line valve may count, unlike a transport failure.
+        reached_server: true,
+        message: format!(
+            "event ingest rejected {} of {} event(s) for re-send (first index {}){}",
+            body.rejected.len(),
+            sent,
+            first.index,
+            error_code_suffix(&first.reason)
+        ),
+    }
 }
 
 fn capture_upload_form(
@@ -797,9 +910,14 @@ mod tests {
         ] {
             let e = IngestError::from_status(StatusCode::from_u16(status).unwrap(), "x", &url);
             assert!(!e.permanent, "HTTP {status} should be transient");
+            assert!(e.reached_server, "HTTP {status} is an answer");
         }
         assert!(!IngestError::transient("net down").permanent);
         assert!(IngestError::permanent("rejected").permanent);
+        // Only a reply from the server counts as reaching it: a transport
+        // failure must not feed the knowledge lane's head-of-line clock.
+        assert!(!IngestError::transient("net down").reached_server);
+        assert!(IngestError::permanent("rejected").reached_server);
     }
 
     /// The exact shape of a CI-Server validation rejection that quotes the
@@ -863,31 +981,105 @@ mod tests {
     }
 
     #[test]
-    fn a_rejected_event_keeps_its_index_and_drops_its_prose() {
-        // Mirrors the `body.rejected.first()` branch in `post_capture_event`.
-        let prose = RejectedEvent {
-            index: 0,
-            reason: "description quoted /Users/liam/notes/q3-comp-review.md".into(),
+    fn a_rejected_batch_is_transient_and_drops_its_prose() {
+        // CI-Server answers a failed materialize step with HTTP 200 and every
+        // fresh index in `rejected[]`, having compensated its capture log —
+        // so the verdict is "re-send", never "park", and the server's free
+        // text about our event must not survive into the message.
+        let body = IngestEventsResponse {
+            ingested: 0,
+            duplicate: 0,
+            rejected: vec![RejectedEvent {
+                index: 0,
+                reason: "description quoted /Users/liam/notes/q3-comp-review.md".into(),
+            }],
         };
-        let msg = IngestError::permanent(format!(
-            "event ingest rejected event {}{}",
-            prose.index,
-            error_code_suffix(&prose.reason)
-        ))
-        .to_string();
-        assert!(!msg.contains("q3-comp-review"), "{msg}");
-        assert!(msg.contains("event 0"), "{msg}");
-
-        let coded = RejectedEvent {
-            index: 3,
-            reason: "duplicate_source_id".into(),
-        };
-        let msg = format!(
-            "event ingest rejected event {}{}",
-            coded.index,
-            error_code_suffix(&coded.reason)
+        let err = rejected_batch_error(&body, 1);
+        assert!(!err.permanent, "{err}");
+        assert!(
+            err.reached_server,
+            "a 200 with rejected[] is the server's own verdict, not an outage"
         );
-        assert_eq!(msg, "event ingest rejected event 3 — duplicate_source_id");
+        let msg = err.to_string();
+        assert!(!msg.contains("q3-comp-review"), "{msg}");
+        assert!(msg.contains("rejected 1 of 1"), "{msg}");
+
+        let coded = IngestEventsResponse {
+            ingested: 0,
+            duplicate: 2,
+            rejected: vec![
+                RejectedEvent {
+                    index: 3,
+                    reason: "duplicate_source_id".into(),
+                },
+                RejectedEvent {
+                    index: 4,
+                    reason: "duplicate_source_id".into(),
+                },
+            ],
+        };
+        let msg = rejected_batch_error(&coded, 7).to_string();
+        assert_eq!(
+            msg,
+            "event ingest rejected 2 of 7 event(s) for re-send (first index 3) — duplicate_source_id (transient)"
+        );
+    }
+
+    /// The schema requires `events.min(1)`; an empty POST would be a 400 the
+    /// caller could only read as a payload rejection. Answered locally, and
+    /// before any credential/URL setup so an unconfigured config is fine.
+    #[tokio::test]
+    async fn an_empty_batch_is_acked_locally_without_a_request() {
+        let ack = post_capture_events(&AppConfig::default(), &[])
+            .await
+            .expect("empty batch");
+        assert_eq!(ack, BatchAck::default());
+    }
+
+    /// `ended_at` rides the same zod-null trap as `description`: absent is
+    /// fine, `null` fails the whole batch. `None` must therefore vanish from
+    /// the wire, and `Some` must appear under the exact server key.
+    #[test]
+    fn ended_at_is_omitted_when_none_and_named_when_some() {
+        let mut event = CaptureEvent {
+            source_system: "ci-applet",
+            source_id: "knowledge:test".into(),
+            kind: "knowledge_app_usage".into(),
+            occurred_at: "2026-09-14T07:00:00.000Z".into(),
+            ended_at: None,
+            observed_at: None,
+            title: None,
+            description: None,
+            payload: serde_json::json!({}),
+            capture_tick_id: None,
+        };
+        let wire = serde_json::to_value(&event).unwrap();
+        assert!(wire.get("ended_at").is_none(), "{wire}");
+        assert!(wire.get("description").is_none(), "{wire}");
+
+        event.ended_at = Some("2026-09-14T07:12:00.000Z".into());
+        let wire = serde_json::to_value(&event).unwrap();
+        assert_eq!(wire["ended_at"], "2026-09-14T07:12:00.000Z");
+        // The request envelope borrows a slice and serializes as `events: [...]`.
+        let req = serde_json::to_value(IngestEventsRequest {
+            events: std::slice::from_ref(&event),
+        })
+        .unwrap();
+        assert_eq!(req["events"].as_array().map(Vec::len), Some(1));
+    }
+
+    /// CI-Server validates timestamps with `z.string().datetime()` and no
+    /// `offset` option: only a trailing `Z` passes. This is the one formatter
+    /// every lane routes through, so it is pinned here.
+    #[test]
+    fn wire_ts_is_utc_with_a_trailing_z() {
+        let ts = wire_ts(1_789_456_800_000).expect("in range");
+        assert_eq!(ts, "2026-09-15T07:20:00.000Z");
+        assert!(ts.ends_with('Z'));
+        assert!(
+            wire_ts(i64::MAX).is_none(),
+            "out-of-range must be None, not now()"
+        );
     }
 
     #[test]

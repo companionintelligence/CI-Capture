@@ -1,7 +1,7 @@
 mod analysis;
-mod brand;
 mod backlog;
 mod bluebubbles;
+mod brand;
 mod capture;
 mod capture_store;
 mod config;
@@ -13,6 +13,7 @@ mod extractors;
 mod file_tracker;
 mod helper_window;
 mod imessage;
+mod knowledge;
 mod locale;
 #[cfg(feature = "legacy-minio")]
 mod minio;
@@ -124,6 +125,16 @@ fn main() -> Result<()> {
 
     if std::env::args().any(|arg| arg == "--import-imessage-once") {
         imessage::import_once::run()?;
+        return Ok(());
+    }
+
+    if std::env::args().any(|arg| arg == "--check-knowledge") {
+        knowledge::check::run()?;
+        return Ok(());
+    }
+
+    if std::env::args().any(|arg| arg == "--import-knowledge-once") {
+        knowledge::import_once::run()?;
         return Ok(());
     }
 

@@ -6,7 +6,7 @@
 
 ## 1. What the applet is now
 
-A macOS menu-bar applet that grows your **Companion Memory** through three
+A macOS menu-bar applet that grows your **Companion Memory** through four
 capture lanes that share one worker runtime, config, identity, and CI-Server
 connection:
 
@@ -15,6 +15,7 @@ connection:
 | **Screenshots** (existing) | Diff-gated primary-display frames | `POST /api/files/upload` |
 | **vizier** (existing) | System/activity snapshots + diffs | `POST /api/v1/events` |
 | **File tracker** (this work) | Edits to watched folders → fingerprint + Markdown | `POST /api/v1/events` |
+| **Device activity** (macOS, off by default) | `knowledgeC.db` app/media/notification/Bluetooth rows + daily digests | `POST /api/v1/events` |
 
 The file-tracking lane is the answer to *"track the important files I edit and
 let my AI remember them."*
@@ -112,10 +113,15 @@ CI-Server URL.
 - **First-class server endpoint**: richer typed capture schemas on top of
   `/api/v1/events` when the server is ready.
 - **Privacy/intelligence**: see `04-polish.md` and `05-intelligence.md`.
+- **Device activity (macOS)**: a fourth, off-by-default lane that crawls the
+  Mac's own Knowledge store (`knowledgeC.db`) for app-usage, media,
+  notification and Bluetooth spans plus daily per-app digests — see
+  `06-knowledge.md`.
 
 ## 7. Design records
 
 The original per-phase design docs are preserved alongside this overview:
-`02-file-watcher.md`, `03-conversion.md`, `04-polish.md`, `05-intelligence.md`.
-They remain the detailed rationale; this overview is the source of truth for
-what actually shipped.
+`02-file-watcher.md`, `03-conversion.md`, `04-polish.md`, `05-intelligence.md`,
+and `06-knowledge.md` (the device-activity lane, with the empirical findings
+from the macOS Knowledge store that shaped it). They remain the detailed
+rationale; this overview is the source of truth for what actually shipped.

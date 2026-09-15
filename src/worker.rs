@@ -24,6 +24,7 @@ use crate::db::ScreenshotRecord;
 use crate::db::VizierEventRecord;
 use crate::file_tracker;
 use crate::imessage;
+use crate::knowledge;
 #[cfg(feature = "legacy-minio")]
 use crate::minio::MinioUploader;
 use crate::server_ingest;
@@ -134,6 +135,7 @@ async fn run_worker(
     state.restart_file_tracker().await;
     state.restart_bluebubbles().await;
     state.restart_imessage().await;
+    state.restart_knowledge().await;
     let mut interval = build_interval(state.config.capture.screenshot_interval_secs);
 
     loop {
@@ -523,6 +525,9 @@ struct WorkerState {
     bluebubbles: Option<tokio::task::JoinHandle<()>>,
     /// Background task running the local iMessage lane, when active.
     imessage: Option<tokio::task::JoinHandle<()>>,
+    /// Background task running the device-activity (Knowledge) lane, when
+    /// active.
+    knowledge: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl WorkerState {
@@ -554,6 +559,7 @@ impl WorkerState {
             file_tracker: None,
             bluebubbles: None,
             imessage: None,
+            knowledge: None,
         }
     }
 
@@ -678,6 +684,43 @@ impl WorkerState {
         }));
     }
 
+    /// Same lifecycle as [`Self::stop_imessage`].
+    async fn stop_knowledge(&mut self) {
+        if let Some(handle) = self.knowledge.take() {
+            handle.abort();
+            let _ = handle.await;
+            log::info!("knowledge lane stopped");
+        }
+    }
+
+    /// (Re)start the device-activity lane. No-op when
+    /// `knowledge::is_runnable` says no (disabled) — a missing Full Disk
+    /// Access grant is checked and logged once *inside* `knowledge::run`,
+    /// exactly as the imessage lane does.
+    async fn restart_knowledge(&mut self) {
+        self.stop_knowledge().await;
+        if !knowledge::is_runnable(&self.config) {
+            log::debug!(
+                "knowledge lane idle (enabled={})",
+                self.config.knowledge.enabled
+            );
+            return;
+        }
+        let cursor_path = match crate::config::knowledge_cursor_path() {
+            Ok(p) => p,
+            Err(err) => {
+                log::error!("cannot locate knowledge cursor path: {err:?}");
+                return;
+            }
+        };
+        let config = self.config.clone();
+        self.knowledge = Some(tokio::spawn(async move {
+            if let Err(err) = knowledge::run(config, cursor_path).await {
+                log::error!("knowledge lane terminated: {err:?}");
+            }
+        }));
+    }
+
     async fn handle_command(
         &mut self,
         command: WorkerCommand,
@@ -704,6 +747,9 @@ impl WorkerState {
                 let imessage_changed = self.config.imessage != config.imessage
                     || self.config.identity != config.identity
                     || self.config.server != config.server;
+                let knowledge_changed = self.config.knowledge != config.knowledge
+                    || self.config.identity != config.identity
+                    || self.config.server != config.server;
 
                 self.config = *config;
                 self.publish_sweep_context();
@@ -726,6 +772,9 @@ impl WorkerState {
                 if imessage_changed && self.is_active() {
                     self.restart_imessage().await;
                 }
+                if knowledge_changed && self.is_active() {
+                    self.restart_knowledge().await;
+                }
             }
             WorkerCommand::Pause => {
                 self.paused = true;
@@ -734,6 +783,7 @@ impl WorkerState {
                 self.stop_file_tracker().await;
                 self.stop_bluebubbles().await;
                 self.stop_imessage().await;
+                self.stop_knowledge().await;
             }
             WorkerCommand::Resume => {
                 self.paused = false;
@@ -742,6 +792,7 @@ impl WorkerState {
                 self.restart_file_tracker().await;
                 self.restart_bluebubbles().await;
                 self.restart_imessage().await;
+                self.restart_knowledge().await;
             }
             WorkerCommand::CaptureNow => {
                 let capture_tick_id = Uuid::new_v4();
@@ -759,6 +810,7 @@ impl WorkerState {
                 self.stop_file_tracker().await;
                 self.stop_bluebubbles().await;
                 self.stop_imessage().await;
+                self.stop_knowledge().await;
                 return Ok(true);
             }
         }

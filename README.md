@@ -21,8 +21,9 @@
 - **Screenshots** of the primary display on an interval — diff‑gated (skips near‑identical frames), screensaver‑aware, then run through vision analysis.
 - **System activity** via the embedded **`vizier`** perception engine — structured snapshots of the machine/user/environment: foreground app & window, working directory, network connections, and live filesystem deltas.
 - **File edits** in folders you choose — the Capture watches them, fingerprints changed files, converts the ones it can to Markdown, and streams the result so **your AI can remember the files you work on**. See [File tracking](#file-tracking).
+- **Device activity** (macOS, off by default) — reads the Mac's own first‑party activity log (`knowledgeC.db`) for which app was frontmost and for how long, media playback, notifications received, and Bluetooth connections, and adds a daily per‑app digest ("Chrome for 5 h 12 min across 231 sessions"). Needs Full Disk Access; never reads URLs, MAC addresses, or notification bodies. See [`docs/plan/06-knowledge.md`](docs/plan/06-knowledge.md).
 
-All three streams go to your CI‑Server's Companion Memory portal over an OIDC‑issued bearer token.
+All four streams go to your CI‑Server's Companion Memory portal over an OIDC‑issued bearer token.
 
 ```mermaid
 flowchart LR
@@ -30,10 +31,12 @@ flowchart LR
         SHOT["📸 Screenshots"]
         VIZ["🧭 vizier activity"]
         FILE["📄 File edits"]
+        KNOW["🧠 Device activity<br/>(macOS, opt‑in)"]
     end
     SHOT -->|"/api/files/upload"| CI[("CI‑Server<br/>Companion Memory")]
     VIZ  -->|"/api/v1/events"| CI
     FILE -->|"/api/v1/events"| CI
+    KNOW -->|"/api/v1/events"| CI
 ```
 
 ## Screenshots

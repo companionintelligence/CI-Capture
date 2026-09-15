@@ -29,7 +29,8 @@ flowchart LR
         SHOT["Screenshots"]
         VIZ["System activity"]
         FILE["File edits"]
-        APP --> SHOT & VIZ & FILE
+        KNOW["Device activity<br/>(macOS, opt-in)"]
+        APP --> SHOT & VIZ & FILE & KNOW
     end
 
     subgraph Server["your CI-Server appliance"]
@@ -50,13 +51,14 @@ flowchart LR
     SHOT -->|"POST /api/files/upload<br/>then PATCH /api/files/:id"| CI
     VIZ  -->|"POST /v1/events<br/>kind=vizier_*"| CI
     FILE -->|"POST /v1/events<br/>kind=file_event"| CI
+    KNOW -->|"POST /v1/events<br/>kind=knowledge_*"| CI
 
     MEM -->|"POST /memory/recall"| HER
     MEM -->|"POST /memory/recall"| OC
     MEM -->|"scoped API key"| OTHER
 
     classDef lane fill:#1f6feb22,stroke:#1f6feb;
-    class SHOT,VIZ,FILE lane;
+    class SHOT,VIZ,FILE,KNOW lane;
 ```
 
 Two facts about this picture are worth stating before anything else.
@@ -156,6 +158,7 @@ drives retrieval far better than it drives generation.
 | **File edits** | Absolute path, event type, sha256/size/mtime/inode, and up to 4 KiB of extracted Markdown in `description`; the same Markdown in `payload`, itself capped at `max_content_bytes` (256 KiB by default, [`src/config.rs:180,191`](../src/config.rs)) | `POST /v1/events`, fallback `/api/v1/events`, `kind=file_event` ([`src/server_ingest.rs:216-260`](../src/server_ingest.rs)) | Content questions. "What did I write in the deploy notes?" matches on the file's actual text, and the recall line returns the path plus the first 120 chars |
 | **Screenshots** | The PNG (to object storage) plus a vision-model `title` and `description` written by a separate `PATCH` | `POST /api/files/upload`, fallback `/files/upload`; then `PATCH /api/files/{id}` ([`src/server_ingest.rs:132-195`, `:454`](../src/server_ingest.rs)) | Text-about-the-image questions only. "Was I in Figma this afternoon?" The image itself is never retrievable — `FilesController` has no download or thumbnail route, only `upload` and `PATCH :id` (`CI-Server/docs/api/rest.md:17`) |
 | **System activity (vizier)** | `title` = focus window title, `description` = focus app. Everything substantive — the full `Observation` on a session's first event, a diff envelope on every later one ([`src/worker.rs:626-641`](../src/worker.rs)), plus `cwd`, `fs_event_count`, `monotonic_ms`, session/device ids — goes into `payload` | `POST /v1/events`, fallback `/api/v1/events`, `kind=vizier_snapshot` / `vizier_patch` ([`src/server_ingest.rs:297-343`](../src/server_ingest.rs)) | Presence questions, and only those. "Was Slack open yesterday?" The snapshot contents are unreachable, because the indexer never reads `payload` |
+| **Device activity (macOS, off by default)** | One event per Knowledge-store row — `title` = `Used Google Chrome for 12 min` / `AirPods Pro connected for 3 h 10 min` / `Notification from Slack`, `description` = app or device name, `occurred_at` **and** `ended_at` — plus, once a local day is provably complete, one `knowledge_daily_app_usage` per app and one `knowledge_daily_summary` (`title` = `2026-09-14: Google Chrome for 5 h 12 min across 231 sessions`). Bundle id, duration, session counts and shares ride in `payload` | `POST /v1/events`, fallback `/api/v1/events`, `kind=knowledge_app_usage` / `knowledge_media_usage` / `knowledge_notification` / `knowledge_bluetooth` / `knowledge_daily_app_usage` / `knowledge_daily_summary` (`src/knowledge/facts.rs`) | Duration and presence questions whose answer is in the title. "How long did I use Chrome yesterday?" matches the daily digest; "When were my AirPods connected?" matches the span event and its timestamps. Never URLs (Safari is domain-only and opt-in), never Bluetooth addresses, never password-manager apps — see [`plan/06-knowledge.md`](plan/06-knowledge.md) §7 |
 
 The screenshot row has a failure mode worth knowing. When local vision analysis
 is configured, the applet uploads the PNG and *then* PATCHes title/description

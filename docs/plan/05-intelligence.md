@@ -61,7 +61,7 @@ flowchart LR
 
 ## 6. Out of scope (do not pull these in)
 
-- Anything from issue #4 §4 "Out of scope" — kernel-level monitoring, browser history, keystroke logging, process surveillance.
+- Anything from issue #4 §4 "Out of scope" — kernel-level monitoring, browser history (sole sanctioned exception: opt-in Safari *domain* totals via knowledgeC, no URLs — see [`06-knowledge.md`](06-knowledge.md)), keystroke logging, process surveillance.
 - Generating summaries client-side. Summaries need the full corpus; do them on CI-Server.
 - Storing chat history with the digital twin. CI-Portal owns the user-facing chat surface.
 
