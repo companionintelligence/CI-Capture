@@ -24,10 +24,11 @@ white on dark surfaces and keep clear space ≈ 25% of its height around it.
 
 ## Palette
 
-The app renders the **CI-Common canonical tokens** (`@companionintelligence/tokens`
-v0.2.1), transcribed in [`src/tokens.rs`](../../src/tokens.rs) and given semantic
-names in [`src/theme.rs`](../../src/theme.rs). Both modes are live and follow the
-OS appearance — there is no pinned mode.
+The app renders the **CI-Common canonical tokens** (`@companionintelligence/tokens`,
+currently vendored at `vendor/brand/.version`), transcribed in
+[`src/tokens.rs`](../../src/tokens.rs) and given semantic names in
+[`src/theme.rs`](../../src/theme.rs). Both modes are live and follow the OS
+appearance — there is no pinned mode.
 
 > Treat `src/tokens.rs` as the source of truth. The table below is a reading aid;
 > if the two disagree, the Rust is right. Don't introduce a hex here that isn't a
@@ -52,8 +53,8 @@ banner, diagrams, and the in-app flow animation.
 | Lane | Dark | Light |
 |------|------|-------|
 | **Screenshots** | `#70a6af` | `#ffb900` |
-| **Activity** | `#409b9b` | `#009689` |
-| **File edits** | `#58ebbf` | `#f54900` |
+| **Activity** | `#409b9b` | `#0a6358` |
+| **File edits** | `#c5e8dc` | `#ff3f00` |
 
 ### Status
 
