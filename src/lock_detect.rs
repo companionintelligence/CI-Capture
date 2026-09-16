@@ -55,6 +55,47 @@ mod imp {
         fn CGSessionCopyCurrentDictionary() -> CFDictionaryRef;
     }
 
+    /// What the session server answered, with "there was no session
+    /// dictionary at all" kept distinct from "there was one and it says
+    /// unlocked".
+    ///
+    /// `is_locked` collapses this to a bool and both of the non-`Unlocked`
+    /// arms become `true`, which is the right call for the capture gate but
+    /// throws away the one distinction a *test* needs. A `true` from
+    /// `is_locked` alone cannot tell "the screen is genuinely locked" from
+    /// "this probe is broken and returned nothing" — they are the same
+    /// value. Keeping the three states separate here means the suite can
+    /// assert the probe reached a real session dictionary without also
+    /// asserting that whoever is running the tests has not locked their
+    /// screen. See this module's tests.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(super) enum SessionLockState {
+        /// No session dictionary: no user attached to this console session
+        /// (fast-user-switched away, or running headless over SSH with no
+        /// logged-in GUI user) — or the probe itself failed.
+        NoSession,
+        /// A real session dictionary that does not report a locked screen.
+        Unlocked,
+        /// A real session dictionary reporting `CGSSessionScreenIsLocked`.
+        Locked,
+    }
+
+    impl SessionLockState {
+        /// Only a dictionary that exists *and* reports an unlocked screen
+        /// counts as unlocked. `NoSession` folds in with `Locked`
+        /// deliberately: there is certainly no unlocked desktop to
+        /// screenshot in that state, so the gate errs toward capturing
+        /// nothing rather than treating "we don't know" as permission to
+        /// capture.
+        ///
+        /// Split from `is_locked` below so the contract is a pure function
+        /// over the three states — testable on any machine, in any lock
+        /// state, without going near CoreFoundation.
+        pub(super) fn is_locked(self) -> bool {
+            !matches!(self, SessionLockState::Unlocked)
+        }
+    }
+
     /// `pgrep -x ScreenSaverEngine` (the previous check) is false whenever the
     /// screen is locked via `loginwindow` without a screen saver ever having
     /// started — the ordinary result of Lock Screen / closing the lid /
@@ -62,7 +103,7 @@ mod imp {
     /// `CGSSessionScreenIsLocked` out of the session dictionary answers the
     /// question `loginwindow` itself is authoritative about, regardless of
     /// how the lock was triggered.
-    pub(super) fn is_locked() -> bool {
+    pub(super) fn session_lock_state() -> SessionLockState {
         // SAFETY: `CGSessionCopyCurrentDictionary` follows CF's "create rule" —
         // a non-null return is a +1 reference this scope owns and must
         // release exactly once, which the `CFRelease` at the end of every
@@ -72,13 +113,7 @@ mod imp {
         unsafe {
             let dict = CGSessionCopyCurrentDictionary();
             if dict.is_null() {
-                // No session dictionary at all means no user is attached to
-                // this console session (fast-user-switched away, or the
-                // process is running headless over SSH with no logged-in
-                // GUI user) — there is certainly no unlocked desktop to
-                // screenshot, so this counts as locked rather than as "we
-                // don't know".
-                return true;
+                return SessionLockState::NoSession;
             }
 
             let key = CFString::new("CGSSessionScreenIsLocked");
@@ -96,8 +131,18 @@ mod imp {
             };
 
             CFRelease(dict.cast());
-            locked
+            if locked {
+                SessionLockState::Locked
+            } else {
+                SessionLockState::Unlocked
+            }
         }
+    }
+
+    /// The module-level probe: ask the session server, then collapse the
+    /// answer through [`SessionLockState::is_locked`].
+    pub(super) fn is_locked() -> bool {
+        session_lock_state().is_locked()
     }
 
     /// `vizier::observer::macos::idle_ms` already shells out to
@@ -266,19 +311,68 @@ mod tests {
         let _ = idle_ms();
     }
 
-    /// On this Mac (verified live, unlocked), the real CoreFoundation probe
-    /// must read `false` — the one platform where this suite can assert an
-    /// actual value instead of only "doesn't panic". Gated so it never runs
-    /// on a CI runner where the session state is unknown; see the comment
-    /// on `is_locked_does_not_panic` for why the other platforms stop
-    /// there.
+    /// The gate's contract, as a pure mapping over the three states the
+    /// probe can report — no machine state involved, so this runs
+    /// everywhere, including on CI and on a locked laptop.
+    ///
+    /// The load-bearing arm is `NoSession`. It has to read as locked: if
+    /// "we could not ask" ever became "not locked", a fast-user-switched or
+    /// headless Mac would start feeding the capture pipeline from a desktop
+    /// nobody is looking at.
     #[test]
     #[cfg(target_os = "macos")]
-    fn macos_reports_unlocked_on_a_live_interactive_session() {
-        if std::env::var_os("CI").is_some() {
+    fn macos_only_a_real_unlocked_session_counts_as_unlocked() {
+        use super::imp::SessionLockState;
+
+        assert!(!SessionLockState::Unlocked.is_locked());
+        assert!(SessionLockState::Locked.is_locked());
+        assert!(
+            SessionLockState::NoSession.is_locked(),
+            "a missing session dictionary must err toward locked, never toward capturing"
+        );
+    }
+
+    /// The live half: the CoreFoundation probe must actually reach a session
+    /// dictionary on a real Mac. This is what catches the plumbing breaking
+    /// — a bad framework link, a renamed symbol, a sandbox that refuses the
+    /// call — all of which surface as `NoSession`.
+    ///
+    /// It deliberately asserts *which* of the three states this is not,
+    /// rather than what `is_locked()` returns. An earlier version asserted
+    /// `!is_locked()`, which failed whenever the developer's screen happened
+    /// to be locked while the suite ran — a real flake on an unattended
+    /// machine, and one that conflated "the probe is broken" with "the
+    /// screen is locked", since `is_locked` returns `true` for both. Asking
+    /// only "did we reach a session dictionary at all" keeps the regression
+    /// coverage and holds in either lock state.
+    ///
+    /// Skipped wherever the *precondition* — this process is attached to a
+    /// GUI console session — legitimately does not hold, because a test that
+    /// fails on an unmet precondition is the flake this one is replacing.
+    /// That is CI (a runner may have no console session) and SSH (a remote
+    /// shell is outside the console session even when someone is logged in
+    /// at the Mac, so the call correctly returns null). In both, `NoSession`
+    /// is the right answer rather than a regression. See
+    /// `is_locked_does_not_panic` for why the other platforms stop at "does
+    /// not panic".
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn macos_probe_reaches_a_real_session_dictionary() {
+        use super::imp::{SessionLockState, session_lock_state};
+
+        let no_gui_session = std::env::var_os("CI").is_some()
+            || std::env::var_os("SSH_CONNECTION").is_some()
+            || std::env::var_os("SSH_TTY").is_some();
+        if no_gui_session {
             return;
         }
-        assert!(!is_locked());
+        assert_ne!(
+            session_lock_state(),
+            SessionLockState::NoSession,
+            "the CoreFoundation probe did not reach a session dictionary on a machine \
+             that has one — the framework link or the symbol is broken, which \
+             `is_locked()` alone would have reported indistinguishably from a locked screen"
+        );
     }
 
     /// macOS idle time is read from the same live `ioreg` counter `is_locked`
