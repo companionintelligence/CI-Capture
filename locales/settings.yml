@@ -17,9 +17,23 @@ settings.language.label:
   en: Language
   es: Idioma
 
+# Per-OS siblings: `settings_ui::os_variant` renders `<key>.<os>` (macos /
+# windows / linux, the std::env::consts::OS spelling) when it exists and the
+# base key otherwise. The base must read correctly on any OS without a
+# sibling. "Menu bar" is a Mac word — Windows calls it the system tray and
+# most Linux desktops just "the tray".
+
 settings.language.help:
   en: Save to apply this everywhere, including the menu bar.
   es: Guarda para aplicarlo en todas partes, incluida la barra de menús.
+
+settings.language.help.windows:
+  en: Save to apply this everywhere, including the system tray.
+  es: Guarda para aplicarlo en todas partes, incluida la bandeja del sistema.
+
+settings.language.help.linux:
+  en: Save to apply this everywhere, including the tray.
+  es: Guarda para aplicarlo en todas partes, incluida la bandeja.
 
 # ── Window chrome ─────────────────────────────────────────────────────────
 
@@ -31,7 +45,13 @@ settings.sidebar.subtitle:
   en: Settings
   es: Configuración
 
+# Three lanes everywhere; the fourth (device activity, `knowledgeC.db`) only
+# exists on macOS, and Settings hides its row and toggle elsewhere.
 settings.sidebar.lanes:
+  en: 3 lanes
+  es: 3 canales
+
+settings.sidebar.lanes.macos:
   en: 4 lanes
   es: 4 canales
 
@@ -136,7 +156,12 @@ settings.status.needs_memory.detail:
   en: Signed in — we couldn't find a Companion Memory on your account yet
   es: Sesión iniciada — aún no encontramos un Companion Memory en tu cuenta
 
+# "this Mac" only on a Mac; the base says "this computer" for everyone else.
 settings.backlog.disconnected.title:
+  en: Screenshots are waiting on this computer
+  es: Hay capturas esperando en este equipo
+
+settings.backlog.disconnected.title.macos:
   en: Screenshots are waiting on this Mac
   es: Hay capturas esperando en este Mac
 
@@ -149,6 +174,10 @@ settings.backlog.stuck.title:
   es: Las capturas no están llegando a Memory
 
 settings.backlog.stuck.detail:
+  en: "%{count} screenshots (%{size}) are still on this computer. Check the connection above."
+  es: "%{count} capturas (%{size}) siguen en este equipo. Comprueba la conexión arriba."
+
+settings.backlog.stuck.detail.macos:
   en: "%{count} screenshots (%{size}) are still on this Mac. Check the connection above."
   es: "%{count} capturas (%{size}) siguen en este Mac. Comprueba la conexión arriba."
 
@@ -157,10 +186,18 @@ settings.backlog.files:
   es: "También hay %{count} ediciones de archivos esperando."
 
 settings.backlog.files_only.disconnected.title:
+  en: File edits are waiting on this computer
+  es: Hay ediciones de archivos esperando en este equipo
+
+settings.backlog.files_only.disconnected.title.macos:
   en: File edits are waiting on this Mac
   es: Hay ediciones de archivos esperando en este Mac
 
 settings.backlog.files_only.disconnected:
+  en: "%{count} file edits are sitting on this computer and will not reach Memory until you reconnect."
+  es: "%{count} ediciones de archivos están en este equipo y no llegarán a Memory hasta que vuelvas a conectar."
+
+settings.backlog.files_only.disconnected.macos:
   en: "%{count} file edits are sitting on this Mac and will not reach Memory until you reconnect."
   es: "%{count} ediciones de archivos están en este Mac y no llegarán a Memory hasta que vuelvas a conectar."
 
@@ -390,6 +427,14 @@ settings.connection.oidc.help:
   en: Sign in from the menu bar — it opens your browser and fills the rest in.
   es: Inicia sesión desde la barra de menús — abre tu navegador y rellena el resto.
 
+settings.connection.oidc.help.windows:
+  en: Sign in from the system tray — it opens your browser and fills the rest in.
+  es: Inicia sesión desde la bandeja del sistema — abre tu navegador y rellena el resto.
+
+settings.connection.oidc.help.linux:
+  en: Sign in from the tray — it opens your browser and fills the rest in.
+  es: Inicia sesión desde la bandeja — abre tu navegador y rellena el resto.
+
 settings.connection.oidc.details:
   en: Sign-in details
   es: Detalles de inicio de sesión
@@ -468,7 +513,13 @@ settings.capture.lane.screens.title:
   en: Screens
   es: Pantallas
 
+# Lock detection (`worker::is_capture_blocked`) exists only on macOS, so the
+# "Paused while locked" promise is made only there.
 settings.capture.lane.screens.detail:
+  en: Your main display, skipping frames that barely changed.
+  es: Tu pantalla principal, omitiendo los fotogramas que apenas cambian.
+
+settings.capture.lane.screens.detail.macos:
   en: Your main display, skipping frames that barely changed. Paused while locked.
   es: Tu pantalla principal, omitiendo los fotogramas que apenas cambian. En pausa mientras está bloqueada.
 

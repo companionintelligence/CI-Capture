@@ -68,6 +68,7 @@ rust-i18n = "3"
 # see crash payloads. `telemetry.rs` supplies a transport over this crate's own
 # proxy-free client instead.
 sentry = { version = "0.49.0", default-features = false, features = ["backtrace", "contexts", "panic"] }
+sys-locale = "0.3.2"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
@@ -75,6 +76,20 @@ libc = "0.2"
 # Activate an already-open Settings/Setup helper process from the tray.
 [target.'cfg(target_os = "macos")'.dependencies]
 objc = "0.2"
+
+# Off macOS the tray glyph is not a template image, so its colour has to be
+# chosen to suit the panel; `dark-light` reads the desktop's light/dark
+# preference (XDG settings portal on Linux/BSD, `AppsUseLightTheme` on
+# Windows). See `svg_icon::tray_glyph_colour`.
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+dark-light = "3.0.0"
+
+# The Windows taskbar follows `SystemUsesLightTheme`, which `dark-light` does
+# not read (it answers for *apps*); Windows 10's default is a dark taskbar
+# with light apps, so the tray needs the taskbar's own switch. Already in the
+# lock through `dark-light`, so this adds no new code to the build.
+[target.'cfg(windows)'.dependencies]
+winreg = "0.56"
 
 # objc 0.2's macros probe a `cargo-clippy` cfg that isn't a crate feature.
 [lints.rust]

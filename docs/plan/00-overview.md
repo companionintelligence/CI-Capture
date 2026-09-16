@@ -122,6 +122,8 @@ CI-Server URL.
 
 The original per-phase design docs are preserved alongside this overview:
 `02-file-watcher.md`, `03-conversion.md`, `04-polish.md`, `05-intelligence.md`,
-and `06-knowledge.md` (the device-activity lane, with the empirical findings
-from the macOS Knowledge store that shaped it). They remain the detailed
+`06-knowledge.md` (the device-activity lane, with the empirical findings
+from the macOS Knowledge store that shaped it), and `07-cross-platform.md`
+(where every lane stands on Linux and Windows, the ranked parity plan, and the
+quick-win batch that makes the app honest off macOS). They remain the detailed
 rationale; this overview is the source of truth for what actually shipped.

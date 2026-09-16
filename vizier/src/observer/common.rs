@@ -16,7 +16,7 @@ use crate::observation::{
     Bounds, DateTimeInfo, DisplayInfo, FSEvent, FileActivityInfo, FilesystemInfo, GpuInfo,
     HomeTreeEntry, InstalledApp, MachineInfo, MountInfo, NetworkIdentity, Observation, Point,
     RecentActivity, RecentFileInfo, ResourceInfo, RunningProcessInfo, SessionInfo, TerminalCtx,
-    UserInfo, WakeObservation, WindowInfo,
+    UserInfo, WakeObservation,
 };
 use crate::observer::{Observer, ObserverConfig, WakeConfig, Waker};
 use crate::util::net::{collect_active_connections, collect_listening_ports};
@@ -166,54 +166,47 @@ fn notify_event_kind(event: &Event) -> String {
 }
 
 impl Observer for BaselineObserver {
+    /// The portable snapshot: filesystem deltas, network connections, and the
+    /// host process's shell/cwd. It deliberately reports **no focus and no
+    /// windows** — the baseline has no way to see the desktop, and the native
+    /// observers (`macos.rs`, Hyprland in `linux.rs`) layer real windows on top
+    /// only when they actually find some.
+    ///
+    /// WHY: an earlier revision synthesised a `local-shell` window from
+    /// `$SHELL`/`$TERM` with zero bounds and reported it as the focused window.
+    /// On Windows and every non-Hyprland Linux desktop that fabricated window
+    /// was the *only* focus Memory ever saw, so the activity timeline showed a
+    /// fake terminal all day. Wrong data is worse than no data: an empty
+    /// `windows` list lets the applet skip the tick entirely (see
+    /// `capture_vizier` in the applet's worker) instead of shipping fiction.
     fn snapshot(&mut self) -> Result<Observation> {
         let ts = current_ts();
-        let mut windows = Vec::new();
+        let shell = env::var("SHELL").ok();
 
-        if let Ok(shell) = env::var("SHELL") {
-            windows.push(WindowInfo {
-                id: "local-shell".to_string(),
-                title: env::var("TERM").unwrap_or_else(|_| "Terminal".to_string()),
-                app: env::var("TERM_PROGRAM").unwrap_or_else(|_| "Terminal".to_string()),
-                pid: std::process::id(),
+        // Display placeholder: a single zero-sized primary display when a
+        // shell environment is present, otherwise nothing. Kept as-is so the
+        // native observers' "replace displays only when non-empty" enrichment
+        // behaves exactly as before; the placeholder is never used as focus.
+        let displays = if shell.is_some() {
+            vec![DisplayInfo {
+                id: 0,
                 bounds: Bounds {
                     x: 0,
                     y: 0,
                     w: 0,
                     h: 0,
                 },
-                workspace: 0,
-                is_minimized: false,
-                is_fullscreen: false,
-            });
+                is_primary: true,
+                scale_factor: 1.0,
+            }]
+        } else {
+            Vec::new()
+        };
 
-            let focus = windows.first().cloned();
-            let terminal_ctx = current_terminal_context(Some(shell));
-
-            return Ok(Observation {
-                schema_version: 1,
-                ts,
-                monotonic_ms: self.started_at.elapsed().as_millis() as u64,
-                idle_ms: 0,
-                focus,
-                windows,
-                cursor: Point { x: 0, y: 0 },
-                displays: vec![DisplayInfo {
-                    id: 0,
-                    bounds: Bounds {
-                        x: 0,
-                        y: 0,
-                        w: 0,
-                        h: 0,
-                    },
-                    is_primary: true,
-                    scale_factor: 1.0,
-                }],
-                terminal_ctx,
-                net_connections: collect_active_connections(self.all_connections),
-                fs_events: self.collect_fs_events(),
-            });
-        }
+        // The shell/cwd context describes the observing process itself, which
+        // is genuine information about the host; it is not a window and must
+        // not be promoted to one.
+        let terminal_ctx = shell.and_then(|shell| current_terminal_context(Some(shell)));
 
         Ok(Observation {
             schema_version: 1,
@@ -221,10 +214,10 @@ impl Observer for BaselineObserver {
             monotonic_ms: self.started_at.elapsed().as_millis() as u64,
             idle_ms: 0,
             focus: None,
-            windows,
+            windows: Vec::new(),
             cursor: Point { x: 0, y: 0 },
-            displays: Vec::new(),
-            terminal_ctx: None,
+            displays,
+            terminal_ctx,
             net_connections: collect_active_connections(self.all_connections),
             fs_events: self.collect_fs_events(),
         })
@@ -722,6 +715,72 @@ fn system_uptime_seconds(now_ts: f64) -> u64 {
             0
         } else {
             raw
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn baseline() -> BaselineObserver {
+        BaselineObserver::new(ObserverConfig {
+            watch_path: Some(std::env::temp_dir()),
+            all_connections: false,
+        })
+    }
+
+    /// The baseline has no desktop access, so it must not invent one: focus is
+    /// `None` and `windows` is empty regardless of `$SHELL`/`$TERM`. This is
+    /// what the applet's "empty observation" skip relies on for Windows and
+    /// non-Hyprland Linux, and it runs identically on all three CI OSes.
+    #[test]
+    fn baseline_snapshot_reports_no_focus_and_no_windows() {
+        let mut observer = baseline();
+        let snapshot = observer.snapshot().expect("snapshot should succeed");
+
+        assert!(
+            snapshot.focus.is_none(),
+            "baseline must not fabricate focus"
+        );
+        assert!(
+            snapshot.windows.is_empty(),
+            "baseline must not fabricate windows (the old synthetic local-shell entry): {:?}",
+            snapshot.windows
+        );
+    }
+
+    /// Consecutive snapshots stay honest too — the first tick primes the
+    /// filesystem watcher and later ticks must not start reporting a window.
+    #[test]
+    fn baseline_snapshot_stays_windowless_across_ticks() {
+        let mut observer = baseline();
+        for _ in 0..3 {
+            let snapshot = observer.snapshot().expect("snapshot should succeed");
+            assert!(snapshot.focus.is_none());
+            assert!(snapshot.windows.is_empty());
+            assert_eq!(snapshot.schema_version, 1);
+        }
+    }
+
+    /// The display placeholder and terminal context are the only
+    /// environment-derived fields left; when `$SHELL` is set both are present,
+    /// and the placeholder display is zero-sized so nothing downstream can
+    /// mistake it for real geometry.
+    #[test]
+    fn baseline_display_placeholder_is_zero_sized_and_follows_shell_env() {
+        let mut observer = baseline();
+        let snapshot = observer.snapshot().expect("snapshot should succeed");
+
+        if env::var("SHELL").is_ok() {
+            assert_eq!(snapshot.displays.len(), 1);
+            let display = &snapshot.displays[0];
+            assert!(display.is_primary);
+            assert_eq!((display.bounds.w, display.bounds.h), (0, 0));
+            assert!(snapshot.terminal_ctx.is_some());
+        } else {
+            assert!(snapshot.displays.is_empty());
+            assert!(snapshot.terminal_ctx.is_none());
         }
     }
 }

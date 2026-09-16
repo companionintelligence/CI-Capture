@@ -38,9 +38,19 @@ upload.auth.signed_in:
 # is 11 characters longer than “Login to Portal”), and it is redundant here —
 # upload.action.upload_needs_auth spells it out verbatim in the Upload
 # button's disabled tooltip, right next to this line.
+# Per-OS siblings (`settings_ui::os_variant`): "menu bar" becomes the system
+# tray on Windows and the tray on Linux.
 upload.auth.signed_out:
   en: Not signed in — choose “Login to Portal” in the menu bar first
   es: No has iniciado sesión — hazlo desde la barra de menús
+
+upload.auth.signed_out.windows:
+  en: Not signed in — choose “Login to Portal” in the system tray first
+  es: No has iniciado sesión — hazlo desde la bandeja del sistema
+
+upload.auth.signed_out.linux:
+  en: Not signed in — choose “Login to Portal” in the tray first
+  es: No has iniciado sesión — hazlo desde la bandeja
 
 upload.action.upload:
   en: Upload
@@ -49,6 +59,14 @@ upload.action.upload:
 upload.action.upload_needs_auth:
   en: "Sign in first: menu bar → “Login to Portal”."
   es: "Inicia sesión primero: barra de menús → «Iniciar sesión en el Portal»."
+
+upload.action.upload_needs_auth.windows:
+  en: "Sign in first: system tray → “Login to Portal”."
+  es: "Inicia sesión primero: bandeja del sistema → «Iniciar sesión en el Portal»."
+
+upload.action.upload_needs_auth.linux:
+  en: "Sign in first: tray → “Login to Portal”."
+  es: "Inicia sesión primero: bandeja → «Iniciar sesión en el Portal»."
 
 upload.action.add_files:
   en: Add Files…
