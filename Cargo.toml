@@ -69,12 +69,15 @@ rust-i18n = "3"
 # proxy-free client instead.
 sentry = { version = "0.49.0", default-features = false, features = ["backtrace", "contexts", "panic"] }
 sys-locale = "0.3.2"
+auto-launch = "0.6.0"
+fd-lock = "4.0.4"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
 # Activate an already-open Settings/Setup helper process from the tray.
 [target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.10.1"
 objc = "0.2"
 
 # Off macOS the tray glyph is not a template image, so its colour has to be
@@ -89,7 +92,31 @@ dark-light = "3.0.0"
 # with light apps, so the tray needs the taskbar's own switch. Already in the
 # lock through `dark-light`, so this adds no new code to the build.
 [target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_System_Threading", "Win32_System_StationsAndDesktops", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_SystemInformation"] }
 winreg = "0.56"
+
+# `org.freedesktop.ScreenSaver.GetActive` over the session bus is the
+# closest thing to a universal lock-state query on Linux (GNOME, KDE and
+# every xscreensaver-compatible frontend implement it); already resolved
+# in the lock via `dark-light`'s own Linux path, so this adds no new
+# code to the dependency graph, only a direct `use`. See `lock_detect`'s
+# Linux `imp` (the probe moved out of `worker::is_locked` into that module).
+#
+# Default features, deliberately. `default-features = false` plus a
+# hand-picked list does not work here, for two reasons that surface only on
+# an actual Linux build — neither one is visible from a macOS dev loop or
+# from `cargo metadata`, which is why this is spelled out rather than
+# trimmed: `zbus::blocking` (this crate's only entry point into zbus) is
+# gated on `blocking-api`, *not* on the similarly-named `blocking`, which is
+# merely the implicit feature for zbus's optional `blocking` *crate*
+# dependency and so resolves without error while leaving the module absent;
+# and zbus `compile_error!`s unless one of `async-io` (its own default) or
+# `tokio` is enabled, which switching defaults off removes. zbus's defaults
+# are exactly `async-io` + `blocking-api`, which is already what the lock
+# carries via `dark-light`, so naming them by hand would only re-spell the
+# default set while implying a narrowing that isn't there.
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = "5.19.0"
 
 # objc 0.2's macros probe a `cargo-clippy` cfg that isn't a crate feature.
 [lints.rust]

@@ -497,6 +497,14 @@ settings.capture.diff.help:
   en: Frames changing less than this are skipped.
   es: Los fotogramas que cambian menos que esto se omiten.
 
+settings.capture.autostart.title:
+  en: Start when you log in
+  es: Iniciar al iniciar sesión
+
+settings.capture.autostart.detail:
+  en: Open Companion Capture automatically the next time you log in.
+  es: Abre Companion Capture automáticamente la próxima vez que inicies sesión.
+
 settings.capture.lanes.label:
   en: Capture lanes
   es: Canales de captura
@@ -513,13 +521,13 @@ settings.capture.lane.screens.title:
   en: Screens
   es: Pantallas
 
-# Lock detection (`worker::is_capture_blocked`) exists only on macOS, so the
-# "Paused while locked" promise is made only there.
+# Lock detection (`lock_detect::is_locked`, via `worker::is_capture_blocked`)
+# is real on every OS this app ships for (macOS, Windows, Linux), so the
+# "Paused while locked" promise is no longer OS-conditioned — it used to be
+# a `.macos`-only sibling of this key, with the base string above making no
+# such promise for Windows/Linux. That conditioning is stale now; the clause
+# lives in the base string below and there is no per-OS sibling.
 settings.capture.lane.screens.detail:
-  en: Your main display, skipping frames that barely changed.
-  es: Tu pantalla principal, omitiendo los fotogramas que apenas cambian.
-
-settings.capture.lane.screens.detail.macos:
   en: Your main display, skipping frames that barely changed. Paused while locked.
   es: Tu pantalla principal, omitiendo los fotogramas que apenas cambian. En pausa mientras está bloqueada.
 

@@ -26,6 +26,7 @@ mod helper_window;
 mod imessage;
 mod knowledge;
 mod locale;
+mod lock_detect;
 #[cfg(feature = "legacy-minio")]
 mod minio;
 mod oidc;
@@ -80,6 +81,7 @@ use upload_ui::run_upload_ui;
 enum AppEvent {
     ReloadConfig,
     OnboardingClosed,
+    UploadClosed,
     PairingFinished { success: bool, message: String },
 }
 
@@ -240,6 +242,66 @@ fn main() -> Result<()> {
         }
     }
 
+    // Single-instance guard: an advisory OS-level file lock, held for the
+    // whole process lifetime, so a second double-click (or a stray login
+    // item plus a manual launch) never spins up a second tray icon, a second
+    // capture worker, and a second `tao`/GTK event loop fighting the first
+    // one for the same tray slot.
+    //
+    // This runs before `WorkerHandle::spawn` and before the event loop is
+    // built, and the order matters in both directions. The worker is the
+    // load-bearing half: it immediately starts the capture, file-tracker,
+    // iMessage and knowledge lanes, which write the same SQLite stores and
+    // cursor files the running instance owns and upload against the same
+    // device identity. Spawning it first and only then discovering the lock
+    // is held would give every duplicate launch a window of two live workers
+    // racing that shared state — exactly what this guard exists to prevent,
+    // so nothing that touches per-install state may be started above it. The
+    // event loop matters for a milder reason: on Linux `tao` initializes GTK
+    // there, and we would rather fail fast than initialize a GUI toolkit
+    // just to tear it straight back down.
+    //
+    // `OpenOptions::write(true)` (not read-only) is required even though the
+    // lock itself is purely advisory: Windows' `LockFileEx`, which `fd-lock`
+    // calls under the hood, needs write access on the underlying handle to
+    // take any lock at all, including what POSIX would treat as a read/write
+    // (shared/exclusive) distinction with no such requirement. Opening
+    // read-only here would work on macOS/Linux and fail silently-ish on
+    // Windows, so it is write-mode everywhere for one code path across all
+    // three platforms.
+    let lock_path =
+        config::single_instance_lock_path().context("locating the single-instance lock file")?;
+    let lock_file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        // Nothing is ever written to this file — it exists purely to be
+        // locked — so whether an existing one is kept or truncated makes no
+        // behavioural difference. `false` is spelled out anyway because
+        // clippy's `suspicious_open_options` wants `create` + `write` to
+        // state its truncation intent explicitly rather than leave it to
+        // the platform default.
+        .truncate(false)
+        .open(&lock_path)
+        .with_context(|| format!("opening {}", lock_path.display()))?;
+    let mut instance_lock = fd_lock::RwLock::new(lock_file);
+    // Bound in `main`'s own scope, not passed anywhere else: `event_loop.run`
+    // below never returns (it diverges into the OS event loop and the
+    // process exits from inside it), so a binding that lives to the end of
+    // `main`'s lexical scope holds the lock for the entire process lifetime
+    // even though nothing ever explicitly drops it. The leading underscore
+    // only silences the "unused" lint — the OS releases the flock on process
+    // exit regardless of whether the compiler considers the binding "used".
+    let _instance_guard = match instance_lock.try_write() {
+        Ok(guard) => guard,
+        Err(_) => {
+            // Another instance already holds the lock — this is not an
+            // error state, just a duplicate launch. Tell the user and exit
+            // cleanly rather than racing the running instance for the tray.
+            show_error(&t!("tray.error.already_running"));
+            return Ok(());
+        }
+    };
+
     let manager = ConfigManager::new().context("building config manager")?;
     let config = manager
         .load_or_default()
@@ -280,8 +342,14 @@ fn main() -> Result<()> {
         proxy,
         settings_pid: None,
         onboarding_pid: None,
+        upload_pid: None,
         pairing_in_progress: false,
     };
+
+    // Idempotent, and run unconditionally on every startup rather than only
+    // when the toggle flips — see `sync_autostart`'s doc comment for why a
+    // moved binary or a manually-deleted login item needs this to self-heal.
+    sync_autostart(initial_config.autostart.enabled);
 
     // First run: no credential yet and onboarding never completed → open the
     // setup assistant so the user isn't left with an invisible, unconfigured
@@ -370,6 +438,8 @@ struct AppController {
     settings_pid: Option<u32>,
     /// PID of the live `--onboarding-ui` child, same focus behaviour.
     onboarding_pid: Option<u32>,
+    /// PID of the live `--upload-ui` child, same focus behaviour.
+    upload_pid: Option<u32>,
     pairing_in_progress: bool,
 }
 
@@ -437,6 +507,12 @@ impl AppController {
                     log::error!("failed to reload config after onboarding: {err:?}");
                 }
             }
+            AppEvent::UploadClosed => {
+                // Upload has no config of its own to reload — nothing writes
+                // to config.json from that window — so clearing the PID is
+                // the whole handler, unlike Settings/Onboarding above.
+                self.upload_pid = None;
+            }
             AppEvent::PairingFinished { success, message } => {
                 self.pairing_in_progress = false;
                 if success {
@@ -487,14 +563,37 @@ impl AppController {
         }
     }
 
-    fn open_upload_window(&self) {
+    fn open_upload_window(&mut self) {
+        if let Some(pid) = self.upload_pid {
+            if process_is_running(pid) {
+                // Focus may report false even when the window is already
+                // frontmost — only relaunch when the PID itself is gone.
+                let _ = bring_pid_to_front(pid);
+                return;
+            }
+            // Child is gone but we never got UploadClosed — clear and relaunch.
+            self.upload_pid = None;
+        }
         let Ok(exe) = std::env::current_exe() else {
             show_error(&t!("tray.error.exe_upload"));
             return;
         };
-        if let Err(err) = Command::new(exe).arg("--upload-ui").spawn() {
-            log::error!("failed to launch upload window: {err:?}");
-            show_error(&t!("tray.error.launch_upload"));
+        let proxy = self.proxy.clone();
+        match Command::new(exe).arg("--upload-ui").spawn() {
+            Ok(mut child) => {
+                self.upload_pid = Some(child.id());
+                thread::spawn(move || {
+                    if let Err(err) = child.wait() {
+                        log::error!("upload process failed: {err:?}");
+                    }
+                    let _ = proxy.send_event(AppEvent::UploadClosed);
+                });
+            }
+            Err(err) => {
+                self.upload_pid = None;
+                log::error!("failed to launch upload window: {err:?}");
+                show_error(&t!("tray.error.launch_upload"));
+            }
         }
     }
 
@@ -662,6 +761,11 @@ impl AppController {
         // otherwise the menu bar keeps the old language until the next
         // relaunch, which is exactly the setting the user just changed.
         locale::apply(new_config.ui_language);
+        // The tray owns OS-level side effects on every reload, same as the
+        // language: a Settings toggle must take effect immediately, and
+        // running it unconditionally (not only when the value changed) lets
+        // it self-heal a login item the user deleted by hand outside the app.
+        sync_autostart(new_config.autostart.enabled);
         self.menu_state
             .refresh_labels(&new_config, self.worker.is_running());
         Ok(())
@@ -1042,12 +1146,172 @@ fn bring_pid_to_front(pid: u32) -> bool {
             ok
         }
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    {
+        use windows_sys::Win32::Foundation::{FALSE, HWND, LPARAM, TRUE};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            EnumWindows, GetWindowThreadProcessId, IsWindowVisible, SW_RESTORE,
+            SetForegroundWindow, ShowWindow,
+        };
+        use windows_sys::core::BOOL;
+
+        // Carries the search target in and the result out of `enum_proc`.
+        // `EnumWindows` has no typed way to thread state through its C
+        // callback other than the single `LPARAM` it forwards verbatim, so a
+        // pointer to this struct is round-tripped through it: cast to
+        // `LPARAM` going in below, cast back going out inside `enum_proc`.
+        struct SearchState {
+            target_pid: u32,
+            found: Option<HWND>,
+        }
+
+        // SAFETY (of the `extern "system" fn` itself): `EnumWindows` invokes
+        // this callback synchronously, once per top-level window, entirely
+        // within the single `EnumWindows` call below — it never runs after
+        // that call returns and never runs concurrently on another thread.
+        // That is what makes the `lparam -> &mut SearchState` pointer
+        // round-trip sound: the `SearchState` it points at lives on this
+        // function's stack for the whole `EnumWindows` call, so the pointer
+        // never outlives what it points to.
+        unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
+            // SAFETY: `lparam` is exactly the `&mut SearchState as LPARAM`
+            // passed to `EnumWindows` a few lines below, and per the
+            // reasoning above that reference is still live.
+            let state = unsafe { &mut *(lparam as *mut SearchState) };
+            let mut process_id: u32 = 0;
+            // SAFETY: `hwnd` is a valid top-level window handle supplied by
+            // `EnumWindows` itself; this only writes through the out-pointer
+            // we give it.
+            unsafe {
+                GetWindowThreadProcessId(hwnd, &mut process_id);
+            }
+            // `EnumWindows` walks *every* top-level window, and an egui/eframe
+            // process owns more than the one the user can see: hidden helper
+            // and message-only windows belong to the same PID. Matching on the
+            // PID alone would happily stop at one of those, and
+            // `SetForegroundWindow` on an invisible window is a silent no-op —
+            // the real Settings window would stay buried, which is the exact
+            // bug this helper exists to fix. Requiring `IsWindowVisible` keeps
+            // the enumeration walking until it reaches a window that can
+            // actually come forward.
+            //
+            // SAFETY: same live `hwnd` from `EnumWindows` as above; this only
+            // reads the window's visibility style.
+            if process_id == state.target_pid && unsafe { IsWindowVisible(hwnd) } != FALSE {
+                state.found = Some(hwnd);
+                FALSE // match found — stop enumerating
+            } else {
+                TRUE // keep looking
+            }
+        }
+
+        let mut state = SearchState {
+            target_pid: pid,
+            found: None,
+        };
+        // SAFETY: `enum_proc` matches `WNDENUMPROC`'s required signature and
+        // calling convention, and `&mut state` outlives this call (it is a
+        // local that is not dropped until after `EnumWindows` returns).
+        unsafe {
+            EnumWindows(Some(enum_proc), &mut state as *mut SearchState as LPARAM);
+        }
+        match state.found {
+            Some(hwnd) => {
+                // SAFETY: `hwnd` was handed to us by `GetWindowThreadProcessId`
+                // via a live `EnumWindows` enumeration moments ago, so it
+                // still names a real window handle.
+                unsafe {
+                    ShowWindow(hwnd, SW_RESTORE);
+                    SetForegroundWindow(hwnd) != 0
+                }
+            }
+            None => false,
+        }
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
     {
         let _ = pid;
-        // No reliable cross-process focus helper wired yet — caller still
-        // avoids spawning a duplicate while the PID is alive.
+        // No portable, PID-keyed "raise that window" primitive exists across
+        // Linux's fragmented windowing stack: X11/EWMH (`_NET_ACTIVE_WINDOW`
+        // via a root-window client message), GNOME Shell (its own
+        // `org.gnome.Shell` D-Bus Eval/extension surface), and wlroots
+        // Wayland compositors (no activation protocol keyed by PID at all,
+        // by design — Wayland deliberately withholds cross-client window
+        // control) each need an entirely different mechanism. Picking one
+        // would add a windowing dependency that is dead code on whichever of
+        // those the user is *not* running, for a feature (raising an
+        // already-open Settings window) that degrades gracefully today: the
+        // caller just avoids spawning a duplicate while the PID is alive. A
+        // reliable Linux implementation is left to CI-Engineering #284's
+        // follow-up.
         false
+    }
+}
+
+/// Build the `AutoLaunch` handle for this executable.
+///
+/// `MacOSLaunchMode::LaunchAgent` is chosen over the newer `SMAppService`
+/// deliberately: `SMAppService` requires the binary to live inside a real,
+/// macOS-13+-registered `.app` bundle at `mainApp` scope, which a bare
+/// `cargo run` dev binary is not — every local dev loop and every CI check
+/// that exercises this code would need a full bundle-and-codesign step just
+/// to reach the API. A `LaunchAgent` (a plist dropped in
+/// `~/Library/LaunchAgents/`) works identically whether the target is a dev
+/// binary or a packaged release, so one code path covers both, and testing
+/// this doesn't require a signed bundle.
+fn build_auto_launch(app_path: &str) -> auto_launch::Result<auto_launch::AutoLaunch> {
+    auto_launch::AutoLaunchBuilder::new()
+        .set_app_name(config::APP_NAME)
+        .set_app_path(app_path)
+        .set_args(&[] as &[&str])
+        .set_macos_launch_mode(auto_launch::MacOSLaunchMode::LaunchAgent)
+        .set_linux_launch_mode(auto_launch::LinuxLaunchMode::XdgAutostart)
+        .set_windows_enable_mode(auto_launch::WindowsEnableMode::CurrentUser)
+        .build()
+}
+
+/// Reconcile the OS-level login item with `enabled`.
+///
+/// Called unconditionally on every relevant config load — at tray startup
+/// and after every Settings reload — not only when the toggle actually
+/// flips. That makes it idempotent by construction and lets it self-heal: if
+/// the binary moved (an app update replacing the executable at a new path)
+/// or the user manually deleted the LaunchAgent plist / registry Run key /
+/// XDG autostart `.desktop` file outside the app, the next reload silently
+/// restores the login item to match the saved preference instead of leaving
+/// it stale or gone. Same philosophy as `imessage`'s legacy-cursor-discard
+/// reasoning: derive the OS-visible state from the config every time rather
+/// than trusting a one-shot mutation to have stuck.
+///
+/// Best-effort: a failure here is never fatal to the tray starting or a
+/// Settings save completing, since the applet's core job (capturing and
+/// syncing) is unaffected either way. Every failure is logged so it's
+/// diagnosable, never surfaced as a blocking dialog for what is a background
+/// convenience setting.
+fn sync_autostart(enabled: bool) {
+    let Ok(exe) = std::env::current_exe() else {
+        log::warn!("autostart: could not resolve the running executable path");
+        return;
+    };
+    let Some(exe) = exe.to_str() else {
+        log::warn!("autostart: executable path is not valid UTF-8");
+        return;
+    };
+    match build_auto_launch(exe) {
+        Ok(auto) => {
+            let result = if enabled {
+                auto.enable()
+            } else {
+                auto.disable()
+            };
+            if let Err(err) = result {
+                log::warn!(
+                    "autostart: failed to {} ({err:?})",
+                    if enabled { "enable" } else { "disable" }
+                );
+            }
+        }
+        Err(err) => log::warn!("autostart: could not build the launcher ({err:?})"),
     }
 }
 

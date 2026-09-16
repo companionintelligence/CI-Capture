@@ -439,7 +439,7 @@ impl OnboardingApp {
 
     fn finish(&mut self, ctx: &egui::Context) {
         self.reload_config();
-        self.config.onboarding_completed = true;
+        mark_onboarding_complete(&mut self.config);
         let _ = self.manager.save(&self.config);
         *self.completed.lock() = true;
         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -1000,9 +1000,36 @@ impl eframe::App for OnboardingApp {
     }
 }
 
+/// Everything finishing the wizard changes about the persisted config.
+///
+/// Split out of `OnboardingApp::finish` so it can be tested: `finish` also
+/// needs an `egui::Context` to close the viewport, which a unit test has no
+/// way to build, and the config half is the part with rules worth pinning.
+///
+/// Marking onboarding complete stops the tray auto-reopening the wizard.
+/// Turning autostart on opts a genuinely new install in to "Open at login" —
+/// a capture agent that goes silent after the first reboot is the failure
+/// that setting exists to prevent, and someone who has just walked through
+/// setup is exactly the person who expects it to keep running.
+///
+/// That opt-in belongs *here*, on the once-per-install event, and
+/// deliberately not in `AutostartConfig`'s `Default`. The two are not
+/// interchangeable: `Default` is also what an absent `autostart` key
+/// deserializes to, so defaulting it on there would silently grant a login
+/// item to every `config.json` restored from a backup, synced from another
+/// machine, or simply written before this field existed. See
+/// `AutostartConfig`'s own doc comment. Flipping it here means only a real
+/// first run opts in, and a user who turns it back off in Settings keeps
+/// that choice, because nothing re-runs onboarding.
+fn mark_onboarding_complete(config: &mut AppConfig) {
+    config.onboarding_completed = true;
+    config.autostart.enabled = true;
+}
+
 #[cfg(test)]
 mod tests {
-    use super::Step;
+    use super::{Step, mark_onboarding_complete};
+    use crate::config::AppConfig;
     use crate::permissions;
 
     /// The header draws one chip per visible step. On macOS Screen Recording
@@ -1047,5 +1074,30 @@ mod tests {
         for (i, step) in visible.iter().enumerate() {
             assert_eq!(step.index(), i, "{i}: chip index must match visible order");
         }
+    }
+
+    /// Finishing the wizard must both stop the auto-reopen and opt the new
+    /// install in to "Open at login" — the two writes `finish` makes.
+    #[test]
+    fn finishing_onboarding_completes_it_and_opts_in_to_autostart() {
+        let mut config = AppConfig::default();
+        assert!(!config.onboarding_completed);
+        assert!(!config.autostart.enabled);
+
+        mark_onboarding_complete(&mut config);
+
+        assert!(config.onboarding_completed);
+        assert!(config.autostart.enabled);
+    }
+
+    /// The autostart opt-in must live on the finish event, never on
+    /// `AutostartConfig::default()` — a config with no `autostart` key (a
+    /// restored backup, a machine synced from another install, a file
+    /// written before the field existed) deserializes through `Default` and
+    /// must not silently acquire a login item. This pins the distinction
+    /// `mark_onboarding_complete`'s doc comment relies on.
+    #[test]
+    fn a_default_config_does_not_opt_in_to_autostart_on_its_own() {
+        assert!(!AppConfig::default().autostart.enabled);
     }
 }
