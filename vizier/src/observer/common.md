@@ -6,7 +6,7 @@ Provides baseline cross-platform collectors used as initial implementation and f
 ## Components
 
 ### `BaselineObserver`
-- **Does**: Produces live observations and tracks filesystem event deltas.
+- **Does**: Produces live observations and tracks filesystem event deltas. Reports `focus: None` and an empty `windows` list — it has no desktop access, so it never fabricates a window (an earlier revision synthesised a `local-shell` window from `$SHELL`/`$TERM`, which showed up as a fake all-day terminal on Windows and non-Hyprland Linux). Native observers add real windows on top only when they find some.
 - **Interacts with**: `notify` watcher, `Observation` schema types, net helpers in `util/net.rs`.
 
 ### `BaselineWaker`

@@ -96,6 +96,8 @@ Run the installer (**per‑user**, no admin needed). SmartScreen may warn about 
 Debian/Ubuntu: `sudo apt install ./ci-Capture_*_amd64.deb`. Arch: build/install with the release `PKGBUILD`, or install the generated pacman archive with `sudo pacman -U ./CI-Capture_*.tar.gz`. Any distro: `chmod +x CI-Capture_*.AppImage && ./CI-Capture_*.AppImage`. Needs an **X11** session and an AppIndicator/StatusNotifier tray host (GNOME needs the *AppIndicator* extension). The `.deb` pulls in GTK 3, `libayatana-appindicator3`, `libxdo`, and xcb.
 </details>
 
+> **Known limitations off macOS:** the Activity lane, lock/idle detection, Wayland screenshots, start-at-login and the Device-activity / iMessage lanes are stubbed or macOS-only today — see [`docs/plan/07-cross-platform.md`](docs/plan/07-cross-platform.md) for the per-OS table and plan.
+>
 > Prefer building from source? See [Build](#build).
 
 ### Container image (GitHub Packages)

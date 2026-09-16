@@ -35,14 +35,29 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      # vizier has no [workspace] link to the root crate, so `--manifest-path
+      # vizier/Cargo.toml` builds into vizier/target. rust-cache only saves
+      # `./target` by default; list vizier too or its dependency tree is
+      # rebuilt from scratch on every runner.
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            vizier
 
       - name: Build
         run: cargo build --locked --verbose
 
       - name: Test
         run: cargo test --locked --verbose
+
+      # vizier is a path dependency with its own Cargo.lock (no [workspace]), so
+      # the root `cargo test` compiles it but never runs its tests. Run them on
+      # every OS: the observer code is cfg-gated per platform and the baseline
+      # (Windows / non-Hyprland Linux) path is only exercised off macOS.
+      - name: Test (vizier)
+        run: cargo test --locked --manifest-path vizier/Cargo.toml --verbose
       # The brand canon is vendored (vendor/brand, CI-Common brand bundle); refuse to build on drift.
       - name: Verify the vendored brand bundle
         run: scripts/vendor-brand.sh --check

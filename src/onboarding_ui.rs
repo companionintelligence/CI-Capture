@@ -29,7 +29,7 @@ use parking_lot::Mutex;
 use crate::config::{AppConfig, ConfigManager};
 use crate::{connection_test, permissions, theme, tokens};
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Step {
     Welcome,
     Connect,
@@ -38,14 +38,26 @@ enum Step {
 }
 
 impl Step {
-    /// Steps in order. `Permissions` is skipped at runtime where the OS does not
-    /// gate capture, so the chip row is built from [`Step::visible`].
+    /// Every step in order, including the one the wizard may skip. Navigation
+    /// (`next`/`prev`) and the header chips must never iterate this directly —
+    /// use [`Step::visible`], which drops `Permissions` where the OS does not
+    /// gate capture. Drawing it from here put a phantom "Permission" chip in
+    /// the header on Windows and Linux for a step that was never shown.
     const ALL: [Step; 4] = [
         Step::Welcome,
         Step::Connect,
         Step::Permissions,
         Step::Finish,
     ];
+
+    /// The steps this wizard actually shows, in order: [`Step::ALL`] minus
+    /// `Permissions` wherever [`permissions::permissions_relevant`] is false.
+    /// Evaluated per call so the chip row, `next` and `prev` cannot disagree.
+    fn visible() -> impl Iterator<Item = Step> {
+        Self::ALL
+            .into_iter()
+            .filter(|s| *s != Step::Permissions || permissions::permissions_relevant())
+    }
 
     fn short_label(self) -> String {
         match self {
@@ -68,34 +80,21 @@ impl Step {
         }
     }
 
+    /// Position among the *visible* steps — what the header numbers chips by.
+    /// A skipped `Permissions` step reports 0 rather than a slot the chip row
+    /// does not have; it is never the current step on such a platform.
     fn index(self) -> usize {
-        Self::ALL.iter().position(|s| *s == self).unwrap_or(0)
+        Self::visible().position(|s| s == self).unwrap_or(0)
     }
 
-    /// The next step, skipping `Permissions` on platforms that don't gate capture.
+    /// The next visible step, if any.
     fn next(self) -> Option<Step> {
-        let mut i = self.index() + 1;
-        while let Some(&candidate) = Self::ALL.get(i) {
-            if candidate == Step::Permissions && !permissions::permissions_relevant() {
-                i += 1;
-                continue;
-            }
-            return Some(candidate);
-        }
-        None
+        Self::visible().skip_while(|s| *s != self).nth(1)
     }
 
+    /// The previous visible step, if any.
     fn prev(self) -> Option<Step> {
-        let mut i = self.index();
-        while i > 0 {
-            i -= 1;
-            let candidate = Self::ALL[i];
-            if candidate == Step::Permissions && !permissions::permissions_relevant() {
-                continue;
-            }
-            return Some(candidate);
-        }
-        None
+        Self::visible().take_while(|s| *s != self).last()
     }
 }
 
@@ -458,12 +457,14 @@ impl OnboardingApp {
         });
         ui.add_space(14.0);
 
-        // Named steps, not anonymous dots — two of them, so there is no reason
-        // to make the user guess how far along they are.
+        // Named steps, not anonymous dots — few enough that there is no reason
+        // to make the user guess how far along they are. Only the steps this
+        // platform shows: a chip for a skipped step would count to four and
+        // then jump straight past three.
         let here = self.step.index();
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
-            for (i, label) in Step::ALL.iter().map(|s| s.short_label()).enumerate() {
+            for (i, label) in Step::visible().map(|s| s.short_label()).enumerate() {
                 let (fill, fg) = match i.cmp(&here) {
                     std::cmp::Ordering::Less => (theme::tint(theme::TEAL(), 40), theme::TEAL()),
                     std::cmp::Ordering::Equal => (theme::TEAL(), theme::ON_TEAL()),
@@ -818,7 +819,12 @@ impl OnboardingApp {
         ui.add_space(18.0);
         theme::field_label(ui, &rust_i18n::t!("onboarding.finish.where_label"));
         ui.add_space(8.0);
-        theme::caption(ui, &rust_i18n::t!("onboarding.finish.where_body"));
+        // "Menu bar" is a Mac word; the catalogue carries tray wording for
+        // Windows and Linux and `os_variant` picks the right one.
+        theme::caption(
+            ui,
+            &crate::settings_ui::os_variant("onboarding.finish.where_body"),
+        );
     }
 
     /// One ✓/• line in the finish summary.
@@ -917,7 +923,10 @@ impl OnboardingApp {
                             }
                         }
                         if !self.has_credential() {
-                            theme::caption(ui, &rust_i18n::t!("onboarding.nav.sign_in_later"));
+                            theme::caption(
+                                ui,
+                                &crate::settings_ui::os_variant("onboarding.nav.sign_in_later"),
+                            );
                         }
                     }
                     _ => {
@@ -988,5 +997,55 @@ impl eframe::App for OnboardingApp {
                         });
                     });
             });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Step;
+    use crate::permissions;
+
+    /// The header draws one chip per visible step. On macOS Screen Recording
+    /// gates capture, so the Permission step — and its chip — is real; on
+    /// Windows and Linux the wizard skips the step and must not draw a chip
+    /// for it. This pins the visible list to `permissions_relevant()`, the
+    /// same predicate `next`/`prev` skip on.
+    #[test]
+    fn visible_steps_include_permissions_only_where_the_os_gates_capture() {
+        let visible: Vec<Step> = Step::visible().collect();
+        assert_eq!(
+            visible.contains(&Step::Permissions),
+            permissions::permissions_relevant()
+        );
+        if cfg!(target_os = "macos") {
+            assert_eq!(visible, Step::ALL.to_vec());
+        } else {
+            assert_eq!(visible, vec![Step::Welcome, Step::Connect, Step::Finish]);
+        }
+    }
+
+    /// Walking `next` from the first step must visit exactly the visible
+    /// steps in order and end, and `prev` must retrace it — the chip row,
+    /// the "N of M" numbering and the navigation all read from one list.
+    #[test]
+    fn next_and_prev_walk_exactly_the_visible_steps() {
+        let visible: Vec<Step> = Step::visible().collect();
+
+        let mut forward = vec![visible[0]];
+        while let Some(next) = forward.last().unwrap().next() {
+            forward.push(next);
+        }
+        assert_eq!(forward, visible);
+
+        let mut backward = vec![*visible.last().unwrap()];
+        while let Some(prev) = backward.last().unwrap().prev() {
+            backward.push(prev);
+        }
+        backward.reverse();
+        assert_eq!(backward, visible);
+
+        for (i, step) in visible.iter().enumerate() {
+            assert_eq!(step.index(), i, "{i}: chip index must match visible order");
+        }
     }
 }

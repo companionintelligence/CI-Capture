@@ -495,7 +495,14 @@ jobs:
         shell: bash
         run: |
           mkdir -p release-artifacts
-          find dist -type f \
+          # cargo-packager writes every finished installer (.dmg, .deb,
+          # .AppImage, -setup.exe, the pacman .tar.gz + PKGBUILD) directly
+          # into dist/ and keeps its scratch tree under dist/.cargo-packager/
+          # (the deb staging dir with control.tar.gz / data.tar.gz, the
+          # .AppDir, ...). A recursive find used to sweep those internals into
+          # the GitHub Release as if they were installers, so match only the
+          # top level of dist/. The name list itself is unchanged.
+          find dist -maxdepth 1 -type f \
             \( -name '*.dmg' -o -name '*.deb' -o -name '*.AppImage' -o -name '*.exe' -o -name '*.msi' -o -name '*.rpm' -o -name '*.tar.gz' -o -name '*.pkg.tar.*' -o -name 'PKGBUILD' \) \
             -exec cp {} release-artifacts/ \;
           ls -lh release-artifacts
@@ -542,7 +549,11 @@ jobs:
             fi
             cp "$file" "$dest"
           done < <(
-            find artifacts -type f \
+            # download-artifact (merge-multiple) lays every per-OS artifact
+            # flat in artifacts/, and the build job already restricted them to
+            # top-level installers; keep this glob shallow too so nothing
+            # nested can ever reach the Release.
+            find artifacts -maxdepth 1 -type f \
               \( -name '*.dmg' -o -name '*.deb' -o -name '*.AppImage' -o -name '*.exe' -o -name '*.msi' -o -name '*.rpm' -o -name '*.tar.gz' -o -name '*.pkg.tar.*' -o -name 'PKGBUILD' \) \
               -print0
           )

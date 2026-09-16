@@ -115,10 +115,40 @@ fn match_system(raw: Option<&str>) -> &'static str {
 
 /// Read the host's preferred language.
 ///
-/// macOS answers `AppleLanguages` through `defaults`, which is the only source
-/// that reflects the Language & Region pane; `LANG` is frequently unset for
-/// GUI apps there. Elsewhere the POSIX environment is authoritative.
+/// Sources, in order:
+///
+/// 1. **`sys-locale`**, which asks the OS's own preference API and hands back
+///    BCP-47 tags: `GetUserPreferredUILanguages` on Windows,
+///    `CFLocaleCopyPreferredLanguages` on macOS, and the `LANGUAGE`/`LC_*`/
+///    `LANG` environment on Linux (normalised from `es_ES.UTF-8` to `es-ES`).
+///    This comes first because of Windows: a GUI process launched from the
+///    Start menu or a Run key inherits **no** `LANG`/`LC_*` at all — those are
+///    POSIX conventions the Windows shell never sets — so an environment-only
+///    resolver answered `None`, and "Match my system" was *always* English on
+///    Windows no matter what the Language settings said.
+///
+///    **Linux precedence change.** `sys-locale` consults `LANGUAGE` (gettext's
+///    colon-separated priority list, every entry in order) *before*
+///    `LC_ALL`/`LC_MESSAGES`/`LANG`. The previous env-only resolver never read
+///    `LANGUAGE`, so a host with `LANGUAGE=en_US:en LANG=es_ES.UTF-8` used to
+///    resolve to Spanish and now resolves to English. That matches what
+///    gettext-based desktop apps on the same host display, which is the point
+///    of "Match my system".
+/// 2. macOS `defaults read -g AppleLocale`, kept as a fallback for the case
+///    where the CoreFoundation call yields nothing. It is the Region-format
+///    locale rather than the UI language, which is why it is no longer first:
+///    a Mac with Region = Spain but English as its preferred language used to
+///    resolve to Spanish and now resolves to English.
+/// 3. The POSIX environment, for a non-Windows host where `sys-locale` was
+///    empty — e.g. a launcher that scrubbed the environment.
+///
+/// The `C`/`POSIX` locale is skipped at every layer: it means "no
+/// preference", and honouring it would shadow a real `LANG` further down the
+/// list.
 fn system_language() -> Option<String> {
+    if let Some(locale) = first_usable_locale(sys_locale::get_locales()) {
+        return Some(locale);
+    }
     #[cfg(target_os = "macos")]
     {
         use std::process::Command;
@@ -132,16 +162,24 @@ fn system_language() -> Option<String> {
             return Some(s.trim().to_string());
         }
     }
-    for key in ["LC_ALL", "LC_MESSAGES", "LANG"] {
-        if let Ok(v) = std::env::var(key)
-            && !v.trim().is_empty()
-            && v != "C"
-            && v != "POSIX"
-        {
-            return Some(v);
-        }
-    }
-    None
+    first_usable_locale(
+        ["LC_ALL", "LC_MESSAGES", "LANG"]
+            .into_iter()
+            .filter_map(|key| std::env::var(key).ok()),
+    )
+}
+
+/// The first candidate that actually names a language.
+///
+/// Blank entries and the `C`/`POSIX` locale are skipped rather than returned,
+/// so `LC_ALL=C LANG=es_ES.UTF-8` still resolves to Spanish — `sys-locale`
+/// passes `C` through verbatim and would otherwise win with it. Pure so it can
+/// be tested without touching the environment.
+fn first_usable_locale(candidates: impl IntoIterator<Item = String>) -> Option<String> {
+    candidates
+        .into_iter()
+        .map(|c| c.trim().to_string())
+        .find(|c| !c.is_empty() && c != "C" && c != "POSIX")
 }
 
 /// Apply a language to this process. Call once per window, before first paint.
@@ -162,6 +200,56 @@ mod tests {
         for raw in ["en", "en-GB", "en_US.UTF-8"] {
             assert_eq!(match_system(Some(raw)), "en", "input {raw:?}");
         }
+    }
+
+    /// `sys-locale` answers in BCP-47 (`GetUserPreferredUILanguages` on
+    /// Windows, `CFLocaleCopyPreferredLanguages` on macOS), so the resolver
+    /// must accept hyphenated region tags — not just the POSIX `es_ES.UTF-8`
+    /// shape it was written against.
+    #[test]
+    fn bcp47_tags_from_sys_locale_resolve_to_the_shipped_language() {
+        for raw in ["es-ES", "es-MX", "es-419", "es-Latn-ES"] {
+            assert_eq!(match_system(Some(raw)), "es", "input {raw:?}");
+        }
+        for raw in ["en-US", "en-GB", "en-001"] {
+            assert_eq!(match_system(Some(raw)), "en", "input {raw:?}");
+        }
+        assert_eq!(match_system(Some("fr-CA")), FALLBACK);
+    }
+
+    /// `C`/`POSIX` mean "no preference" and must never shadow a real locale
+    /// further down the list — `sys-locale` passes them through verbatim.
+    #[test]
+    fn the_posix_c_locale_is_skipped_in_favour_of_a_real_one() {
+        let owned = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            first_usable_locale(owned(&["C", "es-ES"])),
+            Some("es-ES".to_string())
+        );
+        assert_eq!(
+            first_usable_locale(owned(&["", "  ", "POSIX", " en-GB "])),
+            Some("en-GB".to_string())
+        );
+        assert_eq!(first_usable_locale(owned(&["C", "POSIX", ""])), None);
+        assert_eq!(first_usable_locale(Vec::<String>::new()), None);
+    }
+
+    /// On Linux `sys-locale` expands `LANGUAGE=en_US:en` ahead of `LANG`, so
+    /// the list it hands over for `LANGUAGE=en_US:en LANG=es_ES.UTF-8` is
+    /// `["en-US", "en", "es-ES"]`. The first entry wins — `LANGUAGE` outranks
+    /// `LANG`, which the old env-only resolver (that never read `LANGUAGE`)
+    /// did not do. Pinned so the precedence cannot drift silently.
+    #[test]
+    fn language_list_entries_outrank_lang_in_sys_locale_order() {
+        let owned = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let first = first_usable_locale(owned(&["en-US", "en", "es-ES"]));
+        assert_eq!(first, Some("en-US".to_string()));
+        assert_eq!(match_system(first.as_deref()), "en");
+        // A `C` at the head of LANGUAGE still yields to the real entries.
+        assert_eq!(
+            first_usable_locale(owned(&["C", "en-US", "es-ES"])),
+            Some("en-US".to_string())
+        );
     }
 
     #[test]

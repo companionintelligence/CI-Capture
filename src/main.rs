@@ -1,3 +1,14 @@
+// A binary built for the console subsystem (Rust's default) gets a console
+// window allocated by the loader *before* `main` runs. For a tray app that
+// means a bare black `cmd`-style window sitting on the taskbar for the whole
+// session, and — because every Settings/Setup/Upload window and every
+// `--check-*` probe is a re-exec of this same binary — one more flash for each
+// helper. Opting into the GUI subsystem removes the console entirely; stdout
+// and stderr then go nowhere, which is why this is release-only: a debug build
+// keeps its console so `RUST_LOG` output stays visible while developing.
+// macOS and Linux ignore the attribute.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 mod analysis;
 mod backlog;
 mod bluebubbles;
@@ -72,7 +83,61 @@ enum AppEvent {
     PairingFinished { success: bool, message: String },
 }
 
+/// Re-attach stdout/stderr to the terminal that launched us, on Windows GUI
+/// builds only.
+///
+/// The `windows_subsystem = "windows"` attribute at the top of this file
+/// removes the console — but `--check-server`, `--login` and the other
+/// headless probes print their report to stdout, and a GUI-subsystem process
+/// launched from PowerShell has none. `AttachConsole(ATTACH_PARENT_PROCESS)`
+/// borrows the parent shell's console when there is one; Rust's stdio looks
+/// the handle up on every write, so anything printed after this call lands in
+/// that terminal. When the tray is launched from Explorer or a Run key there is
+/// no parent console, the call fails, and we carry on windowless — which is
+/// the whole point.
+///
+/// **What this does not fix: the shell does not wait for us.** A
+/// GUI-subsystem exe invoked directly from an interactive `cmd` prompt, or
+/// from PowerShell (interactive, a `.ps1`, or a GitHub Actions `pwsh` step),
+/// is started and immediately backgrounded: the prompt returns first, the
+/// `--check-*` report lands *after* it, and `%ERRORLEVEL%` /
+/// `$LASTEXITCODE` are not updated from our exit status. Only the release
+/// profile is affected (`cargo run -- --check-server` is a console build).
+/// Scripted probes must force a wait — any of:
+///
+/// ```text
+/// cmd /c start /wait "" companion-capture.exe --check-server
+/// $p = Start-Process -FilePath .\companion-capture.exe -ArgumentList '--check-server' `
+///        -Wait -NoNewWindow -PassThru; exit $p.ExitCode
+/// $out = & .\companion-capture.exe --check-server      # capturing output makes pwsh wait
+/// ```
+///
+/// (`cmd` running a `.bat`/`.cmd` file also waits natively.) Note too that
+/// `--check-server` exits 0 whenever config loaded and the runtime built,
+/// even if every probe printed `✗` — a smoke step has to assert on the
+/// captured report, not the exit code alone. Whether stdout redirected to a
+/// pipe/file survives `AttachConsole` when the parent *does* have a console
+/// has not been verified on a runner; if it does not, only call
+/// `AttachConsole` when `GetStdHandle(STD_OUTPUT_HANDLE)` is NULL/invalid.
+#[cfg(all(windows, not(debug_assertions)))]
+fn attach_parent_console() {
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn AttachConsole(process_id: u32) -> i32;
+    }
+    /// `ATTACH_PARENT_PROCESS` is `(DWORD)-1` in `consoleapi.h`.
+    const ATTACH_PARENT_PROCESS: u32 = u32::MAX;
+    // SAFETY: a plain Win32 call with a scalar argument and no pointers; a
+    // failure return is the expected outcome for a tray launch and is ignored.
+    unsafe {
+        AttachConsole(ATTACH_PARENT_PROCESS);
+    }
+}
+
 fn main() -> Result<()> {
+    #[cfg(all(windows, not(debug_assertions)))]
+    attach_parent_console();
+
     let env = Env::default().default_filter_or("info");
     env_logger::Builder::from_env(env).init();
 
@@ -1002,11 +1067,20 @@ fn open_url(url: &str) -> std::io::Result<std::process::ExitStatus> {
     let mut cmd = {
         use std::os::windows::process::CommandExt;
 
+        /// `CREATE_NO_WINDOW` from `processthreadsapi.h`. `cmd.exe` is a
+        /// console program, so without this flag every "Open Memory" or
+        /// "Open Portal" click flashes a black console for the instant it
+        /// takes `start` to hand the URL to the default browser. Spelled out
+        /// rather than pulled from `windows-sys` to keep the direct
+        /// dependency list unchanged; the value is ABI-stable.
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
         // A literal `"` would close our quoting and let the rest of the string
         // reach the shell unquoted. Valid URLs percent-encode it as %22, so
         // dropping it is both safe and the conservative choice.
         let sanitized = url.replace('"', "");
         let mut c = Command::new("cmd");
+        c.creation_flags(CREATE_NO_WINDOW);
         c.raw_arg("/C");
         c.raw_arg("start");
         // `start` reads a leading quoted token as the window title; give it an
