@@ -16,7 +16,7 @@ const APP_QUALIFIER: &str = "com.compint";
 /// identifier changed in the same release, which independently resets macOS
 /// TCC grants, so a partial migration would have left users half-configured
 /// and harder to diagnose than a clean first run.
-const APP_NAME: &str = "Companion Capture";
+pub(crate) const APP_NAME: &str = "Companion Capture";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -312,6 +312,21 @@ impl Default for KnowledgeConfig {
     }
 }
 
+/// "Open at login" — registers (or removes) an OS-level login item that
+/// launches the applet automatically.
+///
+/// Off by default even though onboarding flips it on for new installs: a
+/// `config.json` restored from backup, synced from another machine, or
+/// hand-edited with this section simply absent must not silently gain a new
+/// login item it never asked for. `#[serde(default)]` on `AppConfig` means an
+/// absent `autostart` key deserializes to this `Default` impl, so "absent"
+/// and "explicitly off" must be the same value.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct AutostartConfig {
+    pub enabled: bool,
+}
+
 /// The persisted applet configuration.
 ///
 /// Every config struct in this module — this one and each section — carries a
@@ -345,6 +360,8 @@ pub struct AppConfig {
     #[serde(default)]
     pub imessage: ImessageConfig,
     pub knowledge: KnowledgeConfig,
+    #[serde(default)]
+    pub autostart: AutostartConfig,
     #[serde(default)]
     pub oidc: OidcConfig,
     /// Tokens + claims captured from the last successful portal sign-in.
@@ -400,6 +417,7 @@ impl Default for AppConfig {
             bluebubbles: BlueBubblesConfig::default(),
             imessage: ImessageConfig::default(),
             knowledge: KnowledgeConfig::default(),
+            autostart: AutostartConfig::default(),
             oidc: OidcConfig::default(),
             oidc_session: None,
             onboarding_completed: false,
@@ -621,6 +639,21 @@ pub fn knowledge_rejected_path() -> Result<PathBuf> {
     Ok(data_dir.join("knowledge-rejected.jsonl"))
 }
 
+/// Path to the advisory single-instance lock file. Held (via `fd-lock`) for
+/// the whole process lifetime so a second launch can detect a running
+/// instance and hand off to it instead of starting a duplicate tray/event
+/// loop. Lives in the data dir alongside the other per-install state files
+/// above, not the config dir — it is runtime state, never something a user
+/// would want to hand-edit or sync.
+pub fn single_instance_lock_path() -> Result<PathBuf> {
+    let dirs = ProjectDirs::from(APP_QUALIFIER, APP_QUALIFIER, APP_NAME)
+        .context("locating data directory")?;
+    let data_dir = dirs.data_dir();
+    fs::create_dir_all(data_dir)
+        .with_context(|| format!("creating data dir {}", data_dir.display()))?;
+    Ok(data_dir.join("companion-capture.lock"))
+}
+
 pub fn default_storage_dir() -> Result<PathBuf> {
     let dirs = ProjectDirs::from(APP_QUALIFIER, APP_QUALIFIER, APP_NAME)
         .context("locating storage directory")?;
@@ -652,6 +685,34 @@ mod analysis_default_tests {
 mod rebrand_tests {
     use super::*;
 
+    /// The single-instance lock must sit beside the other per-install runtime
+    /// state, in the data dir — never in the config dir, which is the tree a
+    /// user syncs or hand-edits. A lock file synced between machines is
+    /// meaningless at best; a lock file a user opens in an editor is worse.
+    /// `main` acquires this before spawning the capture worker, so a wrong
+    /// path here is what would let two workers race the same queue DB.
+    #[test]
+    fn the_single_instance_lock_lives_beside_the_other_runtime_state() {
+        let lock = single_instance_lock_path().expect("resolving the lock path");
+        let queue = queue_db_path().expect("resolving the queue db path");
+        assert_eq!(
+            lock.parent(),
+            queue.parent(),
+            "the lock belongs in the data dir next to the queue DB, not the config dir"
+        );
+    }
+
+    /// Every launch must contend for the *same* file, so the path has to be
+    /// derived, not generated — a per-call temp name would hand every
+    /// duplicate launch its own uncontended lock and silently defeat the
+    /// guard while still looking like it worked.
+    #[test]
+    fn the_single_instance_lock_path_is_stable_across_calls() {
+        let first = single_instance_lock_path().expect("resolving the lock path");
+        let second = single_instance_lock_path().expect("resolving the lock path again");
+        assert_eq!(first, second);
+    }
+
     /// A config.json missing whole sections must still load. `load_or_default`
     /// propagates parse errors and `main` treats them as fatal, so without
     /// `#[serde(default)]` on every section a hand-edited or forward-migrated
@@ -670,6 +731,9 @@ mod rebrand_tests {
         assert_eq!(cfg.knowledge.min_session_secs, 30);
         assert_eq!(cfg.knowledge.backfill_days, 30);
         assert!(cfg.knowledge.daily_digest);
+        // A restored config.json without this field must not silently gain
+        // a new login item — see `AutostartConfig`'s doc comment.
+        assert!(!cfg.autostart.enabled);
     }
 
     /// Retiring the minio/postgres sections must not brick existing installs.

@@ -457,6 +457,7 @@ Header: "Capture" / "What gets recorded from this computer, and how often."
 | Interval **+** | `+30`, capped at 86 400 | Always |
 | Interval readout | Large number + "s". Caption "Floored to 30s · default 300s" — the config default is 300 ([src/config.rs:131](../src/config.rs)) and the worker itself floors at `MIN_INTERVAL_SECS = 30` ([src/worker.rs:30](../src/worker.rs), [worker.rs:389-394](../src/worker.rs)) | Display |
 | Diff threshold slider | `Slider::new(…, 0.0..=100.0).show_value(false)`; the value is drawn separately as a large teal number + "%" | Always |
+| **Start when you log in** toggle | "Open Companion Capture automatically the next time you log in." Writes `config.autostart.enabled`; the *tray*, not this window, applies it — `main::sync_autostart` runs on every config reload and registers/removes the login item through `auto-launch` (LaunchAgent plist on macOS, HKCU `Run` on Windows, XDG autostart `.desktop` on Linux). Because it is re-applied on every reload rather than only on change, it also self-heals an entry deleted by hand or a binary that moved | Always. **On by default after onboarding** (`onboarding_ui::mark_onboarding_complete`) but off in `AutostartConfig::default()`, so a `config.json` restored from backup or synced from another machine never silently gains a login item |
 | Lane rows: Screens / Activity / Files | `theme::lane_row` — accent dot, title, subtitle, mono tag. Files is tagged `on` only when `watched_paths` is non-empty | **Display only** — `lane_row` allocates `Sense::hover` and has no click handling ([src/theme.rs:780-802](../src/theme.rs)). **There is no toggle for the Screens or Activity lanes anywhere in this UI** |
 | **Add folder…** (primary) | `tinyfiledialogs::select_folder_dialog("Watch a folder", start)`, starting at the parent of the last watched path → home dir → empty. On pick, also force-sets `file_tracking_enabled = true` | Always |
 | Empty state card | "No folders watched yet — file tracking is off. …" | `watched_paths.is_empty()` |
@@ -484,12 +485,22 @@ The screens and activity lanes have no off switch here because pausing them is
 the tray's job (`Pause Captures`) and their per-lane behaviour is governed by
 interval and threshold rather than a boolean.
 
+The Screens lane's subtitle promises "Paused while locked", and as of
+`clau/xplat-autostart-lock-idle` that is true on every OS rather than macOS
+only — it used to be a `.macos` locale sibling. The screenshot lane is also
+skipped after a full interval with no keyboard or mouse input on macOS and
+Windows; the Activity lane deliberately keeps running through idle time, since
+a build or a video still produces focus/window/fs activity worth timelining.
+Linux has no idle probe, so nothing is skipped there. See
+[`src/lock_detect.rs`](../src/lock_detect.rs) and `worker::is_idle_past_interval`.
+
 | ID | Story |
 |----|-------|
 | **SET-8** | As a **daily user**, I want to pick which folders are watched from a normal folder picker, so that arming the file lane doesn't require editing JSON. |
 | **SET-9** | As a **privacy-minded user**, I want no folder watched until I explicitly add one, so that installing the app never starts reading my documents. |
 | **SET-10** | As a **daily user**, I want to stop file tracking without losing my folder list, so that a temporary pause doesn't cost me the setup. |
 | **SET-11** | As a **user on a metered or slow link**, I want to raise the screenshot interval and the diff threshold, so that I control how much this machine sends. |
+| **SET-12** | As a **daily user**, I want the applet to come back by itself after a reboot, so that a machine that restarts overnight doesn't quietly stop capturing until I notice. |
 
 ### 4.4 Advanced tab
 
@@ -550,7 +561,12 @@ compiled into a default build, so every field in it was inert
 **Entry point:** the tray's "Upload Document…". Title "Upload Documents —
 Companion Capture", 700x600, min 560x440, centered
 ([`src/upload_ui.rs:19-24`](../src/upload_ui.rs)). Single central panel, no
-tabs, **no single-instance guard** — the tray spawns a new window per click.
+tabs. Single-instance via the tray's `upload_pid`, the same guard Settings and
+the wizard use: a second "Upload Document…" raises the live window instead of
+spawning another, and the `UploadClosed` event clears the PID when the child
+exits. Raising is real on macOS and Windows; on Linux the duplicate is still
+suppressed but the window is not brought forward
+([`src/main.rs`](../src/main.rs) `open_upload_window`, `bring_pid_to_front`).
 
 | Control | What it does | Gating |
 |---------|--------------|--------|

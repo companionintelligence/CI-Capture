@@ -250,6 +250,12 @@ tray.error.reload_after_pairing:
   en: Linked account, but failed to reload configuration.
   es: Cuenta vinculada, pero no se pudo recargar la configuración.
 
+# Shown by the single-instance guard when a second launch finds the lock
+# already held; not an error condition, just a duplicate-launch notice.
+tray.error.already_running:
+  en: Companion Capture is already running.
+  es: Companion Capture ya se está ejecutando.
+
 tray.error.exe_settings:
   en: Unable to locate executable for settings window.
   es: No se encontró el ejecutable de la ventana de Ajustes.

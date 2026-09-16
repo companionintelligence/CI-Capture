@@ -160,6 +160,11 @@ pub struct SettingsFormState {
     /// actually arms it.
     pub watched_paths: Vec<PathBuf>,
     pub file_tracking_enabled: bool,
+    /// "Open at login" — registers/removes an OS login item on Save. See
+    /// `crate::config::AutostartConfig` and `main::sync_autostart`, which
+    /// actually applies the toggle (the tray, not this form, owns OS-level
+    /// side effects).
+    pub autostart_enabled: bool,
     /// The device-activity lane (`crate::knowledge`), off by default. Only
     /// the on/off switch is surfaced here; stream selection, floors and the
     /// exclusion lists stay `config.json`-only, since the defaults are the
@@ -237,6 +242,7 @@ impl From<&AppConfig> for SettingsFormState {
             diff_threshold_percent: config.capture.diff_threshold_percent,
             watched_paths: config.file_tracker.watched_paths.clone(),
             file_tracking_enabled: config.file_tracker.enabled,
+            autostart_enabled: config.autostart.enabled,
             knowledge_enabled: config.knowledge.enabled,
             minio_endpoint: config.minio.endpoint.clone(),
             minio_bucket: config.minio.bucket.clone(),
@@ -512,6 +518,7 @@ impl SettingsApp {
         c.capture.diff_threshold_percent = self.form.diff_threshold_percent;
         c.file_tracker.watched_paths = self.form.watched_paths.clone();
         c.file_tracker.enabled = self.form.file_tracking_enabled;
+        c.autostart.enabled = self.form.autostart_enabled;
         c.knowledge.enabled = self.form.knowledge_enabled;
         c.minio = MinioConfig {
             endpoint: self.form.minio_endpoint.clone(),
@@ -2135,6 +2142,14 @@ fn render_capture_tab(
     });
 
     ui.add_space(20.0);
+    changed |= theme::toggle_row(
+        ui,
+        &mut form.autostart_enabled,
+        &rust_i18n::t!("settings.capture.autostart.title"),
+        &rust_i18n::t!("settings.capture.autostart.detail"),
+    );
+
+    ui.add_space(20.0);
     theme::field_label(ui, &rust_i18n::t!("settings.capture.lanes.label"));
     ui.add_space(10.0);
     // Plain language: these rows describe what the user gets, not how it is
@@ -2638,7 +2653,13 @@ mod tests {
             "settings.sidebar.lanes",
             "settings.language.help",
             "settings.connection.oidc.help",
-            "settings.capture.lane.screens.detail",
+            // `settings.capture.lane.screens.detail` lost its `.macos`
+            // sibling: lock detection (`lock_detect::is_locked`) is real on
+            // every OS now, so the "Paused while locked" clause moved into
+            // the base string in locales/settings.yml and there is no
+            // longer a per-OS variant to assert distinctness against — see
+            // this test's own panic message, which is what prompted this
+            // removal.
             "settings.backlog.disconnected.title",
             "settings.backlog.stuck.detail",
             "settings.backlog.files_only.disconnected.title",
@@ -2724,6 +2745,37 @@ mod tests {
         let json = serde_json::to_string(&form).unwrap();
         let back: SettingsFormState = serde_json::from_str(&json).unwrap();
         assert!(back.knowledge_enabled);
+    }
+
+    /// Same reasoning as `knowledge_toggle_hydrates_from_config_in_both_states`:
+    /// the autostart switch must reflect `config.autostart.enabled` in both
+    /// directions, not just render "off" from the form's own default.
+    #[test]
+    fn autostart_toggle_hydrates_from_config_in_both_states() {
+        let config = AppConfig::default();
+        assert!(
+            !config.autostart.enabled,
+            "autostart is off by default; this test assumes that"
+        );
+        assert!(!SettingsFormState::from(&config).autostart_enabled);
+
+        let mut config = AppConfig::default();
+        config.autostart.enabled = true;
+        assert!(SettingsFormState::from(&config).autostart_enabled);
+    }
+
+    /// Same reasoning as `knowledge_toggle_survives_form_serde_round_trip`:
+    /// `SettingsFormState` derives serde like every other form field, so a
+    /// `skip` or a renamed field on `autostart_enabled` would quietly reset
+    /// it to off across a serialize/deserialize round trip.
+    #[test]
+    fn autostart_toggle_survives_form_serde_round_trip() {
+        let mut config = AppConfig::default();
+        config.autostart.enabled = true;
+        let form = SettingsFormState::from(&config);
+        let json = serde_json::to_string(&form).unwrap();
+        let back: SettingsFormState = serde_json::from_str(&json).unwrap();
+        assert!(back.autostart_enabled);
     }
 
     #[test]

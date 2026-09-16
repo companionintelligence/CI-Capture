@@ -45,12 +45,17 @@ Compiled from the five surveys; every cell is verified in code unless marked
 *inferred*. "Degraded" means it runs but returns wrong or partial data;
 "absent" means the arm returns a constant.
 
+> **Δ 2026-09-15 —** the **bold** cells below are what
+> `clau/xplat-autostart-lock-idle` changed; §4 P3 and P4 record what shipped,
+> what deviated from the plan, and what each one deliberately left open. Every
+> other cell is as first surveyed.
+
 | Lane / capability | macOS | Linux | Windows |
 |---|---|---|---|
 | Screenshot backend (`screenshots` 0.8.10, `src/capture.rs:32-44`) | works (deprecated CGDisplay API; Sequoia periodic re-consent) | works on X11; broken/degraded on GNOME/KDE Wayland (portal prompt or failure every tick, log-only) | works |
 | Primary-display pick / downscale / multi-monitor | degraded (first screen, full-res, one display) | degraded | degraded |
-| Lock-screen suppression (`src/worker.rs:1126-1146`) | degraded (`pgrep ScreenSaverEngine` only) | absent (lock screen captured) | absent (lock screen captured) |
-| Idle detection (`idle_ms`) | sampled, never used | absent (always 0) | absent (always 0) |
+| Lock-screen suppression (`src/lock_detect.rs`) | **works** (`CGSSessionScreenIsLocked`; no longer `pgrep`) | **works** (`org.freedesktop.ScreenSaver.GetActive`; no bus ⇒ unlocked) | **works** (`OpenInputDesktop` failure) |
+| Idle detection (`idle_ms`) | **works and gates the screenshot lane** (`HIDIdleTime`) | absent (`None`, never gates — P5) | **works and gates the screenshot lane** (`GetLastInputInfo`) |
 | Activity lane: focus / windows / displays (vizier) | works (CGWindowList) | Hyprland-only; synthetic `local-shell` elsewhere | stub (empty observation every tick, lane on by default) |
 | Activity lane: net connections / ports | works | works | absent (empty `Vec`) |
 | File tracker (notify) | works | works (no Linux ignore defaults) | degraded (rename → delete+create; `/`-only globs; no Windows sensitive globs) |
@@ -59,10 +64,10 @@ Compiled from the five surveys; every cell is verified in code unless marked
 | BlueBubbles lane | works (no UI) | works (no UI) | works (no UI) |
 | Permission / readiness model | TCC mirror | stub `NotRequired` | stub `NotRequired` |
 | Onboarding | works | phantom "Permission" chip; "menu bar" copy | same |
-| Settings lane list / copy | works | misleading ("4 lanes", "this Mac", "Paused while locked") | same |
+| Settings lane list / copy | works | misleading ("4 lanes", "this Mac"); "Paused while locked" is now **true** everywhere | same |
 | Tray icon (tray-icon 0.11) | works | degraded (no click events, no tooltip, black glyph, needs AppIndicator host) | degraded (black glyph on dark taskbar; console window) |
-| Helper-window focus / single-instance | focus works; no single-instance | focus no-op; no single-instance | focus no-op; `process_is_running`=true; no single-instance |
-| Start at login | absent | absent | absent |
+| Helper-window focus / single-instance | focus works; **single-instance works** | focus still a no-op (P5); **single-instance works** | focus **works** (`EnumWindows` → first *visible* window of the PID); `process_is_running`=true; **single-instance works** |
+| Start at login | **works** (`~/Library/LaunchAgents` plist) | **works** (XDG autostart `.desktop`) | **works** (HKCU `Run`) |
 | Auto-update / package-manager channel | absent | absent | absent |
 | Locale "Match my system" | works | works | broken (always English) |
 | Error dialogs / file pickers | works | degraded (needs zenity/kdialog, undeclared) | works |
@@ -201,6 +206,44 @@ over `src/`, `packaging/` → none; `packaging/` tree;
 `docs/crash-reporting.md:55,437`; `src/main.rs:178-226,391-434,937-951,959-987`;
 `docs/user-flows.md:553`; `docs/test-plan.md:360`.
 
+**Δ 2026-09-15 — shipped on `clau/xplat-autostart-lock-idle`, except the NSIS
+option and Linux window-raising.**
+
+- *Open at login.* `config.autostart.enabled` + a Settings › Capture toggle,
+  applied by `main::sync_autostart` through the `auto-launch` crate.
+  `sync_autostart` runs on **every** config load, not only when the toggle
+  flips, so it is idempotent by construction and self-heals a login item the
+  user deleted by hand or a binary that moved under it.
+- *macOS mode.* `MacOSLaunchMode::LaunchAgent`, **not** `SMAppService` as this
+  section originally offered. `SMAppService` needs a registered `.app` bundle
+  at `mainApp` scope, which a `cargo run` dev binary is not — every local loop
+  and CI check would need a bundle-and-codesign step just to reach the API. A
+  LaunchAgent plist behaves identically for dev binary and packaged release,
+  so one code path covers both.
+- *Default-on.* Set by `onboarding_ui::mark_onboarding_complete`, the
+  once-per-install event — deliberately **not** by `AutostartConfig::default()`,
+  which is also what an absent `autostart` key deserializes to and would
+  therefore grant a login item to every restored or synced `config.json`.
+- *Single-instance.* An advisory `fd-lock` on
+  `<data dir>/companion-capture.lock`, taken in `main()` **before**
+  `WorkerHandle::spawn` and before the event loop, held for the process
+  lifetime. Order is load-bearing: the worker immediately starts the capture,
+  file-tracker, iMessage and knowledge lanes against shared SQLite stores and
+  cursor files, so taking the lock after it would leave every duplicate launch
+  with a window of two live workers racing that state. A second launch shows
+  `tray.error.already_running` and exits `Ok`.
+- *Upload PID guard.* `open_upload_window` now tracks `upload_pid` and raises
+  the live child, matching Settings/Onboarding, with an `UploadClosed` event
+  to clear it.
+- *`bring_pid_to_front` on Windows.* `EnumWindows` by PID → `ShowWindow`
+  (`SW_RESTORE`) → `SetForegroundWindow`, matching only a window that passes
+  `IsWindowVisible`: an eframe process also owns hidden and message-only
+  windows, and `SetForegroundWindow` on one of those is a silent no-op that
+  would leave the real window buried.
+- **Still open:** the NSIS installer option, and `bring_pid_to_front` on Linux
+  (X11 EWMH, GNOME Shell D-Bus and wlroots each need a different mechanism and
+  Wayland withholds PID-keyed activation by design) — folded into P5.
+
 ### P4 — Lock-screen and idle detection everywhere, and fix the macOS probe (M; S per OS) — [CI-Engineering#285](https://github.com/companionintelligence/CI-Engineering/issues/285)
 
 **Why.** `is_capture_blocked` returns `false` unconditionally off macOS
@@ -226,6 +269,48 @@ locked" lane copy true.
 `vizier/src/observer/common.rs:197,222`; `docs/test-plan.md:321,392`;
 `docs/memory-integration.md:348-355`; `README.md:272`;
 `locales/settings.yml:471-473`.
+
+**Δ 2026-09-15 — shipped on `clau/xplat-autostart-lock-idle`, with two
+deliberate deviations from the plan above.**
+
+- *Where it lives.* A new `src/lock_detect.rs` with one `imp` module per OS,
+  mirroring the `permissions`/`app_names` shape. `worker::is_capture_blocked`
+  is now a one-line call into it; `is_macos_screensaver_running` and its
+  `pgrep` spawn are gone.
+- *macOS.* `CGSessionCopyCurrentDictionary()["CGSSessionScreenIsLocked"]`, as
+  planned. A **null** session dictionary (fast-user-switched away, or no
+  console session at all) counts as locked — there is no unlocked desktop to
+  screenshot either way.
+- *Windows.* `OpenInputDesktop(0, FALSE, DESKTOP_SWITCHDESKTOP)` failing ⇒
+  locked, which also covers the secure desktop (UAC, Ctrl+Alt+Del). Polled per
+  tick; `WTSRegisterSessionNotification` needs a window and message loop the
+  tray process does not own here, and the tick cadence makes the difference
+  unobservable. Idle via `GetLastInputInfo`, with `wrapping_sub` against
+  `GetTickCount`'s ~49.7-day wrap.
+- *Linux.* `org.freedesktop.ScreenSaver.GetActive`, **not** `login1`'s
+  `LockedHint` — every xscreensaver-compatible frontend implements the former,
+  where `LockedHint` needs a resolved session object. Any failure to ask (no
+  session bus, no screensaver service) reads as **unlocked**, the opposite
+  default from macOS's null dictionary: on Linux "no D-Bus session" is the
+  ordinary shape of a desktop-less capture host, and defaulting to "locked"
+  there would silently stop capture on every one of them, forever.
+- *Deviation 1 — the idle gate does not pause vizier.* This section asked for
+  one that "also pauses vizier"; it deliberately does not. An untouched
+  desktop still has focus/window/fs activity worth timelining (a build
+  running, a video playing) and vizier's own diff already keeps an idle
+  payload small, so the gate is screenshot-lane only and never sets
+  `capture_blocked`. Folding vizier in is a separate product decision, not a
+  side effect of this one.
+- *Deviation 2 — Linux has no idle probe.* `idle_ms()` returns `None` there.
+  X11's `XScreenSaverQueryInfo` needs a real display connection (meaningless
+  under Wayland) and `ext-idle-notify-v1` needs a bound Wayland connection
+  this crate does not otherwise hold — unlike the D-Bus session the lock probe
+  already needs. Callers treat `None` as "no signal", never as "not idle" nor
+  as "idle" (`worker::is_idle_past_interval`, with tests), so the missing
+  probe can never gate capture. Tracked in P5.
+- *Copy.* `settings.capture.lane.screens.detail.macos` is deleted and its
+  "Paused while locked" clause moved into the base string — the promise is now
+  true on all three platforms.
 
 ### P5 — Linux vizier beyond Hyprland: X11, wlroots, KDE, plus `idle_ms` (M) — [CI-Engineering#286](https://github.com/companionintelligence/CI-Engineering/issues/286)
 
@@ -705,9 +790,17 @@ For the phase (§4), each priority closes its CI-Engineering issue (linked from 
       screenshot error, with no TCC involvement.
 - [ ] P3: after a reboot on each OS the tray is running; a second launch
       exits with a message box; Upload window cannot be opened twice.
+      *(Code shipped — see the Δ under P3. Unchecked because it is an
+      on-device claim across three OSes: nothing in CI reboots a machine or
+      double-launches a tray. Needs the `docs/test-plan.md` §25a/25b runs.)*
 - [ ] P4: a locked screen on each OS produces zero screenshots and zero vizier
       posts; idle > interval skips the tick; the macOS probe no longer spawns
-      `pgrep`.
+      `pgrep`. *(Code shipped — see the Δ under P4. The `pgrep` half is
+      verifiable in the diff; the rest needs a real locked session per OS.
+      Note the idle gate is screenshot-lane only by design, so "idle > interval
+      skips the tick" is about screenshots — a locked screen is what stops
+      vizier, via `capture_blocked`. Linux has no idle probe at all: `idle_ms`
+      is `None` there and can never gate.)*
 - [ ] P5: GNOME (extension), KDE, sway and X11 sessions each report real
       focus; `docs/test-plan.md:393` is corrected.
 - [ ] P6 remainder: BlueBubbles has a Settings card; iMessage cannot be armed

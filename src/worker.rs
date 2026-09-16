@@ -557,6 +557,12 @@ struct WorkerState {
     config: AppConfig,
     paused: bool,
     capture_blocked: bool,
+    /// True once the desktop has sat idle (no keyboard/mouse input) for at
+    /// least a full screenshot interval. Screenshot-lane only, deliberately:
+    /// vizier keeps running through idle time (see `capture_once`'s use of
+    /// this field for why), so this never gates `capture_vizier` the way
+    /// `capture_blocked` does.
+    capture_idle: bool,
     last_capture: Option<CapturedImage>,
     running_flag: Arc<AtomicBool>,
     analysis_tx: Sender<PendingCapture>,
@@ -596,6 +602,7 @@ impl WorkerState {
             config,
             paused: false,
             capture_blocked: false,
+            capture_idle: false,
             last_capture: None,
             running_flag,
             analysis_tx,
@@ -1072,6 +1079,35 @@ impl WorkerState {
             self.capture_blocked = false;
         }
 
+        // Idle gate: screenshot-lane only. An unlocked-but-untouched desktop
+        // (no keyboard/mouse input for a full capture interval) has nothing
+        // new to screenshot, but it is not the same state as a locked one —
+        // vizier's focus/window/fs activity can still be worth timelining
+        // during a long idle stretch (a build running, a video playing), so
+        // this intentionally does not set `capture_blocked` and does not
+        // touch `capture_vizier`'s gating. Folding vizier into an idle gate
+        // too is a larger, separate decision tracked as CI-Engineering
+        // #283/#293, not this change.
+        //
+        // `idle_ms() == None` (no probe on this OS, e.g. Linux, or a probe
+        // failure on Windows/macOS) must never block capture — absence of a
+        // signal is not evidence of idleness — see `is_idle_past_interval`.
+        if is_idle_past_interval(
+            crate::lock_detect::idle_ms(),
+            self.config.capture.screenshot_interval_secs,
+        ) {
+            if !self.capture_idle {
+                log::info!("system idle; skipping capture ticks");
+                self.capture_idle = true;
+            }
+            return Ok(false);
+        }
+
+        if self.capture_idle {
+            log::info!("activity resumed; resuming capture ticks");
+            self.capture_idle = false;
+        }
+
         if !server_ingest::is_configured(&self.config)
             && (self.config.identity.user_id.is_none() || self.config.identity.device_id.is_none())
         {
@@ -1202,26 +1238,65 @@ async fn record_capture_legacy(
 }
 
 fn is_capture_blocked() -> bool {
-    #[cfg(target_os = "macos")]
-    {
-        is_macos_screensaver_running()
-    }
+    crate::lock_detect::is_locked()
+}
 
-    #[cfg(not(target_os = "macos"))]
-    {
-        false
+/// The screenshot lane's idle-skip decision, factored out of `capture_once`
+/// so it is testable without a live `WorkerState` or a real capture
+/// pipeline. `idle_ms` is `lock_detect::idle_ms()`'s result verbatim: `None`
+/// (no probe on this OS, or a probe failure) must never read as idle —
+/// absence of a signal is not evidence of idleness — so only a concrete
+/// `Some` at or past a full capture interval counts.
+fn is_idle_past_interval(idle_ms: Option<u64>, screenshot_interval_secs: u64) -> bool {
+    match idle_ms {
+        Some(ms) => ms >= screenshot_interval_secs.saturating_mul(1000),
+        None => false,
     }
 }
 
-#[cfg(target_os = "macos")]
-fn is_macos_screensaver_running() -> bool {
-    use std::process::Command;
+#[cfg(test)]
+mod idle_gate_tests {
+    use super::is_idle_past_interval;
 
-    Command::new("pgrep")
-        .args(["-x", "ScreenSaverEngine"])
-        .status()
-        .map(|status| status.success())
-        .unwrap_or(false)
+    /// The one case that matters most: no idle signal at all — Linux always,
+    /// or a Windows/macOS probe failure — must never be treated as idle.
+    /// This is the guarantee `capture_once` depends on to never wedge the
+    /// screenshot lane on a platform that simply cannot answer the question.
+    #[test]
+    fn no_idle_signal_never_counts_as_idle() {
+        assert!(!is_idle_past_interval(None, 300));
+        // Even a zero-length interval (misconfigured, but not this
+        // function's job to reject) must not turn "no signal" into "idle".
+        assert!(!is_idle_past_interval(None, 0));
+    }
+
+    #[test]
+    fn idle_below_the_capture_interval_does_not_gate() {
+        assert!(!is_idle_past_interval(Some(299_999), 300));
+    }
+
+    /// The gate is inclusive: exactly one interval's worth of idle time is
+    /// enough, matching the `>=` in `is_idle_past_interval`.
+    #[test]
+    fn idle_at_or_past_the_capture_interval_gates() {
+        assert!(is_idle_past_interval(Some(300_000), 300));
+        assert!(is_idle_past_interval(Some(600_000), 300));
+    }
+
+    /// `screenshot_interval_secs * 1000` must not silently wrap on a
+    /// pathological config value; `saturating_mul` pins the threshold at
+    /// `u64::MAX` instead of wrapping around to a small number, which would
+    /// have made an absurd interval gate on almost no idle time at all.
+    #[test]
+    fn absurd_interval_saturates_instead_of_wrapping() {
+        // Wrapping multiplication would send the threshold near 0 (undergoing
+        // several `u64` wraps), so a merely large — not maximal — idle
+        // reading would wrongly clear it; saturation instead pins the
+        // threshold at `u64::MAX`, so only an equally-maximal idle reading
+        // can meet it.
+        assert!(!is_idle_past_interval(Some(u64::MAX - 1), u64::MAX));
+        assert!(is_idle_past_interval(Some(u64::MAX), u64::MAX));
+    }
 }
 
 #[cfg(test)]
