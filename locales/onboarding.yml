@@ -288,9 +288,20 @@ onboarding.finish.where_label:
   en: Where to find things
   es: Dónde encontrar las cosas
 
+# Per-OS siblings (`settings_ui::os_variant`): the `.windows` / `.linux` keys
+# replace the base where they exist. "Menu bar" is Mac wording; Windows says
+# system tray, Linux desktops say tray.
 onboarding.finish.where_body:
   en: Companion Capture lives in your menu bar. Click it to pause capture, open your memory in a browser, add folders, or sign in again.
   es: Companion Capture vive en tu barra de menús. Haz clic para pausar la captura, abrir tu memoria en el navegador, añadir carpetas o volver a iniciar sesión.
+
+onboarding.finish.where_body.windows:
+  en: Companion Capture lives in your system tray. Click it to pause capture, open your memory in a browser, add folders, or sign in again.
+  es: Companion Capture vive en tu bandeja del sistema. Haz clic para pausar la captura, abrir tu memoria en el navegador, añadir carpetas o volver a iniciar sesión.
+
+onboarding.finish.where_body.linux:
+  en: Companion Capture lives in your tray. Click it to pause capture, open your memory in a browser, add folders, or sign in again.
+  es: Companion Capture vive en tu bandeja. Haz clic para pausar la captura, abrir tu memoria en el navegador, añadir carpetas o volver a iniciar sesión.
 
 # ── navigation bar ────────────────────────────────────────────────────────
 
@@ -317,3 +328,11 @@ onboarding.nav.start_capturing:
 onboarding.nav.sign_in_later:
   en: You can sign in later from the menu bar.
   es: Puedes iniciar sesión más tarde desde la barra de menús.
+
+onboarding.nav.sign_in_later.windows:
+  en: You can sign in later from the system tray.
+  es: Puedes iniciar sesión más tarde desde la bandeja del sistema.
+
+onboarding.nav.sign_in_later.linux:
+  en: You can sign in later from the tray.
+  es: Puedes iniciar sesión más tarde desde la bandeja.

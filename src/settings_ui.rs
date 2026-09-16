@@ -18,6 +18,53 @@ use crate::server_common::normalize_server_url;
 use crate::theme;
 use crate::tokens;
 
+/// Resolve a message id to its per-OS variant when the catalogue has one.
+///
+/// A handful of strings are only true on one platform: "lives in your menu
+/// bar" (macOS) is a system tray on Windows, "this Mac" is a lie on a Linux
+/// box, and "Paused while locked" describes a check that only exists on macOS
+/// (`worker::is_capture_blocked`). Rather than branch at every call site,
+/// the catalogue carries optional siblings named `<key>.macos`,
+/// `<key>.windows` and `<key>.linux` (the `std::env::consts::OS` spelling),
+/// and this picks the sibling for the running OS when it exists.
+///
+/// **The base key is the fallback, so it must read correctly anywhere no
+/// sibling names.** Where the platform-neutral phrasing is obvious ("this
+/// computer") the base carries it and `.macos` carries the Mac wording; where
+/// there is none ("menu bar") the base keeps the macOS text and the other two
+/// override it.
+///
+/// Returns the *key*, not the text, so call sites with `%{count}`-style
+/// arguments can pass it straight to `t!(key, count = …)`. For plain strings
+/// use [`os_variant`].
+pub(crate) fn os_key(base: &str) -> String {
+    let candidate = format!("{base}.{}", std::env::consts::OS);
+    if catalogue_has(&candidate) {
+        candidate
+    } else {
+        base.to_string()
+    }
+}
+
+/// [`os_key`] resolved to text: `t!` of the per-OS sibling when one exists,
+/// else of `base`.
+pub(crate) fn os_variant(base: &str) -> String {
+    rust_i18n::t!(os_key(base)).to_string()
+}
+
+/// Whether the active locale (or its `en` fallback) defines `key`.
+///
+/// `rust_i18n` has no public "does this key exist" call; a miss renders the
+/// key itself (current `t!` expansion) or `<locale>.<key>` (the older
+/// `_rust_i18n_translate` path), so both shapes are treated as absent. No
+/// real message is ever byte-equal to its own dotted id — the locale
+/// catalogue test forbids exactly that.
+fn catalogue_has(key: &str) -> bool {
+    let text = rust_i18n::t!(key);
+    let prefixed = format!("{}.{key}", &*rust_i18n::locale());
+    !(*text == *key || *text == prefixed)
+}
+
 /// Guided Connection-tab phase (Portal-first).
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ConnectPhase {
@@ -1046,7 +1093,7 @@ impl SettingsApp {
 
                 // Push the connection card to the bottom.
                 let (text, sub, color) = self.connection_status();
-                let lanes = rust_i18n::t!("settings.sidebar.lanes").to_string();
+                let lanes = os_variant("settings.sidebar.lanes");
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
                     theme::card(ui, |ui| {
                         ui.set_width(ui.available_width());
@@ -1075,12 +1122,7 @@ impl SettingsApp {
                         ui.add_space(10.0);
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 6.0;
-                            for c in [
-                                theme::LANE_SHOT(),
-                                theme::LANE_ACTIVITY(),
-                                theme::LANE_FILE(),
-                                theme::LANE_KNOWLEDGE(),
-                            ] {
+                            for c in sidebar_lane_colors() {
                                 let (r, _) = ui.allocate_exact_size(
                                     egui::Vec2::splat(7.0),
                                     egui::Sense::hover(),
@@ -1210,6 +1252,35 @@ fn format_bytes(bytes: u64) -> String {
     }
 }
 
+/// Whether the device-activity (knowledge) lane can run on this OS at all.
+///
+/// The lane crawls macOS's `knowledgeC.db`; `crate::knowledge` idles
+/// unconditionally everywhere else, so showing its row, its toggle and a
+/// Full Disk Access card on Windows or Linux only advertises a switch that
+/// does nothing. The Settings window hides all three there and the sidebar
+/// counts three lanes, not four. Runtime `cfg!` rather than `#[cfg]` so both
+/// branches type-check on every OS.
+fn knowledge_lane_available() -> bool {
+    cfg!(target_os = "macos")
+}
+
+/// The one dot per lane drawn under the sidebar connection card, in the
+/// order the Capture tab lists them. Kept next to the "N lanes" label's
+/// source of truth so the two cannot drift: the label is
+/// `settings.sidebar.lanes` (`.macos` says four, the base says three) and
+/// `sidebar_dot_count_matches_the_lane_label` pins them together.
+fn sidebar_lane_colors() -> Vec<egui::Color32> {
+    let mut colors = vec![
+        theme::LANE_SHOT(),
+        theme::LANE_ACTIVITY(),
+        theme::LANE_FILE(),
+    ];
+    if knowledge_lane_available() {
+        colors.push(theme::LANE_KNOWLEDGE());
+    }
+    colors
+}
+
 fn backlog_warning_copy(app: &SettingsApp) -> (String, String) {
     let disconnected = app.memory_looks_disconnected();
     let shots = &app.local_backlog.screenshots;
@@ -1218,12 +1289,15 @@ fn backlog_warning_copy(app: &SettingsApp) -> (String, String) {
     if shots.is_empty() {
         let waiting = files + activity;
         let detail = if disconnected {
-            rust_i18n::t!("settings.backlog.files_only.disconnected", count = waiting)
+            rust_i18n::t!(
+                os_key("settings.backlog.files_only.disconnected"),
+                count = waiting
+            )
         } else {
             rust_i18n::t!("settings.backlog.files_only.stuck", count = waiting)
         };
         let title = if disconnected {
-            rust_i18n::t!("settings.backlog.files_only.disconnected.title")
+            rust_i18n::t!(os_key("settings.backlog.files_only.disconnected.title"))
         } else {
             rust_i18n::t!("settings.backlog.files_only.stuck.title")
         };
@@ -1232,7 +1306,7 @@ fn backlog_warning_copy(app: &SettingsApp) -> (String, String) {
     let size = format_bytes(shots.bytes);
     let (title, mut detail) = if disconnected {
         (
-            rust_i18n::t!("settings.backlog.disconnected.title").to_string(),
+            os_variant("settings.backlog.disconnected.title"),
             rust_i18n::t!(
                 "settings.backlog.disconnected.detail",
                 count = shots.count,
@@ -1244,7 +1318,7 @@ fn backlog_warning_copy(app: &SettingsApp) -> (String, String) {
         (
             rust_i18n::t!("settings.backlog.stuck.title").to_string(),
             rust_i18n::t!(
-                "settings.backlog.stuck.detail",
+                os_key("settings.backlog.stuck.detail"),
                 count = shots.count,
                 size = size.as_str()
             )
@@ -1735,7 +1809,7 @@ fn render_manual_connection_fields(ui: &mut egui::Ui, form: &mut SettingsFormSta
                 theme::caption(ui, &rust_i18n::t!("settings.connection.api_key.help"));
             }
             AuthMode::Oidc => {
-                theme::caption(ui, &rust_i18n::t!("settings.connection.oidc.help"));
+                theme::caption(ui, &os_variant("settings.connection.oidc.help"));
                 ui.add_space(8.0);
                 changed |= field(
                     ui,
@@ -1916,7 +1990,7 @@ fn render_advanced_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bool 
             });
         });
     ui.add_space(8.0);
-    theme::caption(ui, &rust_i18n::t!("settings.language.help"));
+    theme::caption(ui, &os_variant("settings.language.help"));
 
     ui.add_space(20.0);
     // The one exception to "captured data only reaches machines you own", so it
@@ -2071,7 +2145,7 @@ fn render_capture_tab(
         ui,
         theme::LANE_SHOT(),
         &rust_i18n::t!("settings.capture.lane.screens.title"),
-        &rust_i18n::t!("settings.capture.lane.screens.detail"),
+        &os_variant("settings.capture.lane.screens.detail"),
         &on,
     );
     ui.add_space(10.0);
@@ -2094,21 +2168,25 @@ fn render_capture_tab(
             rust_i18n::t!("settings.capture.lane.on")
         },
     );
-    ui.add_space(10.0);
-    theme::lane_row(
-        ui,
-        theme::LANE_KNOWLEDGE(),
-        &rust_i18n::t!("settings.capture.lane.knowledge.title"),
-        &rust_i18n::t!("settings.capture.lane.knowledge.detail"),
-        &if form.knowledge_enabled {
-            rust_i18n::t!("settings.capture.lane.on")
-        } else {
-            rust_i18n::t!("settings.capture.lane.off")
-        },
-    );
+    if knowledge_lane_available() {
+        ui.add_space(10.0);
+        theme::lane_row(
+            ui,
+            theme::LANE_KNOWLEDGE(),
+            &rust_i18n::t!("settings.capture.lane.knowledge.title"),
+            &rust_i18n::t!("settings.capture.lane.knowledge.detail"),
+            &if form.knowledge_enabled {
+                rust_i18n::t!("settings.capture.lane.on")
+            } else {
+                rust_i18n::t!("settings.capture.lane.off")
+            },
+        );
+    }
 
     changed |= render_watched_folders(ui, form);
-    changed |= render_device_activity(ui, form, fda);
+    if knowledge_lane_available() {
+        changed |= render_device_activity(ui, form, fda);
+    }
     changed
 }
 
@@ -2253,6 +2331,10 @@ fn render_watched_folders(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bo
 /// button. The toggle is shown regardless of the grant so a user can arm the
 /// lane first and grant second — the tray reports the missing grant on its
 /// own.
+///
+/// Only rendered where [`knowledge_lane_available`]; off macOS the whole
+/// section is skipped rather than shown with a "Not required" badge over a
+/// lane that can never run.
 fn render_device_activity(
     ui: &mut egui::Ui,
     form: &mut SettingsFormState,
@@ -2480,9 +2562,108 @@ fn render_postgres_tab(ui: &mut egui::Ui, form: &mut SettingsFormState) -> bool 
 
 #[cfg(test)]
 mod tests {
-    use super::{AuthMode, SettingsFormState};
+    use super::{
+        AuthMode, SettingsFormState, catalogue_has, knowledge_lane_available, os_key, os_variant,
+        sidebar_lane_colors,
+    };
     use crate::config::{AppConfig, OidcSession};
     use crate::server_common::normalize_server_url;
+
+    /// The sidebar draws one dot per lane and prints "N lanes" beside them;
+    /// the number comes from the catalogue and the dots from code, so this is
+    /// the only thing stopping a "4 lanes" label over three dots (or the
+    /// reverse) on the platforms where the knowledge lane is hidden.
+    #[test]
+    fn sidebar_dot_count_matches_the_lane_label() {
+        let label = os_variant("settings.sidebar.lanes");
+        let n: usize = label
+            .split_whitespace()
+            .next()
+            .and_then(|w| w.parse().ok())
+            .unwrap_or_else(|| panic!("lane label {label:?} does not start with a count"));
+        assert_eq!(sidebar_lane_colors().len(), n, "label was {label:?}");
+        assert_eq!(n, if knowledge_lane_available() { 4 } else { 3 });
+    }
+
+    /// The knowledge lane reads macOS's `knowledgeC.db` and idles everywhere
+    /// else (`crate::knowledge`), so Settings must only offer it on a Mac.
+    #[test]
+    fn knowledge_lane_is_offered_only_on_macos() {
+        assert_eq!(knowledge_lane_available(), cfg!(target_os = "macos"));
+    }
+
+    /// `os_key` must pick the running OS's sibling when the catalogue has one
+    /// and fall back to the base id when it does not — silently, with no
+    /// raw message id leaking into the UI either way.
+    #[test]
+    fn os_key_prefers_the_platform_sibling_and_falls_back_to_the_base() {
+        // `settings.sidebar.lanes` has a `.macos` sibling and no other.
+        let expected = if cfg!(target_os = "macos") {
+            "settings.sidebar.lanes.macos"
+        } else {
+            "settings.sidebar.lanes"
+        };
+        assert_eq!(os_key("settings.sidebar.lanes"), expected);
+        assert_eq!(
+            os_variant("settings.sidebar.lanes"),
+            rust_i18n::t!(expected).to_string()
+        );
+
+        // A key with no siblings at all resolves to itself and its own text.
+        assert_eq!(os_key("settings.footer.save"), "settings.footer.save");
+        assert_eq!(
+            os_variant("settings.footer.save"),
+            rust_i18n::t!("settings.footer.save").to_string()
+        );
+    }
+
+    /// The existence probe is what keeps `os_key` honest: a present key is
+    /// present, an absent one is absent, and neither shape of `t!`'s
+    /// missing-key echo (bare id or `<locale>.<id>`) is mistaken for text.
+    #[test]
+    fn catalogue_probe_distinguishes_present_from_missing_keys() {
+        assert!(catalogue_has("settings.footer.save"));
+        assert!(!catalogue_has("settings.footer.save.no_such_os"));
+        assert!(!catalogue_has("settings.nonexistent.key"));
+    }
+
+    /// Every base key that has an OS sibling must also read correctly on its
+    /// own, because that base is what an OS without a sibling renders. This
+    /// walks the strings this module splits and checks each sibling that
+    /// exists is a real, distinct message — a `.windows` copy-pasted from
+    /// the macOS text would defeat the point.
+    #[test]
+    fn per_os_siblings_are_distinct_from_their_base() {
+        for base in [
+            "settings.sidebar.lanes",
+            "settings.language.help",
+            "settings.connection.oidc.help",
+            "settings.capture.lane.screens.detail",
+            "settings.backlog.disconnected.title",
+            "settings.backlog.stuck.detail",
+            "settings.backlog.files_only.disconnected.title",
+            "settings.backlog.files_only.disconnected",
+        ] {
+            assert!(catalogue_has(base), "{base} missing from the catalogue");
+            let base_text = rust_i18n::t!(base).to_string();
+            let mut siblings = 0;
+            for os in ["macos", "windows", "linux"] {
+                let key = format!("{base}.{os}");
+                if catalogue_has(&key) {
+                    siblings += 1;
+                    assert_ne!(
+                        rust_i18n::t!(key).to_string(),
+                        base_text,
+                        "{key} is a verbatim copy of {base}"
+                    );
+                }
+            }
+            assert!(
+                siblings > 0,
+                "{base} has no per-OS sibling; drop it from this list"
+            );
+        }
+    }
 
     #[test]
     fn oidc_session_infers_oidc_mode_not_api_key() {

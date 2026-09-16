@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -34,6 +34,56 @@ const ANALYSIS_QUEUE_CAPACITY: usize = 2;
 /// Largest vizier payload we'll attempt to POST. Sits under CI-Server's 10 MB
 /// ingest body limit so an oversized snapshot is skipped, not bounced as 413.
 const MAX_VIZIER_PAYLOAD_BYTES: usize = 9 * 1024 * 1024;
+
+/// Set once the worker has logged that vizier observations are coming back
+/// empty; later empty ticks log at debug so a Windows/Linux install does not
+/// fill its log with the same warning every 30 s.
+static VIZIER_EMPTY_WARNED: AtomicBool = AtomicBool::new(false);
+
+/// How many vizier ticks have been skipped as empty since launch. Read by
+/// [`vizier_empty_ticks_skipped`]; the P2 health row is the intended consumer
+/// so an idle lane can be told apart from a broken observer.
+static VIZIER_EMPTY_SKIPPED: AtomicU64 = AtomicU64::new(0);
+
+/// Number of vizier ticks skipped because the observation was empty and the
+/// server already held an empty state (see [`vizier_should_skip_send`]).
+#[cfg_attr(not(test), allow(dead_code))] // consumer is the P2 health row
+pub(crate) fn vizier_empty_ticks_skipped() -> u64 {
+    VIZIER_EMPTY_SKIPPED.load(Ordering::Relaxed)
+}
+
+/// True when a vizier observation carries nothing worth shipping: no focused
+/// window, no window list, no filesystem events, and no network connections.
+///
+/// Placeholder fields the baseline observer always fills (timestamps, a
+/// zero-sized display, the observing process's own cwd/shell) do not count —
+/// they are the same every tick and say nothing about what the person is
+/// doing. Kept as a pure function so the skip rule is testable on every OS,
+/// independent of which native observer (if any) is compiled in.
+pub(crate) fn vizier_observation_is_empty(observation: &Observation) -> bool {
+    observation.focus.is_none()
+        && observation.windows.is_empty()
+        && observation.fs_events.is_empty()
+        && observation.net_connections.is_empty()
+}
+
+/// Whether this tick's vizier POST can be skipped.
+///
+/// Skipping is only safe when the observation is empty **and** the last state
+/// the server holds (`previous`, the baseline the next diff would be built
+/// against) is empty too — or there is no baseline at all, which is the
+/// Windows / non-Hyprland-Linux steady state from the first tick. If the
+/// previous send carried focus, windows, fs events or connections, this
+/// empty tick is shipped once so the server's "current" state is cleared:
+/// the last file edit stops being reported as still in progress, an
+/// all-windows-closed transition is recorded, and `ts`/`monotonic_ms`
+/// advance. Only after that does the lane go quiet.
+pub(crate) fn vizier_should_skip_send(
+    previous: Option<&Observation>,
+    current: &Observation,
+) -> bool {
+    vizier_observation_is_empty(current) && previous.is_none_or(vizier_observation_is_empty)
+}
 
 #[derive(Clone)]
 pub struct WorkerHandle {
@@ -881,6 +931,34 @@ impl WorkerState {
             log::debug!("vizier: dropped {dropped} sensitive fs-event path(s) before send");
         }
 
+        // Nothing observed this tick: no focus, no windows, no file or network
+        // deltas. This is the steady state on Windows and non-Hyprland Linux,
+        // where vizier has no desktop observer and the baseline honestly
+        // reports no windows. Shipping it would only tell Memory "nothing"
+        // every tick, so skip the POST — but only once the server already
+        // holds an empty state (`vizier_should_skip_send`): the first empty
+        // tick after a non-empty one is sent so the previous fs events /
+        // windows are cleared rather than left "current" indefinitely. The
+        // baseline (`vizier_previous`) is deliberately left alone on a skip:
+        // the server still holds the last state we actually sent, so the next
+        // non-empty tick diffs against that.
+        if vizier_should_skip_send(self.vizier_previous.as_ref(), &current) {
+            let skipped = VIZIER_EMPTY_SKIPPED.fetch_add(1, Ordering::Relaxed) + 1;
+            if !VIZIER_EMPTY_WARNED.swap(true, Ordering::Relaxed) {
+                log::warn!(
+                    "vizier: empty observation (no focus/windows/fs/net); skipping send — \
+                     expected on Windows and non-Hyprland Linux, where there is no desktop \
+                     observer and the activity lane ships only file/network deltas"
+                );
+            } else {
+                log::debug!(
+                    "vizier: empty observation (no focus/windows/fs/net); skipping send \
+                     ({skipped} skipped since launch)"
+                );
+            }
+            return Ok(());
+        }
+
         let focus_app = current.focus.as_ref().map(|window| window.app.clone());
         let focus_title = current.focus.as_ref().map(|window| window.title.clone());
         let cwd = current.terminal_ctx.as_ref().map(|ctx| ctx.cwd.clone());
@@ -1181,5 +1259,161 @@ mod sensitive_scrub_tests {
             kept,
             vec!["/Users/x/Documents/notes.md", "/Users/x/src/main.rs"]
         );
+    }
+}
+
+#[cfg(test)]
+mod vizier_empty_observation_tests {
+    use vizier::observation::{
+        Bounds, ConnInfo, DisplayInfo, FSEvent, Observation, Point, TerminalCtx, WindowInfo,
+    };
+
+    use super::{vizier_empty_ticks_skipped, vizier_observation_is_empty, vizier_should_skip_send};
+
+    /// An observation with only the fields the baseline observer always
+    /// fills — timestamps, a zero cursor, no focus/windows/fs/net.
+    fn bare() -> Observation {
+        Observation {
+            schema_version: 1,
+            ts: 1.0,
+            monotonic_ms: 10,
+            idle_ms: 0,
+            focus: None,
+            windows: Vec::new(),
+            cursor: Point { x: 0, y: 0 },
+            displays: Vec::new(),
+            terminal_ctx: None,
+            net_connections: Vec::new(),
+            fs_events: Vec::new(),
+        }
+    }
+
+    fn window() -> WindowInfo {
+        WindowInfo {
+            id: "0x1".to_string(),
+            title: "notes.md".to_string(),
+            app: "Editor".to_string(),
+            pid: 42,
+            bounds: Bounds {
+                x: 0,
+                y: 0,
+                w: 800,
+                h: 600,
+            },
+            workspace: 1,
+            is_minimized: false,
+            is_fullscreen: false,
+        }
+    }
+
+    /// The Windows / non-Hyprland-Linux steady state: nothing observed, so the
+    /// tick must be skipped rather than POSTed as an all-empty snapshot.
+    #[test]
+    fn observation_with_no_focus_windows_fs_or_net_is_empty() {
+        assert!(vizier_observation_is_empty(&bare()));
+    }
+
+    /// Placeholder fields alone (zero-sized display, the observing process's
+    /// own cwd/shell) must not rescue an otherwise empty observation — they
+    /// are identical every tick and carry no activity signal.
+    #[test]
+    fn placeholder_display_and_terminal_ctx_do_not_make_it_non_empty() {
+        let mut observation = bare();
+        observation.displays = vec![DisplayInfo {
+            id: 0,
+            bounds: Bounds {
+                x: 0,
+                y: 0,
+                w: 0,
+                h: 0,
+            },
+            is_primary: true,
+            scale_factor: 1.0,
+        }];
+        observation.terminal_ctx = Some(TerminalCtx {
+            cwd: "/".to_string(),
+            shell: "/bin/zsh".to_string(),
+        });
+        assert!(vizier_observation_is_empty(&observation));
+    }
+
+    /// Each real signal on its own is enough to ship the tick: a focused
+    /// window, a window list, a filesystem delta, or a network connection.
+    #[test]
+    fn any_real_signal_makes_the_observation_non_empty() {
+        let mut with_focus = bare();
+        with_focus.focus = Some(window());
+        assert!(!vizier_observation_is_empty(&with_focus));
+
+        let mut with_windows = bare();
+        with_windows.windows = vec![window()];
+        assert!(!vizier_observation_is_empty(&with_windows));
+
+        let mut with_fs = bare();
+        with_fs.fs_events = vec![FSEvent {
+            path: "/home/x/notes.md".to_string(),
+            kind: "Modify".to_string(),
+            ts: 1.0,
+            file_activity: None,
+        }];
+        assert!(!vizier_observation_is_empty(&with_fs));
+
+        let mut with_net = bare();
+        with_net.net_connections = vec![ConnInfo {
+            proto: "tcp".to_string(),
+            local_port: 50000,
+            remote_addr: "203.0.113.1".to_string(),
+            remote_port: 443,
+            pid: 42,
+            app: "browser".to_string(),
+            state: "ESTABLISHED".to_string(),
+            connection_count: None,
+            remote_host_count: None,
+        }];
+        assert!(!vizier_observation_is_empty(&with_net));
+    }
+
+    /// The skip must not swallow the transition *into* emptiness: after a
+    /// tick that shipped fs events (or windows), the next empty tick is sent
+    /// once so the server clears them, and only the tick after that is
+    /// skipped. Without a baseline (first tick, or after a failed POST reset
+    /// it) an empty tick is skipped straight away — the Windows steady state.
+    #[test]
+    fn empty_tick_after_a_non_empty_baseline_is_sent_once_then_skipped() {
+        let empty = bare();
+
+        // No baseline yet: nothing to clear, skip.
+        assert!(vizier_should_skip_send(None, &empty));
+
+        // Baseline carried a file delta: ship this empty tick to clear it.
+        let mut with_fs = bare();
+        with_fs.fs_events = vec![FSEvent {
+            path: "/home/x/notes.md".to_string(),
+            kind: "Modify".to_string(),
+            ts: 1.0,
+            file_activity: None,
+        }];
+        assert!(!vizier_should_skip_send(Some(&with_fs), &empty));
+
+        // Baseline carried a focused window (macOS, everything just closed):
+        // ship the all-closed transition.
+        let mut with_focus = bare();
+        with_focus.focus = Some(window());
+        assert!(!vizier_should_skip_send(Some(&with_focus), &empty));
+
+        // Once the server holds an empty state, later empty ticks are skipped.
+        assert!(vizier_should_skip_send(Some(&empty), &empty));
+
+        // A non-empty current tick is never skipped, whatever the baseline.
+        assert!(!vizier_should_skip_send(None, &with_fs));
+        assert!(!vizier_should_skip_send(Some(&empty), &with_fs));
+        assert!(!vizier_should_skip_send(Some(&with_fs), &with_focus));
+    }
+
+    /// The counter the health row reads starts at zero: nothing in the test
+    /// binary drives `capture_vizier`, so no tick has been skipped.
+    #[test]
+    fn skipped_tick_counter_starts_at_zero() {
+        assert_eq!(vizier_empty_ticks_skipped(), 0);
     }
 }

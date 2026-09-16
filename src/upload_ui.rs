@@ -357,9 +357,9 @@ impl eframe::App for UploadApp {
                     } else {
                         theme::status_dot(ui, theme::AMBER(), false);
                         ui.label(
-                            egui::RichText::new(
-                                rust_i18n::t!("upload.auth.signed_out").to_string(),
-                            )
+                            egui::RichText::new(crate::settings_ui::os_variant(
+                                "upload.auth.signed_out",
+                            ))
                             .font(theme::body(13.0))
                             .color(theme::AMBER()),
                         );
@@ -375,9 +375,9 @@ impl eframe::App for UploadApp {
                                 theme::primary_button(ui, &rust_i18n::t!("upload.action.upload"))
                             })
                             .inner
-                            .on_disabled_hover_text(
-                                rust_i18n::t!("upload.action.upload_needs_auth").to_string(),
-                            );
+                            .on_disabled_hover_text(crate::settings_ui::os_variant(
+                                "upload.action.upload_needs_auth",
+                            ));
                         if upload.clicked() {
                             self.start_upload(ctx);
                         }

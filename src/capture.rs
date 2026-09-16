@@ -29,9 +29,32 @@ impl CapturedImage {
     }
 }
 
+/// Capture the user's primary display.
+///
+/// Settings promises "Your main display", so this must pick the monitor the OS
+/// calls primary rather than whichever one the enumeration happens to list
+/// first. The two are not the same thing: `EnumDisplayMonitors` on Windows
+/// and the xrandr/RandR output list on X11 walk monitors in adapter/connector
+/// order, so a laptop docked to an external screen — or a desktop whose
+/// secondary is plugged into the first port — routinely reports a *secondary*
+/// display first. macOS's `CGGetActiveDisplayList` does put the main display
+/// first, which is why the old `.next()` looked right on the one platform it
+/// was written against. `is_primary` is the OS's own flag
+/// (`MONITORINFOF_PRIMARY`, the RandR monitor `primary` flag,
+/// `CGDisplayIsMain`) on every backend, so honouring it is correct
+/// everywhere; the first-screen fallback covers a headless or virtual session
+/// where nothing claims to be primary.
+///
+/// No unit test: `Screen::all()` needs a live display server, which none of
+/// the three CI runners has in the test job. The selection rule is a one-line
+/// `find` with a fallback and is covered by review.
 pub fn capture_primary() -> Result<CapturedImage> {
     let screens = Screen::all().context("enumerating displays")?;
-    let screen = screens.into_iter().next().context("no displays detected")?;
+    let screen = screens
+        .iter()
+        .find(|s| s.display_info.is_primary)
+        .or_else(|| screens.first())
+        .context("no displays detected")?;
     let image = screen.capture().context("capturing display")?;
     let width = image.width();
     let height = image.height();
