@@ -1724,8 +1724,11 @@ fn decode_jwt_aud_iss(jwt: &str) -> Option<(String, String)> {
     Some((aud, iss))
 }
 
-/// Register this machine with CI-Server (`POST /devices`, bearer-authed).
-async fn register_device(config: &AppConfig, bearer: &str) -> Result<Uuid> {
+/// Register this machine with CI-Server (`POST /devices`). `token` is the
+/// Portal id_token at sign-in (sent as Bearer) or, on the deferred retry, the
+/// minted API key — which must go as `x-api-key`: a CI-Hub edge only lets an
+/// API key through to Memory in that header.
+async fn register_device(config: &AppConfig, token: &str) -> Result<Uuid> {
     let hostname = whoami::fallible::hostname().unwrap_or_else(|_| "unknown".to_string());
     let payload = serde_json::json!({
         "device_name": format!("ci-applet-{hostname}"),
@@ -1745,9 +1748,8 @@ async fn register_device(config: &AppConfig, bearer: &str) -> Result<Uuid> {
 
     let mut last_error = None;
     for url in server_common::devices_urls(&config.server.portal_url)? {
-        match client
-            .post(url.clone())
-            .bearer_auth(bearer)
+        match server_common::AuthCredential::from_token(token)
+            .apply(client.post(url.clone()))
             .json(&payload)
             .send()
             .await

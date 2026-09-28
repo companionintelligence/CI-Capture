@@ -106,7 +106,8 @@ struct UploadResponse {
 /// so the client cannot tell a one-off from a poison. A repeating
 /// `rejected[]` is bounded by the knowledge lane's head-of-line valve, which
 /// bisects the chunk after `STALL_AFTER` and parks the one event that still
-/// fails on its own.
+/// fails on its own; the file lane, which posts one event per request, backs
+/// that event off on its own and keeps draining (see `rows_rejected`).
 #[derive(Debug)]
 pub struct IngestError {
     pub permanent: bool,
@@ -118,6 +119,13 @@ pub struct IngestError {
     /// the head, an outage is not, and the two must not be confused or a
     /// day-long outage would mature into a park of a healthy event.
     pub reached_server: bool,
+    /// True only for an HTTP 200 whose body lists `rejected[]` — the server
+    /// accepted the request but its materialize step refused the events in
+    /// it. Unlike a 5xx or 401 this does not say the server is down, so a
+    /// lane that posts one event per request (the file lane) can retry that
+    /// event on its own schedule and keep draining the rest of its queue
+    /// instead of stalling behind it.
+    pub rows_rejected: bool,
     message: String,
 }
 
@@ -128,6 +136,7 @@ impl IngestError {
         Self {
             permanent: true,
             reached_server: true,
+            rows_rejected: false,
             message: message.into(),
         }
     }
@@ -137,6 +146,7 @@ impl IngestError {
         Self {
             permanent: false,
             reached_server: false,
+            rows_rejected: false,
             message: message.into(),
         }
     }
@@ -169,6 +179,7 @@ impl IngestError {
         Self {
             permanent,
             reached_server: true,
+            rows_rejected: false,
             message,
         }
     }
@@ -697,6 +708,7 @@ fn rejected_batch_error(body: &IngestEventsResponse, sent: usize) -> IngestError
         // The server did answer — with a 200 — so this is a verdict the
         // head-of-line valve may count, unlike a transport failure.
         reached_server: true,
+        rows_rejected: true,
         message: format!(
             "event ingest rejected {} of {} event(s) for re-send (first index {}){}",
             body.rejected.len(),
