@@ -22,7 +22,7 @@ const fn c(hex: &str) -> Color32 {
 
 /// Dark mode (`tokens.dark`).
 pub mod dark {
-    use super::{brand, c, Color32};
+    use super::{Color32, brand, c};
 
     pub const BACKGROUND: Color32 = c(brand::DARK_BACKGROUND);
     pub const FOREGROUND: Color32 = c(brand::DARK_FOREGROUND);
@@ -67,7 +67,7 @@ pub mod dark {
 
 /// Light mode (`tokens.light`).
 pub mod light {
-    use super::{brand, c, Color32};
+    use super::{Color32, brand, c};
 
     pub const BACKGROUND: Color32 = c(brand::LIGHT_BACKGROUND);
     pub const FOREGROUND: Color32 = c(brand::LIGHT_FOREGROUND);
@@ -113,7 +113,7 @@ pub mod light {
 /// The brand teal ramp (`tokens.ramp`), mode-independent. `T600`/`T200` are ramp rungs,
 /// not the primaries — the primaries are `dark::PRIMARY` / `light::PRIMARY`.
 pub mod teal {
-    use super::{brand, c, Color32};
+    use super::{Color32, brand, c};
 
     pub const T50: Color32 = c(brand::RAMP_TEAL_50);
     pub const T100: Color32 = c(brand::RAMP_TEAL_100);
@@ -130,7 +130,7 @@ pub mod teal {
 
 /// Accent hues (`tokens.accent`), mode-independent.
 pub mod accent {
-    use super::{brand, c, Color32};
+    use super::{Color32, brand, c};
 
     pub const AQUA: Color32 = c(brand::ACCENT_AQUA);
     pub const AQUA_LIGHT: Color32 = c(brand::ACCENT_AQUA_LIGHT);
@@ -183,8 +183,16 @@ mod tests {
         // and never a retired value
         for (hex, _) in brand::RETIRED {
             let brand::Rgb(r, g, b) = brand::rgb(hex);
-            assert_ne!(light::PRIMARY, Color32::from_rgb(r, g, b), "light primary is retired {hex}");
-            assert_ne!(dark::PRIMARY, Color32::from_rgb(r, g, b), "dark primary is retired {hex}");
+            assert_ne!(
+                light::PRIMARY,
+                Color32::from_rgb(r, g, b),
+                "light primary is retired {hex}"
+            );
+            assert_ne!(
+                dark::PRIMARY,
+                Color32::from_rgb(r, g, b),
+                "dark primary is retired {hex}"
+            );
         }
     }
 }

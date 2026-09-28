@@ -787,6 +787,7 @@ impl WorkerState {
             WorkerCommand::UpdateConfig(config) => {
                 let previous_watch_path = self.config.vizier.watch_path.clone();
                 let previous_all_connections = self.config.vizier.all_connections;
+                let previous_interval_secs = self.config.capture.screenshot_interval_secs;
                 // Only churn the file lane when something it depends on
                 // actually changed — the token-refresh loop pushes configs
                 // autonomously (~hourly), and tearing the watcher down for an
@@ -810,7 +811,13 @@ impl WorkerState {
 
                 self.config = *config;
                 self.publish_sweep_context();
-                *interval = build_interval(self.config.capture.screenshot_interval_secs);
+                // A fresh tokio interval fires immediately, so rebuilding it on
+                // every config push (the token-refresh loop sends one as often
+                // as once a minute) would capture on each push instead of on
+                // the configured schedule. Rebuild only when the period moves.
+                if previous_interval_secs != self.config.capture.screenshot_interval_secs {
+                    *interval = build_interval(self.config.capture.screenshot_interval_secs);
+                }
 
                 if previous_watch_path != self.config.vizier.watch_path
                     || previous_all_connections != self.config.vizier.all_connections

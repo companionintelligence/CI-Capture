@@ -55,6 +55,19 @@ const TICK_BUDGET: Duration = Duration::from_secs(20);
 /// to notice before more events park.
 const MAX_PARKS_PER_TICK: usize = 5;
 
+/// Ceiling on the per-event retry delay after the server rejects one event
+/// (HTTP 200 with `rejected[]`). Matches the lane-wide backoff cap.
+const REJECTED_RETRY_MAX: Duration = Duration::from_secs(5 * 60);
+
+/// Retry delay for an event the server rejected on its `attempts`-th try:
+/// 10 s, 20 s, 40 s … capped at [`REJECTED_RETRY_MAX`]. The event keeps its
+/// place in enqueue order but is skipped by `take_batch` until due, so the
+/// rest of the queue drains meanwhile.
+fn rejected_retry_delay(attempts: u32) -> Duration {
+    let exp = attempts.saturating_sub(1).min(10);
+    Duration::from_secs(10u64 << exp).min(REJECTED_RETRY_MAX)
+}
+
 /// True if the lane should watch and queue. A missing Memory credential
 /// does **not** idle the watcher — events stay in SQLite until reconnect.
 pub fn is_runnable(config: &AppConfig) -> bool {
@@ -146,6 +159,8 @@ pub async fn run(config: AppConfig, queue_path: PathBuf) -> Result<()> {
                 let tick_start = Instant::now();
                 let mut failed = false;
                 let mut parked = 0usize;
+                let mut rejected = 0usize;
+                let mut acked = 0usize;
                 for queued in pending {
                     // Don't let one slow batch monopolize the task; the rest
                     // stay queued (still ready) and resume next tick.
@@ -165,6 +180,7 @@ pub async fn run(config: AppConfig, queue_path: PathBuf) -> Result<()> {
                     .await
                     {
                         Ok(()) => {
+                            acked += 1;
                             if let Err(err) = queue.ack(&queued.event_id) {
                                 log::error!("failed to ack synced event: {err:?}");
                             }
@@ -217,6 +233,24 @@ pub async fn run(config: AppConfig, queue_path: PathBuf) -> Result<()> {
                                 }
                                 continue;
                             }
+                            if err.rows_rejected {
+                                // The server is up and answered 200, but its
+                                // materialize step refused this one event. That
+                                // may be a blip or a row it will never take, and
+                                // the body can't say which — so retry just this
+                                // event on its own backoff (PARK_AFTER above
+                                // still bounds it) and keep draining the queue
+                                // instead of stalling every later edit behind it.
+                                let delay = rejected_retry_delay(attempts);
+                                log::warn!(
+                                    "server rejected {} (attempt {attempts}); retrying it in {}s: {err}",
+                                    describe(&queued.event),
+                                    delay.as_secs()
+                                );
+                                let _ = queue.requeue(&queued.event_id, delay, &err.to_string());
+                                rejected += 1;
+                                continue;
+                            }
                             failed = true;
                             let delay = batch.backoff().max(Duration::from_secs(1));
                             log::warn!("file event sync failed (attempt {attempts}): {err}");
@@ -226,7 +260,10 @@ pub async fn run(config: AppConfig, queue_path: PathBuf) -> Result<()> {
                     }
                 }
 
-                if failed || parked > 0 {
+                // A rejected event that others got past is that event's problem
+                // (it has its own retry delay); only a tick where the server
+                // refused everything reads as a failing server.
+                if failed || parked > 0 || (rejected > 0 && acked == 0) {
                     // Parks are server rejections too — a tick that parked
                     // must not read as success (which would grow the batch
                     // and reset backoff against a rejecting server).
@@ -286,6 +323,10 @@ async fn build_content(config: &AppConfig, event: &NormalizedEvent) -> FileEvent
             markdown,
             sections,
         } => {
+            // Postgres text/jsonb cannot hold U+0000, and CI-Server's event
+            // schema doesn't reject it up front, so a NUL in a log or CSV turns
+            // into a materialize failure on every retry. Drop it here.
+            let markdown = strip_nul(markdown);
             let truncated = markdown.len() > max;
             let body = if truncated {
                 truncate_on_char_boundary(&markdown, max)
@@ -307,7 +348,7 @@ async fn build_content(config: &AppConfig, event: &NormalizedEvent) -> FileEvent
         Extraction::Failed(err) => {
             log::debug!("content extraction failed: {err}");
             FileEventContent {
-                extraction_error: Some(err),
+                extraction_error: Some(strip_nul(err)),
                 ..Default::default()
             }
         }
@@ -350,9 +391,34 @@ fn truncate_on_char_boundary(s: &str, max: usize) -> String {
     out
 }
 
+/// Remove U+0000, which Postgres text and jsonb columns refuse.
+fn strip_nul(s: String) -> String {
+    if s.contains('\0') {
+        s.replace('\0', "")
+    } else {
+        s
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn strip_nul_removes_only_nul() {
+        assert_eq!(strip_nul("a\0b\0\0c".to_string()), "abc");
+        assert_eq!(strip_nul("héllo\n".to_string()), "héllo\n");
+    }
+
+    #[test]
+    fn rejected_retry_delay_grows_and_caps() {
+        assert_eq!(rejected_retry_delay(0), Duration::from_secs(10));
+        assert_eq!(rejected_retry_delay(1), Duration::from_secs(10));
+        assert_eq!(rejected_retry_delay(2), Duration::from_secs(20));
+        assert_eq!(rejected_retry_delay(3), Duration::from_secs(40));
+        assert_eq!(rejected_retry_delay(6), Duration::from_secs(300));
+        assert_eq!(rejected_retry_delay(u32::MAX), REJECTED_RETRY_MAX);
+    }
 
     #[test]
     fn truncate_respects_char_boundary() {
@@ -413,7 +479,9 @@ mod e2e {
     /// could consume the status meant for the event under test, so the
     /// assertions would hold while describing the wrong event.
     ///
-    /// 200s answer with a valid `/v1/events` ingest body. 4xx/5xx answer with
+    /// 200s answer with a valid `/v1/events` ingest body, and the pseudo-status
+    /// 299 answers HTTP 200 with that event listed in `rejected[]` (CI-Server's
+    /// "materialize refused it" reply). 4xx/5xx answer with
     /// that status **and echo the request back in the error body**, the way a
     /// validation rejection that quotes the offending field does — so the
     /// redaction in `server_ingest` is exercised against the payload it is
@@ -470,8 +538,12 @@ mod e2e {
                         .map(|(_, statuses)| statuses.remove(0))
                         .unwrap_or(200)
                 };
-                let response = if status == 200 {
-                    let payload = r#"{"ingested":1,"duplicate":0,"rejected":[]}"#;
+                let response = if status == 200 || status == 299 {
+                    let payload = if status == 299 {
+                        r#"{"ingested":0,"duplicate":0,"rejected":[{"index":0,"reason":"materialize_failed"}]}"#
+                    } else {
+                        r#"{"ingested":1,"duplicate":0,"rejected":[]}"#
+                    };
                     format!(
                         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
                         payload.len(),
@@ -797,5 +869,61 @@ mod e2e {
                 "parked reason persisted {leaked:?} to disk: {reason:?}"
             );
         }
+    }
+    #[tokio::test(flavor = "multi_thread")]
+    async fn server_rejected_event_does_not_stall_later_edits() {
+        // stuck.md is refused by the materialize step (HTTP 200 + rejected[])
+        // on every try. It must neither be parked on the spot nor pin the head
+        // of the queue: later edits have to keep flowing past it.
+        let (origin, recorded) = spawn_mock_server(vec![("stuck.md", vec![299; 200])]);
+        let dir = watchable_tempdir();
+        let watched = dir.path().join("watched");
+        std::fs::create_dir_all(&watched).unwrap();
+        let queue_path = dir.path().join("queue.db");
+
+        let lane = tokio::spawn(run(
+            lane_config(&origin, watched.clone()),
+            queue_path.clone(),
+        ));
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        std::fs::write(watched.join("stuck.md"), "server refuses this").unwrap();
+        let refused = wait_for_request(&recorded, Duration::from_secs(30), |(_, _, b)| {
+            b.contains("server refuses this")
+        })
+        .await;
+        assert!(
+            refused.is_some(),
+            "stuck.md never reached the server.\n{}",
+            dump_requests(&recorded)
+        );
+
+        // A NUL byte would be refused by Postgres on every retry; it must be
+        // gone from the wire.
+        std::fs::write(watched.join("later.txt"), "gets through\0 anyway").unwrap();
+        let later = wait_for_request(&recorded, Duration::from_secs(30), |(_, _, b)| {
+            b.contains("gets through anyway")
+        })
+        .await;
+        let still_queued = Queue::open(&queue_path)
+            .map(|q| q.depth().unwrap_or(0) >= 1 && q.dead_letter_count().unwrap_or(1) == 0)
+            .unwrap_or(false);
+        lane.abort();
+
+        let (_, _, later_body) = later.unwrap_or_else(|| {
+            panic!(
+                "an edit made after a server-rejected one never reached the server — the lane stalled behind it.\n{}",
+                dump_requests(&recorded)
+            )
+        });
+        assert!(
+            !later_body.contains("\\u0000"),
+            "NUL reached the wire: {later_body}"
+        );
+        assert!(
+            still_queued,
+            "the rejected event must stay queued for retry, not be acked or parked.\n{}",
+            dump_requests(&recorded)
+        );
     }
 }
