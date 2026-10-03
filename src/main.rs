@@ -25,6 +25,7 @@ mod file_tracker;
 mod helper_window;
 mod imessage;
 mod knowledge;
+mod lock_detect;
 mod locale;
 #[cfg(feature = "legacy-minio")]
 mod minio;
