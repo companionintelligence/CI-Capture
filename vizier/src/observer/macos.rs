@@ -258,7 +258,7 @@ fn cursor_position() -> Option<Point> {
     })
 }
 
-fn idle_ms() -> Option<u64> {
+pub fn idle_ms() -> Option<u64> {
     let output = command_stdout("ioreg", &["-c", "IOHIDSystem"])?;
     let marker = "\"HIDIdleTime\" = ";
     let line = output.lines().find(|line| line.contains(marker))?;
