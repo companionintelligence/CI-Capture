@@ -4,6 +4,41 @@ name: Desktop Release
 # GitHub Release. The GHCR container image is intentionally handled separately
 # by packages.yml; this workflow is for signed end-user desktop downloads.
 
+# >>> ci-local:gated original triggers below, restore with `ci-local restore`
+# on:
+#   workflow_dispatch:
+#     inputs:
+#       tag:
+#         description: 'Release tag (e.g. v0.1.0)'
+#         required: true
+#         type: string
+#       prerelease:
+#         description: 'Mark as pre-release'
+#         required: false
+#         default: true
+#         type: boolean
+#       environment:
+#         description: 'Target signing/release environment'
+#         required: false
+#         default: dev
+#         type: choice
+#         options:
+#           - dev
+#           - production
+#       platforms:
+#         description: 'Platforms to build'
+#         required: false
+#         default: all
+#         type: choice
+#         options:
+#           - all
+#           - macos-only
+#           - linux-only
+#           - windows-only
+#   push:
+#     tags:
+#       - 'v*'
+# <<< ci-local:gated
 on:
   workflow_dispatch:
     inputs:
@@ -34,9 +69,6 @@ on:
           - macos-only
           - linux-only
           - windows-only
-  push:
-    tags:
-      - 'v*'
 
 permissions:
   contents: write
