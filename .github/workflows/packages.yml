@@ -6,11 +6,15 @@ name: Packages
 # Version tags must publish automatically so the GHCR image always matches the
 # desktop release built by release.yml from the same tag.
 
+# >>> ci-local:gated original triggers below, restore with `ci-local restore`
+# on:
+#   push:
+#     branches: [main]
+#     tags: ['v*']
+#   pull_request:
+#   workflow_dispatch:
+# <<< ci-local:gated
 on:
-  push:
-    branches: [main]
-    tags: ['v*']
-  pull_request:
   workflow_dispatch:
 
 permissions:
