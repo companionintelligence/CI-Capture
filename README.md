@@ -302,3 +302,19 @@ Multiple AI agents work these repos in parallel. Never use `git reset --hard`, `
   <img src="docs/assets/icon.svg" width="44" height="44"><br>
   <sub><b>Companion Intelligence</b> · Capture layer · © 2019–2026 LifeScope Inc.</sub>
 </p>
+
+<!-- companion-hub-readme-deep-review -->
+
+## Capture and sync flow
+
+```mermaid
+flowchart LR
+  Sources[Desktop activity and files] --> Capture[CI Capture app]
+  Capture --> Local[Local capture/session state]
+  Capture --> Vision[vizier perception engine]
+  Local --> Sync[Configured CI server connection]
+  Vision --> Sync
+```
+
+The app's capture scope and privacy controls are described in the Privacy section. Review those settings before enabling file tracking or perception features, and verify the server connection before assuming a session has synced. The release instructions distinguish unsigned development installers from signed and notarized production releases.
+
