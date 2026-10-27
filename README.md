@@ -1,3 +1,20 @@
+<h1 align="center">Companion Capture</h1>
+
+<p align="center"><strong>Companion Applet for desktop monitoring</strong></p>
+
+[![release](https://img.shields.io/github/v/release/companionintelligence/CI-Capture?style=flat-square&color=0a6358&label=release)](https://github.com/companionintelligence/CI-Capture/releases/latest)
+[![platform](https://img.shields.io/badge/platform-macOS%20%C2%B7%20Windows%20%C2%B7%20Linux-0a6358?style=flat-square)](https://github.com/companionintelligence/CI-Capture)
+[![License](https://img.shields.io/badge/license-PolyForm%20NC%201.0-0a6358?style=flat-square)](LICENSE.md)
+[![Discord](https://img.shields.io/badge/chat-Discord-5865F2?style=flat-square&logo=discord&logoColor=white)](https://discord.com/invite/yQp9hwpzAa)
+
+<p align="center"><a href="https://ci.computer/download">Website</a> · <a href="#documentation">Documentation</a> · <a href="#install">Get started</a> · <a href="https://docs.ci.computer/docs/reference/open-source-systems">Systems map</a></p>
+
+<p align="center">
+  <a href="https://github.com/companionintelligence/CI-Capture/releases/latest"><img src="https://img.shields.io/badge/macOS%20installer-macOS%20installer-0a6358?style=for-the-badge&logo=apple&logoColor=white" alt="macOS installer" height="30"></a>
+  <a href="https://github.com/companionintelligence/CI-Capture/releases/latest"><img src="https://img.shields.io/badge/Windows%20installer-Windows%20installer-0a6358?style=for-the-badge&logo=windows&logoColor=white" alt="Windows installer" height="30"></a>
+  <a href="https://github.com/companionintelligence/CI-Capture/releases/latest"><img src="https://img.shields.io/badge/Linux%20packages-Linux%20packages-0a6358?style=for-the-badge&logo=linux&logoColor=white" alt="Linux packages" height="30"></a>
+</p>
+
 <p align="center">
   <img src="docs/assets/banner.svg" alt="CI-Capture — Companion Desktop Capture" width="820">
 </p>
@@ -6,10 +23,10 @@
 
 <p align="center">
   <a href="https://github.com/companionintelligence/CI-Capture/actions/workflows/ci.yml"><img src="https://github.com/companionintelligence/CI-Capture/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <img src="https://img.shields.io/badge/platform-macOS%20%C2%B7%20Linux%20%C2%B7%20Windows-041620" alt="platform macOS, Linux, Windows">
+
   <img src="https://img.shields.io/badge/Rust-edition%202024-0F717A?logo=rust&logoColor=white" alt="Rust edition 2024">
   <img src="https://img.shields.io/badge/tests-217%20passing-35A05C" alt="217 tests passing">
-  <img src="https://img.shields.io/badge/license-PolyForm--Noncommercial--1.0.0-0a6358" alt="license PolyForm Noncommercial 1.0.0">
+
 </p>
 
 > **Companion Intelligence — Capture layer.** [PolyForm Noncommercial 1.0.0](LICENSE.md). © 2019–2026 LifeScope Inc. See the [License FAQ](docs/License-FAQ.md).
@@ -17,6 +34,14 @@
 **Companion Capture** is a lightweight **cross‑platform** menu‑bar / system‑tray app (macOS, Windows, Linux) that grows your **Companion Memory** by perceiving your desktop and streaming it to your CI‑Server.
 
 ## What it captures
+
+| Feature | What it provides |
+|---|---|
+| **Screen capture** | Diff-gate screenshots and skip near-identical frames. |
+| **Activity snapshots** | Run the `vizier` perception lane for foreground app and system context. |
+| **File tracking** | Watch selected folders, fingerprint edits and convert supported files. |
+| **Durable sync** | Queue each lane and retry against the configured Memory API. |
+
 
 - **Screenshots** of the primary display on an interval — diff‑gated (skips near‑identical frames), screensaver‑aware, then run through vision analysis.
 - **System activity** via the embedded **`vizier`** perception engine — structured snapshots of the machine/user/environment: foreground app & window, working directory, network connections, and live filesystem deltas.
@@ -296,3 +321,34 @@ Multiple AI agents work these repos in parallel. Never use `git reset --hard`, `
   <img src="docs/assets/icon.svg" width="44" height="44"><br>
   <sub><b>Companion Intelligence</b> · Capture layer · © 2019–2026 LifeScope Inc.</sub>
 </p>
+
+<!-- companion-hub-readme-deep-review -->
+
+
+## How it fits together
+
+Capture lanes write durable work locally and then sync lane-specific event or file payloads to the configured Memory server; OIDC sign-in and data delivery are separate paths.
+
+```mermaid
+flowchart LR
+  Screen[Screenshot lane] --> Queue[SQLite work queue]
+  Vizier[Activity lane] --> Queue
+  Files[Selected file lane] --> Queue
+  Queue --> Sync[Retrying sync worker]
+  Sync --> Memory[Companion Memory API]
+  Login[OIDC PKCE] --> Identity[CI Account]
+```
+
+## Capture and sync flow
+
+```mermaid
+flowchart LR
+  Sources[Desktop activity and files] --> Capture[CI Capture app]
+  Capture --> Local[Local capture/session state]
+  Capture --> Vision[vizier perception engine]
+  Local --> Sync[Configured CI server connection]
+  Vision --> Sync
+```
+
+The app's capture scope and privacy controls are described in the Privacy section. Review those settings before enabling file tracking or perception features, and verify the server connection before assuming a session has synced. The release instructions distinguish unsigned development installers from signed and notarized production releases.
+
