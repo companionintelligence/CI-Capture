@@ -1,3 +1,9 @@
+<h1 align="center">Companion Capture</h1>
+
+<p align="center"><strong>Companion Applet for desktop monitoring</strong></p>
+
+<p align="center"><a href="https://ci.computer/download">Website</a> · <a href="#documentation">Documentation</a> · <a href="#install">Get started</a></p>
+
 <p align="center">
   <img src="docs/assets/banner.svg" alt="CI-Capture — Companion Desktop Capture" width="820">
 </p>
