@@ -1,6 +1,7 @@
-<h1 align="center">Companion Capture</h1>
 
-<p align="center"><strong>Companion Applet for desktop monitoring</strong></p>
+<p align="center">
+  <img src="docs/assets/banner.svg" alt="CI-Capture — Companion Desktop Capture" width="820">
+</p>
 
 [![release](https://img.shields.io/github/v/release/companionintelligence/CI-Capture?style=flat-square&color=0a6358&label=release)](https://github.com/companionintelligence/CI-Capture/releases/latest)
 [![platform](https://img.shields.io/badge/platform-macOS%20%C2%B7%20Windows%20%C2%B7%20Linux-0a6358?style=flat-square)](https://github.com/companionintelligence/CI-Capture)
@@ -15,9 +16,6 @@
   <a href="https://github.com/companionintelligence/CI-Capture/releases/latest"><img src="https://img.shields.io/badge/Linux%20packages-Linux%20packages-0a6358?style=for-the-badge&logo=linux&logoColor=white" alt="Linux packages" height="30"></a>
 </p>
 
-<p align="center">
-  <img src="docs/assets/banner.svg" alt="CI-Capture — Companion Desktop Capture" width="820">
-</p>
 
 <p align="center"><b>Companion Desktop Capture — macOS · Windows · Linux</b></p>
 
