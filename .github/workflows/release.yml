@@ -681,7 +681,23 @@ jobs:
               --armor --detach-sign "$file"
           done
 
+      - name: Check for existing release notes
+        id: existing
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.release-metadata.outputs.tag }}
+        run: |
+          # A release that already has a body (hand-written notes) must keep it
+          # when this workflow runs again for the same tag.
+          body="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body -q .body 2>/dev/null || true)"
+          if [ -n "${body//[[:space:]]/}" ]; then
+            echo "preserve=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "preserve=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Create GitHub Release
+        if: steps.existing.outputs.preserve != 'true'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.release-metadata.outputs.tag }}
@@ -710,6 +726,19 @@ jobs:
             ```bash
             shasum -a 256 -c CompanionCapture-${{ needs.release-metadata.outputs.tag }}-SHA256SUMS.txt
             ```
+
+      - name: Update GitHub Release assets (keep existing notes)
+        if: steps.existing.outputs.preserve == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.release-metadata.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: Companion Capture ${{ needs.release-metadata.outputs.tag }}${{ needs.release-metadata.outputs.environment != 'production' && format(' ({0})', needs.release-metadata.outputs.environment) || '' }}
+          prerelease: ${{ needs.release-metadata.outputs.prerelease }}
+          # No body and no generated notes: softprops leaves the existing body alone.
+          generate_release_notes: false
+          fail_on_unmatched_files: true
+          files: release-files/*
 
   upload-r2:
     name: Publish to R2
