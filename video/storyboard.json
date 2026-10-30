@@ -1,0 +1,153 @@
+{
+  "$schema": "https://raw.githubusercontent.com/companionintelligence/CI-Common/main/packages/video-kit/schema/storyboard.schema.json",
+  "app": {
+    "id": "ci-capture",
+    "name": "Companion Capture",
+    "repo": "companionintelligence/CI-Capture",
+    "website": "ci.computer"
+  },
+  "meta": {
+    "fps": 30,
+    "transitionSeconds": 0.5,
+    "pacing": "fit"
+  },
+  "chapters": {
+    "start": "First run",
+    "lanes": "What it records",
+    "yours": "Where it goes"
+  },
+  "scenes": [
+    {
+      "id": "open",
+      "kind": "intro",
+      "seconds": 5,
+      "minSeconds": 5,
+      "title": "Companion Capture",
+      "caption": "Your desktop, remembered by your own Memory.",
+      "narration": "Companion Capture lives in your menu bar and saves what you see and edit on this computer to your own Companion Memory.",
+      "mark": "brand:logo.mark"
+    },
+    {
+      "id": "first-run",
+      "kind": "feature",
+      "chapter": "start",
+      "seconds": 7,
+      "caption": "Setup says what it records before it records anything.",
+      "narration": "The first-run assistant starts by saying what it records. Then it connects to your Core and asks for permission. Nothing is captured until you have signed in or added a key.",
+      "items": [
+        {
+          "image": "assets/shots/capture-first-run.png",
+          "alt": "Welcome to Companion Capture: step one of four, What it does. Three lanes, Screens, Activity and Files, flow from this computer to Your Memory."
+        }
+      ],
+      "columns": 1,
+      "transition": "cut"
+    },
+    {
+      "id": "three-lanes",
+      "kind": "feature",
+      "chapter": "lanes",
+      "seconds": 8,
+      "reveal": "paced",
+      "title": "Three lanes",
+      "caption": "Each lane says what it takes, in its own words.",
+      "narration": "Screens takes a picture now and then and skips near-identical frames. Activity notes which app and window you are in. Files watches documents you edit, in folders you choose.",
+      "items": [
+        {
+          "label": "Screens",
+          "value": "near-identical frames are skipped"
+        },
+        {
+          "label": "Activity",
+          "value": "which app and window you are in"
+        },
+        {
+          "label": "Files",
+          "value": "off until you pick a folder"
+        }
+      ],
+      "transition": "cut"
+    },
+    {
+      "id": "connect",
+      "kind": "feature",
+      "chapter": "yours",
+      "seconds": 7,
+      "caption": "Point it at your Core. Sign in from the menu bar.",
+      "narration": "In Settings you give it your Core's address, on your network or your Tailscale network, and sign in with your browser or an API key.",
+      "items": [
+        {
+          "image": "assets/shots/capture-settings-connection.png",
+          "alt": "Settings, Connection: your Core's address, authentication by API key or OIDC browser login, and this device."
+        }
+      ],
+      "columns": 1,
+      "transition": "cut"
+    },
+    {
+      "id": "guard-rails",
+      "kind": "feature",
+      "chapter": "yours",
+      "seconds": 8,
+      "reveal": "paced",
+      "title": "What it will not read",
+      "caption": "A sensitive-file list you cannot switch off.",
+      "narration": "SSH keys, keychains, AWS credentials, GPG keys and password vaults are on a list you cannot switch off, checked before any file is fingerprinted. Crash reports hold panics only, and one setting turns them off.",
+      "items": [
+        {
+          "label": "Never read",
+          "value": "ssh keys, keychains, AWS credentials, password vaults"
+        },
+        {
+          "label": "Files lane",
+          "value": "off until you add a folder"
+        },
+        {
+          "label": "Crash reports",
+          "value": "panics only, one setting to turn off"
+        }
+      ],
+      "transition": "cut"
+    },
+    {
+      "id": "platforms",
+      "kind": "feature",
+      "chapter": "yours",
+      "seconds": 6,
+      "reveal": "paced",
+      "title": "Installers for the three desktops",
+      "caption": "Some lanes are macOS first. The README lists which.",
+      "narration": "There are installers for macOS, Windows and Linux. A few lanes are macOS first, and the README says which.",
+      "items": [
+        {
+          "label": "macOS",
+          "value": "dmg",
+          "icon": "brand:platform.macos"
+        },
+        {
+          "label": "Windows",
+          "value": "setup exe",
+          "icon": "brand:platform.windows"
+        },
+        {
+          "label": "Linux",
+          "value": "deb, AppImage, Arch",
+          "icon": "brand:platform.linux"
+        }
+      ],
+      "transition": "cut"
+    },
+    {
+      "id": "close",
+      "kind": "outro",
+      "seconds": 6,
+      "minSeconds": 6,
+      "title": "Companion Capture",
+      "caption": "ci.computer",
+      "cta": "Let your computer remember for you",
+      "tagline": "UnCloud your life.",
+      "url": "ci.computer",
+      "narration": "Let your computer remember for you, on a Memory you own. Visit ci dot computer. UnCloud your life."
+    }
+  ]
+}

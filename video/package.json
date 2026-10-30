@@ -1,0 +1,19 @@
+{
+  "name": "ci-capture-video",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "doctor": "ci-video doctor",
+    "capture": "echo \"no capture stage: shots are cropped from docs/assets, see video/README.md\" && false",
+    "build": "ci-video build",
+    "check": "ci-video check",
+    "render": "ci-video render",
+    "narrate": "ci-video narrate",
+    "status": "ci-video status",
+    "all": "ci-video all"
+  },
+  "devDependencies": {
+    "@companionintelligence/video-kit": "^0.35.0",
+    "playwright": "1.62.1"
+  }
+}
