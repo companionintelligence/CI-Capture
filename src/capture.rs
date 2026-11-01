@@ -1,7 +1,8 @@
 use std::fs;
+use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use image::{ColorType, ImageEncoder, RgbaImage, codecs::png::PngEncoder};
 use screenshots::Screen;
 
@@ -55,7 +56,9 @@ pub fn capture_primary() -> Result<CapturedImage> {
         .find(|s| s.display_info.is_primary)
         .or_else(|| screens.first())
         .context("no displays detected")?;
-    let image = screen.capture().context("capturing display")?;
+    let image = panic::catch_unwind(AssertUnwindSafe(|| screen.capture()))
+        .map_err(|_| anyhow!("screen capture panicked"))?
+        .context("capturing display")?;
     let width = image.width();
     let height = image.height();
     let data = image.into_raw();

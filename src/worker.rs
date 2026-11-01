@@ -563,6 +563,8 @@ struct WorkerState {
     /// this field for why), so this never gates `capture_vizier` the way
     /// `capture_blocked` does.
     capture_idle: bool,
+    /// True while screen capture is failing, so the failure logs once.
+    capture_failed: bool,
     last_capture: Option<CapturedImage>,
     running_flag: Arc<AtomicBool>,
     analysis_tx: Sender<PendingCapture>,
@@ -603,6 +605,7 @@ impl WorkerState {
             paused: false,
             capture_blocked: false,
             capture_idle: false,
+            capture_failed: false,
             last_capture: None,
             running_flag,
             analysis_tx,
@@ -1124,10 +1127,26 @@ impl WorkerState {
             return Ok(false);
         }
 
-        let capture = tokio::task::spawn_blocking(capture_primary)
+        let capture = match tokio::task::spawn_blocking(capture_primary)
             .await
-            .context("joining capture thread")?
-            .context("capturing display")?;
+            .context("joining capture thread")
+            .and_then(|captured| captured.context("capturing display"))
+        {
+            Ok(capture) => {
+                if self.capture_failed {
+                    log::info!("screen capture recovered; resuming frames");
+                    self.capture_failed = false;
+                }
+                capture
+            }
+            Err(err) => {
+                if !self.capture_failed {
+                    log::error!("screen capture failed; skipping frame: {err:#}");
+                    self.capture_failed = true;
+                }
+                return Ok(false);
+            }
+        };
 
         let diff_percent = self
             .last_capture
