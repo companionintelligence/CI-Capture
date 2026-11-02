@@ -15,7 +15,7 @@ use vizier::observer::{Observer, ObserverConfig, create_observer};
 
 use crate::analysis::{AnalysisResult, VisionAnalyzer};
 use crate::bluebubbles;
-use crate::capture::{CapturedImage, capture_primary, diff_percent, save_to_path};
+use crate::capture::{CapturedImage, HelperFailure, capture_isolated, diff_percent, save_to_path};
 use crate::config::AppConfig;
 #[cfg(feature = "legacy-postgres")]
 use crate::db::PostgresRecorder;
@@ -1127,11 +1127,12 @@ impl WorkerState {
             return Ok(false);
         }
 
-        let capture = match tokio::task::spawn_blocking(capture_primary)
+        let captured = tokio::task::spawn_blocking(capture_isolated)
             .await
-            .context("joining capture thread")
-            .and_then(|captured| captured.context("capturing display"))
-        {
+            .unwrap_or_else(|err| {
+                Err(HelperFailure::Gap(format!("joining capture thread: {err}")))
+            });
+        let capture = match captured {
             Ok(capture) => {
                 if self.capture_failed {
                     log::info!("screen capture recovered; resuming frames");
@@ -1139,9 +1140,17 @@ impl WorkerState {
                 }
                 capture
             }
-            Err(err) => {
+            Err(failure) => {
                 if !self.capture_failed {
-                    log::error!("screen capture failed; skipping frame: {err:#}");
+                    log::error!("screen capture failed; skipping frame: {failure}");
+                    if let HelperFailure::Panic(message) = &failure {
+                        // In-process, the panic hook reported this. The helper has no
+                        // Sentry client, so the parent reports it, once per streak.
+                        let _ = sentry::capture_message(
+                            &format!("capture helper panicked: {message}"),
+                            sentry::Level::Error,
+                        );
+                    }
                     self.capture_failed = true;
                 }
                 return Ok(false);
