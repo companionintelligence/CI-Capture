@@ -1573,6 +1573,25 @@ pub fn env_override() -> Option<DisabledReason> {
 
 // ── Init ────────────────────────────────────────────────────────────────────
 
+/// A panic with the value `NotPresent` from inside libwayshot means the compositor lacks a
+/// Wayland protocol that screen capture needs (wlr-screencopy, which GNOME does not
+/// implement). The worker logs that once and then goes quiet, so each later attempt would
+/// only file another copy of the same report.
+fn is_compositor_capture_gap(event: &Event<'static>) -> bool {
+    event.exception.values.iter().any(|exception| {
+        exception.ty == "panic"
+            && exception.value.as_deref() == Some("NotPresent")
+            && exception.stacktrace.as_ref().is_some_and(|stacktrace| {
+                stacktrace.frames.iter().any(|frame| {
+                    frame
+                        .function
+                        .as_deref()
+                        .is_some_and(|function| function.starts_with("libwayshot::"))
+                })
+            })
+    })
+}
+
 /// Start crash reporting unless something turned it off.
 ///
 /// `setting_on` is the Settings toggle, which defaults to **on**; the two
@@ -1629,7 +1648,13 @@ pub fn init(setting_on: bool) -> Option<sentry::ClientInitGuard> {
     options.max_breadcrumbs = 0;
     options.send_default_pii = false;
     options.attach_stacktrace = true;
-    options.before_send = Some(Arc::new(scrub));
+    options.before_send = Some(Arc::new(|event: Event<'static>| {
+        if is_compositor_capture_gap(&event) {
+            None
+        } else {
+            scrub(event)
+        }
+    }));
     options.transport = Some(Arc::new(ProxyFreeFactory));
 
     Some(sentry::init(options))
@@ -1638,7 +1663,49 @@ pub fn init(setting_on: bool) -> Option<sentry::ClientInitGuard> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sentry::protocol::{Exception, Frame, LogEntry, Mechanism, TemplateInfo, Thread};
+    use sentry::protocol::{
+        Exception, Frame, LogEntry, Mechanism, Stacktrace, TemplateInfo, Thread,
+    };
+
+    fn libwayshot_panic(value: &str, function: &str) -> Event<'static> {
+        let mut event = Event::default();
+        event.exception = vec![Exception {
+            ty: "panic".into(),
+            value: Some(value.into()),
+            stacktrace: Some(Stacktrace {
+                frames: vec![Frame {
+                    function: Some(function.into()),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            ..Default::default()
+        }]
+        .into();
+
+        event
+    }
+
+    #[test]
+    fn compositor_capture_gap_is_not_reported() {
+        let event = libwayshot_panic("NotPresent", "libwayshot::WayshotConnection::screenshot");
+
+        assert!(is_compositor_capture_gap(&event));
+    }
+
+    #[test]
+    fn other_panics_are_still_reported() {
+        // The same value from outside libwayshot is a different bug.
+        let unrelated = libwayshot_panic("NotPresent", "std::env::var");
+        // A libwayshot panic with another value is a different bug too.
+        let other = libwayshot_panic(
+            "index out of bounds",
+            "libwayshot::WayshotConnection::screenshot",
+        );
+
+        assert!(!is_compositor_capture_gap(&unrelated));
+        assert!(!is_compositor_capture_gap(&other));
+    }
 
     /// Every string that must never appear in a report.
     const SECRETS: &[&str] = &[

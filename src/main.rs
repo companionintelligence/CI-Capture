@@ -137,6 +137,12 @@ fn attach_parent_console() {
 }
 
 fn main() -> Result<()> {
+    // First, before logging, Sentry, or the console attach: a capture helper
+    // (see capture::capture_isolated) takes one frame and exits.
+    if std::env::args().any(|arg| arg == capture::CAPTURE_HELPER_FLAG) {
+        std::process::exit(capture::run_capture_helper());
+    }
+
     #[cfg(all(windows, not(debug_assertions)))]
     attach_parent_console();
 

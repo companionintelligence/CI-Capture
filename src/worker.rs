@@ -15,7 +15,7 @@ use vizier::observer::{Observer, ObserverConfig, create_observer};
 
 use crate::analysis::{AnalysisResult, VisionAnalyzer};
 use crate::bluebubbles;
-use crate::capture::{CapturedImage, capture_primary, diff_percent, save_to_path};
+use crate::capture::{CapturedImage, HelperFailure, capture_isolated, diff_percent, save_to_path};
 use crate::config::AppConfig;
 #[cfg(feature = "legacy-postgres")]
 use crate::db::PostgresRecorder;
@@ -563,6 +563,8 @@ struct WorkerState {
     /// this field for why), so this never gates `capture_vizier` the way
     /// `capture_blocked` does.
     capture_idle: bool,
+    /// True while screen capture is failing, so the failure logs once.
+    capture_failed: bool,
     last_capture: Option<CapturedImage>,
     running_flag: Arc<AtomicBool>,
     analysis_tx: Sender<PendingCapture>,
@@ -603,6 +605,7 @@ impl WorkerState {
             paused: false,
             capture_blocked: false,
             capture_idle: false,
+            capture_failed: false,
             last_capture: None,
             running_flag,
             analysis_tx,
@@ -1124,10 +1127,35 @@ impl WorkerState {
             return Ok(false);
         }
 
-        let capture = tokio::task::spawn_blocking(capture_primary)
+        let captured = tokio::task::spawn_blocking(capture_isolated)
             .await
-            .context("joining capture thread")?
-            .context("capturing display")?;
+            .unwrap_or_else(|err| {
+                Err(HelperFailure::Gap(format!("joining capture thread: {err}")))
+            });
+        let capture = match captured {
+            Ok(capture) => {
+                if self.capture_failed {
+                    log::info!("screen capture recovered; resuming frames");
+                    self.capture_failed = false;
+                }
+                capture
+            }
+            Err(failure) => {
+                if !self.capture_failed {
+                    log::error!("screen capture failed; skipping frame: {failure}");
+                    if let HelperFailure::Panic(message) = &failure {
+                        // In-process, the panic hook reported this. The helper has no
+                        // Sentry client, so the parent reports it, once per streak.
+                        let _ = sentry::capture_message(
+                            &format!("capture helper panicked: {message}"),
+                            sentry::Level::Error,
+                        );
+                    }
+                    self.capture_failed = true;
+                }
+                return Ok(false);
+            }
+        };
 
         let diff_percent = self
             .last_capture
