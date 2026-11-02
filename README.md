@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="https://raw.githubusercontent.com/companionintelligence/.github/main/profile/assets/icons/companion-capture.png" width="96" height="96" alt="Companion Capture icon">
+</p>
+
 
 <p align="center">
   <img src="docs/assets/banner.svg" alt="CI-Capture — Companion Desktop Capture" width="820">
