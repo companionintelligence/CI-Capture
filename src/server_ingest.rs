@@ -408,6 +408,16 @@ fn file_event_description(
     description
 }
 
+/// What an activity row reads on the timeline. Memory falls back to `kind` for a
+/// missing title, which is how a row ends up reading "vizier_patch". It keeps an
+/// empty title as it is, so a blank one (Hyprland reports them) counts as missing.
+fn vizier_event_title(event: &VizierEventRecord) -> String {
+    let readable = |text: &Option<String>| text.clone().filter(|text| !text.trim().is_empty());
+    readable(&event.focus_title)
+        .or_else(|| readable(&event.focus_app))
+        .unwrap_or_else(|| "No window in focus".to_string())
+}
+
 pub async fn ingest_vizier_event(
     config: &AppConfig,
     device_id: Uuid,
@@ -437,13 +447,7 @@ pub async fn ingest_vizier_event(
             occurred_at: wire_ts_utc(event.observed_at),
             ended_at: None,
             observed_at: Some(wire_ts_utc(event.observed_at)),
-            // Memory falls back to `kind` for a missing title, which is how a
-            // row ends up reading "vizier_patch" on the timeline.
-            title: event
-                .focus_title
-                .clone()
-                .or_else(|| event.focus_app.clone())
-                .or_else(|| Some("No window in focus".to_string())),
+            title: Some(vizier_event_title(event)),
             description: event.focus_app.clone(),
             payload,
             capture_tick_id: event.capture_tick_id.map(|id| id.to_string()),
@@ -1054,6 +1058,29 @@ mod tests {
     /// `ended_at` rides the same zod-null trap as `description`: absent is
     /// fine, `null` fails the whole batch. `None` must therefore vanish from
     /// the wire, and `Some` must appear under the exact server key.
+    #[test]
+    fn an_activity_row_always_has_a_readable_title() {
+        let row = |title: Option<&str>, app: Option<&str>| VizierEventRecord {
+            user_id: Uuid::nil(),
+            device_id: Uuid::nil(),
+            session_id: Uuid::nil(),
+            event_kind: "patch".to_string(),
+            observed_at: chrono::Utc::now(),
+            monotonic_ms: 0,
+            payload: serde_json::json!({}),
+            focus_app: app.map(str::to_string),
+            focus_title: title.map(str::to_string),
+            cwd: None,
+            fs_event_count: 0,
+            capture_tick_id: None,
+        };
+        let title = |event| vizier_event_title(&event);
+        assert_eq!(title(row(Some("notes.md"), Some("Editor"))), "notes.md");
+        assert_eq!(title(row(None, Some("Editor"))), "Editor");
+        assert_eq!(title(row(Some(" "), Some("Editor"))), "Editor");
+        assert_eq!(title(row(None, None)), "No window in focus");
+    }
+
     #[test]
     fn ended_at_is_omitted_when_none_and_named_when_some() {
         let mut event = CaptureEvent {

@@ -18,6 +18,12 @@ const APP_QUALIFIER: &str = "com.compint";
 /// and harder to diagnose than a clean first run.
 pub(crate) const APP_NAME: &str = "Companion Capture";
 
+/// What a Linux desktop knows this app by: the installed desktop file, which
+/// cargo-packager names after the binary. GNOME's window tracker and its
+/// screenshot portal both go by it, so the setup window and the autostart entry
+/// have to use it too. See `permissions::gnome`.
+pub(crate) const DESKTOP_ID: &str = env!("CARGO_PKG_NAME");
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MinioConfig {

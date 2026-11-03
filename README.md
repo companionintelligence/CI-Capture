@@ -119,10 +119,10 @@ Run the installer (**per‑user**, no admin needed). SmartScreen may warn about 
 <details>
 <summary><b>Linux</b> — <code>ci-Capture_*_amd64.deb</code> · <code>CI-Capture_*_x86_64.AppImage</code> · Arch <code>*.tar.gz</code>/<code>PKGBUILD</code></summary>
 
-Debian/Ubuntu: `sudo apt install ./ci-Capture_*_amd64.deb`. Arch: build/install with the release `PKGBUILD`, or install the generated pacman archive with `sudo pacman -U ./CI-Capture_*.tar.gz`. Any distro: `chmod +x CI-Capture_*.AppImage && ./CI-Capture_*.AppImage`. Needs an **X11** session and an AppIndicator/StatusNotifier tray host (GNOME needs the *AppIndicator* extension). The `.deb` pulls in GTK 3, `libayatana-appindicator3`, `libxdo`, and xcb.
+Debian/Ubuntu: `sudo apt install ./ci-Capture_*_amd64.deb`. Arch: build/install with the release `PKGBUILD`, or install the generated pacman archive with `sudo pacman -U ./CI-Capture_*.tar.gz`. Any distro: `chmod +x CI-Capture_*.AppImage && ./CI-Capture_*.AppImage`. Needs an **X11** session or GNOME on Wayland, plus an AppIndicator/StatusNotifier tray host (GNOME needs the *AppIndicator* extension). The `.deb` pulls in GTK 3, `libayatana-appindicator3`, `libxdo`, and xcb.
 </details>
 
-> **Known limitations off macOS:** the Activity lane and the Device-activity / iMessage lanes are stubbed or macOS-only today, Wayland screenshots work on GNOME once you allow them in the setup assistant, and Linux has no idle detection. Lock detection, idle-skip (macOS/Windows), start-at-login and the single-instance guard now work on all three — see [`docs/plan/07-cross-platform.md`](docs/plan/07-cross-platform.md) for the per-OS table and plan.
+> **Known limitations off macOS:** the Activity lane and the Device-activity / iMessage lanes are stubbed or macOS-only today. Wayland screenshots work on GNOME once you allow them in the setup assistant. Linux has no idle detection. Lock detection, idle-skip (macOS/Windows), start-at-login and the single-instance guard now work on all three. See [`docs/plan/07-cross-platform.md`](docs/plan/07-cross-platform.md) for the per-OS table and plan.
 >
 > Prefer building from source? See [Build](#build).
 

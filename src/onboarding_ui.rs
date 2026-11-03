@@ -142,7 +142,7 @@ pub fn run_onboarding_ui() -> Result<()> {
             .with_active(true)
             // GNOME only lets the focused app raise its screenshot dialog, and
             // matches a window to an app by this id and the desktop file's name.
-            .with_app_id("companion-capture"),
+            .with_app_id(crate::config::DESKTOP_ID),
         ..Default::default()
     };
     crate::helper_window::configure_helper_window(&mut native_options);
@@ -704,8 +704,7 @@ impl OnboardingApp {
         );
         ui.add_space(16.0);
 
-        let sr = self.perms.screen_recording;
-        let granted = sr.is_ok();
+        let granted = permissions::screen_capture_confirmed(self.perms.screen_recording);
 
         theme::card(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -733,7 +732,9 @@ impl OnboardingApp {
                     );
                     theme::caption(
                         ui,
-                        &if granted {
+                        &if granted && gnome {
+                            rust_i18n::t!("onboarding.permissions.gnome_granted_detail")
+                        } else if granted {
                             rust_i18n::t!("onboarding.permissions.granted_detail")
                         } else if gnome {
                             rust_i18n::t!("onboarding.permissions.gnome_missing_detail")
@@ -818,18 +819,23 @@ impl OnboardingApp {
             ui.add_space(10.0);
 
             if permissions::permissions_relevant() {
-                let sr = permissions::status().screen_recording;
+                // Kept fresh by `poll_permissions`. This runs every frame, and on
+                // GNOME a read is a round trip to the permission store.
+                let allowed = permissions::screen_capture_confirmed(self.perms.screen_recording);
+                let gnome = permissions::uses_desktop_portal();
                 self.summary_row(
                     ui,
-                    sr.is_ok(),
-                    &if permissions::uses_desktop_portal() {
+                    allowed,
+                    &if gnome {
                         rust_i18n::t!("onboarding.finish.gnome_title")
                     } else {
                         rust_i18n::t!("onboarding.finish.screen_recording_title")
                     },
-                    &if sr.is_ok() {
+                    &if allowed && gnome {
+                        rust_i18n::t!("onboarding.finish.gnome_ok")
+                    } else if allowed {
                         rust_i18n::t!("onboarding.finish.screen_recording_ok")
-                    } else if permissions::uses_desktop_portal() {
+                    } else if gnome {
                         rust_i18n::t!("onboarding.finish.gnome_missing")
                     } else {
                         rust_i18n::t!("onboarding.finish.screen_recording_missing")
@@ -895,13 +901,14 @@ impl OnboardingApp {
             })
     }
 
-    /// Re-read OS permission state on a timer while the Permissions step is up.
+    /// Re-read OS permission state on a timer while the Permissions step or the
+    /// done screen's summary of it is up.
     ///
     /// The user grants Screen Recording in System Settings, i.e. in a different
     /// application — so making them come back and press "Re-check" is asking
     /// them to do the computer's job. Poll instead and advance on our own.
     fn poll_permissions(&mut self, ctx: &egui::Context) {
-        if self.step != Step::Permissions {
+        if !matches!(self.step, Step::Permissions | Step::Finish) {
             return;
         }
         let now = ctx.input(|i| i.time);
@@ -1069,8 +1076,8 @@ mod tests {
 
     /// The header draws one chip per visible step. On macOS Screen Recording
     /// gates capture and on GNOME on Wayland the screenshot portal does, so the
-    /// Permission step — and its chip — is real there; elsewhere the wizard
-    /// skips the step and must not draw a chip for it. This pins the visible
+    /// Permission step and its chip are real there. Elsewhere the wizard skips
+    /// the step and must not draw a chip for it. This pins the visible
     /// list to `permissions_relevant()`, the same predicate `next`/`prev` skip on.
     #[test]
     fn visible_steps_include_permissions_only_where_the_os_gates_capture() {

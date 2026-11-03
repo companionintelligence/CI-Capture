@@ -110,8 +110,11 @@ pub const CAPTURE_HELPER_FLAG: &str = "--capture-helper";
 /// How long the parent waits for one helper before killing it.
 const HELPER_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// How long a helper may wait when a person just asked for the desktop's
-/// permission dialog and is expected to answer it.
+/// The limit on a helper when a person just asked for the desktop's permission
+/// dialog. The `screenshots` crate stops waiting on the portal after 60 seconds,
+/// so this only has to outlast that. The dialog stays up and its answer is stored
+/// whenever it comes.
+#[cfg(target_os = "linux")]
 pub const PERMISSION_PROMPT_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Starts the stderr line a helper writes when it panics.

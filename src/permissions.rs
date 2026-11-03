@@ -251,21 +251,29 @@ mod imp {
 ///   fails and the capture helper falls through to libwayshot's refusal, tick
 ///   after tick, with nothing on screen. The ask has to come from a window the
 ///   person is looking at, which is the setup assistant's Permission step.
-/// - Only one dialog shows at a time, and it outlives the helper that raised it.
-///   Killing a helper doesn't take the question away.
-/// - An answer applies from then on with no further prompt, and Deny is remembered
+/// - Only one dialog shows at a time. It outlives the helper that raised it, so
+///   killing a helper doesn't take the question away.
+/// - An answer applies from then on with no further prompt. Deny is remembered
 ///   the same way.
 #[cfg(target_os = "linux")]
 mod gnome {
     use std::collections::HashMap;
+    use std::sync::OnceLock;
     use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
 
     use super::PermissionStatus;
 
-    /// Set once a helper has handed back a frame in this process: the only proof
-    /// that needs no knowledge of how the portal identified us.
+    /// The store is read on the setup window's and the tray's threads, so a hung
+    /// service has to read as "can't tell" instead of freezing them.
+    const STORE_TIMEOUT: Duration = Duration::from_secs(2);
+
+    /// True while the last helper in this process handed back a frame: the only
+    /// proof that needs no knowledge of how the portal identified us. A failed
+    /// helper clears it, so a grant taken back in Settings is noticed.
     pub static PROVEN: AtomicBool = AtomicBool::new(false);
-    /// True while the helper raised by [`ask`] is still waiting on the dialog.
+    /// True while the helper raised by [`ask`] is still waiting on the dialog. The
+    /// `screenshots` crate stops waiting after 60 seconds, the dialog doesn't.
     pub static ASKING: AtomicBool = AtomicBool::new(false);
 
     pub fn is_gated() -> bool {
@@ -306,10 +314,22 @@ mod gnome {
         }
     }
 
+    /// One connection per process, kept once it works. The store is read once a
+    /// second while the setup window is open.
+    fn store_connection() -> zbus::Result<&'static zbus::blocking::Connection> {
+        static CONNECTION: OnceLock<zbus::blocking::Connection> = OnceLock::new();
+        if let Some(connection) = CONNECTION.get() {
+            return Ok(connection);
+        }
+        let connection = zbus::blocking::connection::Builder::session()?
+            .method_timeout(STORE_TIMEOUT)
+            .build()?;
+        Ok(CONNECTION.get_or_init(|| connection))
+    }
+
     fn stored_answers() -> zbus::Result<HashMap<String, Vec<String>>> {
-        let connection = zbus::blocking::Connection::session()?;
         let proxy = zbus::blocking::Proxy::new(
-            &connection,
+            store_connection()?,
             "org.freedesktop.impl.portal.PermissionStore",
             "/org/freedesktop/impl/portal/PermissionStore",
             "org.freedesktop.impl.portal.PermissionStore",
@@ -423,10 +443,23 @@ pub fn screen_capture_awaits_permission() -> bool {
     }
 }
 
-/// A helper handed back a frame, so whatever the store says, capture works here.
-pub fn note_screen_capture_worked() {
+/// How the last helper went. A frame means capture works here whatever the store
+/// says, and that proof lasts only until a helper fails.
+pub fn note_screen_capture_result(worked: bool) {
     #[cfg(target_os = "linux")]
-    gnome::PROVEN.store(true, std::sync::atomic::Ordering::Relaxed);
+    gnome::PROVEN.store(worked, std::sync::atomic::Ordering::Relaxed);
+    #[cfg(not(target_os = "linux"))]
+    let _ = worked;
+}
+
+/// Whether to show screen capture as allowed. On GNOME a store that can't be read
+/// isn't an answer, so the person keeps the Allow button, whose frame settles it.
+pub fn screen_capture_confirmed(status: PermissionStatus) -> bool {
+    if uses_desktop_portal() {
+        status == PermissionStatus::Granted
+    } else {
+        status.is_ok()
+    }
 }
 
 /// The setup window's ask is still waiting on the desktop's dialog.
@@ -684,6 +717,16 @@ mod tests {
             id("app-gnome-companion\\x2dcapture@abc123.service").as_deref(),
             Some("companion-capture")
         );
+        // A login start has to come out as the desktop file's name, or GNOME
+        // refuses the dialog and the stored answer doesn't apply.
+        assert_eq!(
+            id(r"app-companion\x2dcapture@autostart.service").as_deref(),
+            Some(crate::config::DESKTOP_ID)
+        );
+        assert_eq!(
+            id(r"app-Companion\x20Capture@autostart.service").as_deref(),
+            Some("Companion Capture")
+        );
         assert_eq!(
             id("snap.code.code-efd21498-e69f-48cd-b36b-f20c955893ff.scope").as_deref(),
             Some("snap.code")
@@ -707,7 +750,7 @@ mod tests {
             PermissionStatus::Granted
         );
         assert_eq!(status_from(&store, "other"), PermissionStatus::Denied);
-        // Never answered, and someone else's yes doesn't carry over.
+        // Never answered. Someone else's yes doesn't carry over.
         assert_eq!(status_from(&store, ""), PermissionStatus::Denied);
         assert_eq!(status_from(&HashMap::new(), "x"), PermissionStatus::Denied);
     }

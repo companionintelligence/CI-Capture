@@ -105,8 +105,14 @@ async fn report(config: &AppConfig) -> Result<()> {
     println!("-------------------");
     // Named as System Settings names them, so the labels match what the user
     // has to go find.
+    let gnome = crate::permissions::uses_desktop_portal();
     println!(
-        "Screen Recording : {} — required for the screenshot lane",
+        "{} : {} — required for the screenshot lane",
+        if gnome {
+            "Screenshots     "
+        } else {
+            "Screen Recording"
+        },
         perms.screen_recording.badge()
     );
     // Say plainly that this one is optional. Nothing reads AX data, and a bare
@@ -116,7 +122,11 @@ async fn report(config: &AppConfig) -> Result<()> {
         "Accessibility    : {} — optional, reported for diagnostics only",
         perms.accessibility.badge()
     );
-    if perms.needs_attention() {
+    if perms.needs_attention() && gnome {
+        println!(
+            "\nGNOME has no stored yes for this app, so no screenshots will be captured.\nAllow them from the tray: Setup Assistant, Permission step."
+        );
+    } else if perms.needs_attention() {
         println!(
             "\nScreen Recording is off, so no screenshots will be captured.\nGrant it in System Settings → Privacy & Security:\n  {}",
             crate::permissions::screen_recording_settings_url()

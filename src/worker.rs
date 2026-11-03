@@ -35,18 +35,18 @@ const ANALYSIS_QUEUE_CAPACITY: usize = 2;
 /// ingest body limit so an oversized snapshot is skipped, not bounced as 413.
 const MAX_VIZIER_PAYLOAD_BYTES: usize = 9 * 1024 * 1024;
 
-/// Set once the worker has logged that vizier observations are coming back
-/// empty; later empty ticks log at debug so a Windows/Linux install does not
-/// fill its log with the same warning every 30 s.
+/// Set once the worker has logged that vizier observations have no focused
+/// window; later ticks log at debug so a Windows/Linux install does not fill its
+/// log with the same warning every 30 s.
 static VIZIER_EMPTY_WARNED: AtomicBool = AtomicBool::new(false);
 
-/// How many vizier ticks have been skipped as empty since launch. Read by
-/// [`vizier_empty_ticks_skipped`]; the P2 health row is the intended consumer
-/// so an idle lane can be told apart from a broken observer.
+/// How many vizier ticks have been skipped for having no focused window since
+/// launch. Read by [`vizier_empty_ticks_skipped`]; the P2 health row is the
+/// intended consumer so an idle lane can be told apart from a broken observer.
 static VIZIER_EMPTY_SKIPPED: AtomicU64 = AtomicU64::new(0);
 
-/// Number of vizier ticks skipped because the observation was empty and the
-/// server already held an empty state (see [`vizier_should_skip_send`]).
+/// Number of vizier ticks skipped because no window was in focus and the server
+/// already held that state (see [`vizier_should_skip_send`]).
 #[cfg_attr(not(test), allow(dead_code))] // consumer is the P2 health row
 pub(crate) fn vizier_empty_ticks_skipped() -> u64 {
     VIZIER_EMPTY_SKIPPED.load(Ordering::Relaxed)
@@ -54,18 +54,18 @@ pub(crate) fn vizier_empty_ticks_skipped() -> u64 {
 
 /// Whether this tick's vizier POST can be skipped.
 ///
-/// A row's only readable parts are the focused window's title and app, and the
-/// search index reads nothing else from it. So a tick with no focused window is
-/// not sent, even with file or network deltas in it: on Windows and non-Hyprland
+/// A row's only readable parts are the focused window's title and app. The search
+/// index reads nothing else from it. So a tick with no focused window is not
+/// sent, even with file or network deltas in it: on Windows and non-Hyprland
 /// Linux, where there is no desktop observer, those deltas came through every
 /// tick as a timeline row titled `vizier_patch`, which nobody could read or
-/// search. Edits still arrive through the file lane.
+/// search. Edits in watched folders still arrive through the file lane.
 ///
 /// The one exception is the tick where focus goes away. It is shipped once so
 /// the server's "current" state is cleared (an all-windows-closed transition is
-/// recorded, `ts`/`monotonic_ms` advance), and only after that does the lane go
-/// quiet. The baseline stays on the last state sent, so a later tick with focus
-/// diffs against what the server holds.
+/// recorded, `ts`/`monotonic_ms` advance). After that the lane goes quiet. The
+/// baseline stays on the last state sent, so a later tick with focus diffs
+/// against what the server holds.
 pub(crate) fn vizier_should_skip_send(
     previous: Option<&Observation>,
     current: &Observation,
@@ -223,6 +223,16 @@ const STORE_SWEEP_INTERVAL: Duration = Duration::from_secs(60);
 
 /// How often the screenshot lane still tries while GNOME has no stored yes.
 const PERMISSION_RETRY_INTERVAL: Duration = Duration::from_secs(600);
+
+/// Whether a helper should run this tick while GNOME has no stored yes. The first
+/// tick that finds no yes only starts the clock.
+fn permission_try_due(next_try: &mut Option<Instant>, now: Instant) -> bool {
+    let due = next_try.is_some_and(|at| now >= at);
+    if next_try.is_none() || due {
+        *next_try = Some(now + PERMISSION_RETRY_INTERVAL);
+    }
+    due
+}
 
 async fn run_analysis_loop(
     rx: &mut Receiver<PendingCapture>,
@@ -556,7 +566,8 @@ struct WorkerState {
     capture_idle: bool,
     /// True while screen capture is failing, so the failure logs once.
     capture_failed: bool,
-    capture_awaiting_permission: bool,
+    /// When the screenshot lane next tries while GNOME has no stored yes. `None`
+    /// while it isn't waiting on that.
     next_permission_try: Option<Instant>,
     last_capture: Option<CapturedImage>,
     running_flag: Arc<AtomicBool>,
@@ -599,7 +610,6 @@ impl WorkerState {
             capture_blocked: false,
             capture_idle: false,
             capture_failed: false,
-            capture_awaiting_permission: false,
             next_permission_try: None,
             last_capture: None,
             running_flag,
@@ -857,6 +867,8 @@ impl WorkerState {
                 self.restart_knowledge().await;
             }
             WorkerCommand::CaptureNow => {
+                // Someone asked for a frame, so don't sit out the permission wait.
+                self.next_permission_try = self.next_permission_try.map(|_| Instant::now());
                 let capture_tick_id = Uuid::new_v4();
                 if let Err(err) = self.capture_once(capture_tick_id).await {
                     log::error!("manual capture failed: {err:?}");
@@ -943,7 +955,7 @@ impl WorkerState {
             log::debug!("vizier: dropped {dropped} sensitive fs-event path(s) before send");
         }
 
-        // No focused window this tick, and the server already holds that state
+        // No focused window this tick. The server already holds that state
         // (`vizier_should_skip_send`). This is the steady state on Windows and
         // non-Hyprland Linux, where vizier has no desktop observer. The baseline
         // (`vizier_previous`) is deliberately left alone on a skip: the server
@@ -953,7 +965,7 @@ impl WorkerState {
             let skipped = VIZIER_EMPTY_SKIPPED.fetch_add(1, Ordering::Relaxed) + 1;
             if !VIZIER_EMPTY_WARNED.swap(true, Ordering::Relaxed) {
                 log::warn!(
-                    "vizier: no focused window; skipping send — expected on Windows and \
+                    "vizier: no focused window; skipping send. Expected on Windows and \
                      non-Hyprland Linux, where there is no desktop observer"
                 );
             } else {
@@ -1118,23 +1130,17 @@ impl WorkerState {
         // GNOME on Wayland with no stored yes: a background helper is refused
         // every tick, so leave asking to the setup assistant. A rare try stays,
         // because the store can only be read through our guess at how the portal
-        // names us, and a frame settles that for good.
+        // names us. A frame settles that.
         if crate::permissions::screen_capture_awaits_permission() {
-            if !self.capture_awaiting_permission {
+            if self.next_permission_try.is_none() {
                 log::warn!(
                     "screen capture is waiting for GNOME's permission; \
                      open Setup Assistant from the tray to allow it"
                 );
-                self.capture_awaiting_permission = true;
-                self.next_permission_try = Some(Instant::now() + PERMISSION_RETRY_INTERVAL);
             }
-            if self
-                .next_permission_try
-                .is_some_and(|at| Instant::now() < at)
-            {
+            if !permission_try_due(&mut self.next_permission_try, Instant::now()) {
                 return Ok(false);
             }
-            self.next_permission_try = Some(Instant::now() + PERMISSION_RETRY_INTERVAL);
         }
 
         let captured = tokio::task::spawn_blocking(capture_isolated)
@@ -1144,15 +1150,16 @@ impl WorkerState {
             });
         let capture = match captured {
             Ok(capture) => {
-                if self.capture_failed || self.capture_awaiting_permission {
+                let was_waiting = self.next_permission_try.take().is_some();
+                if self.capture_failed || was_waiting {
                     log::info!("screen capture recovered; resuming frames");
                     self.capture_failed = false;
-                    self.capture_awaiting_permission = false;
                 }
-                crate::permissions::note_screen_capture_worked();
+                crate::permissions::note_screen_capture_result(true);
                 capture
             }
             Err(failure) => {
+                crate::permissions::note_screen_capture_result(false);
                 if !self.capture_failed {
                     log::error!("screen capture failed; skipping frame: {failure}");
                     if let HelperFailure::Panic(message) = &failure {
@@ -1429,8 +1436,7 @@ mod vizier_empty_observation_tests {
     /// A tick with no focused window has nothing a person can read or search,
     /// so file and network deltas alone don't ship it. That is every tick on
     /// Windows and non-Hyprland Linux. The transition out of focus still ships
-    /// once so the server clears its "current" state, and only then does the
-    /// lane go quiet.
+    /// once so the server clears its "current" state. Then the lane goes quiet.
     #[test]
     fn a_tick_with_no_focus_is_skipped_once_the_server_holds_no_focus() {
         let empty = bare();
@@ -1467,5 +1473,30 @@ mod vizier_empty_observation_tests {
     #[test]
     fn skipped_tick_counter_starts_at_zero() {
         assert_eq!(vizier_empty_ticks_skipped(), 0);
+    }
+}
+
+#[cfg(test)]
+mod permission_retry_tests {
+    use std::time::Instant;
+
+    use super::{PERMISSION_RETRY_INTERVAL, permission_try_due};
+
+    /// The tick that first finds no stored yes must not run a helper: GNOME would
+    /// only refuse it. After that one helper runs per interval.
+    #[test]
+    fn a_helper_runs_once_per_interval_starting_after_the_first_wait() {
+        let start = Instant::now();
+        let mut next_try = None;
+
+        assert!(!permission_try_due(&mut next_try, start));
+        assert_eq!(next_try, Some(start + PERMISSION_RETRY_INTERVAL));
+
+        assert!(!permission_try_due(&mut next_try, start));
+
+        let later = start + PERMISSION_RETRY_INTERVAL;
+        assert!(permission_try_due(&mut next_try, later));
+        assert_eq!(next_try, Some(later + PERMISSION_RETRY_INTERVAL));
+        assert!(!permission_try_due(&mut next_try, later));
     }
 }
