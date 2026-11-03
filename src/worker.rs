@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use chrono::Utc;
@@ -52,37 +52,25 @@ pub(crate) fn vizier_empty_ticks_skipped() -> u64 {
     VIZIER_EMPTY_SKIPPED.load(Ordering::Relaxed)
 }
 
-/// True when a vizier observation carries nothing worth shipping: no focused
-/// window, no window list, no filesystem events, and no network connections.
-///
-/// Placeholder fields the baseline observer always fills (timestamps, a
-/// zero-sized display, the observing process's own cwd/shell) do not count —
-/// they are the same every tick and say nothing about what the person is
-/// doing. Kept as a pure function so the skip rule is testable on every OS,
-/// independent of which native observer (if any) is compiled in.
-pub(crate) fn vizier_observation_is_empty(observation: &Observation) -> bool {
-    observation.focus.is_none()
-        && observation.windows.is_empty()
-        && observation.fs_events.is_empty()
-        && observation.net_connections.is_empty()
-}
-
 /// Whether this tick's vizier POST can be skipped.
 ///
-/// Skipping is only safe when the observation is empty **and** the last state
-/// the server holds (`previous`, the baseline the next diff would be built
-/// against) is empty too — or there is no baseline at all, which is the
-/// Windows / non-Hyprland-Linux steady state from the first tick. If the
-/// previous send carried focus, windows, fs events or connections, this
-/// empty tick is shipped once so the server's "current" state is cleared:
-/// the last file edit stops being reported as still in progress, an
-/// all-windows-closed transition is recorded, and `ts`/`monotonic_ms`
-/// advance. Only after that does the lane go quiet.
+/// A row's only readable parts are the focused window's title and app, and the
+/// search index reads nothing else from it. So a tick with no focused window is
+/// not sent, even with file or network deltas in it: on Windows and non-Hyprland
+/// Linux, where there is no desktop observer, those deltas came through every
+/// tick as a timeline row titled `vizier_patch`, which nobody could read or
+/// search. Edits still arrive through the file lane.
+///
+/// The one exception is the tick where focus goes away. It is shipped once so
+/// the server's "current" state is cleared (an all-windows-closed transition is
+/// recorded, `ts`/`monotonic_ms` advance), and only after that does the lane go
+/// quiet. The baseline stays on the last state sent, so a later tick with focus
+/// diffs against what the server holds.
 pub(crate) fn vizier_should_skip_send(
     previous: Option<&Observation>,
     current: &Observation,
 ) -> bool {
-    vizier_observation_is_empty(current) && previous.is_none_or(vizier_observation_is_empty)
+    current.focus.is_none() && previous.is_none_or(|last_sent| last_sent.focus.is_none())
 }
 
 #[derive(Clone)]
@@ -232,6 +220,9 @@ async fn run_worker(
 /// How often the analysis loop sweeps local stores for retention pruning
 /// and backlog re-upload.
 const STORE_SWEEP_INTERVAL: Duration = Duration::from_secs(60);
+
+/// How often the screenshot lane still tries while GNOME has no stored yes.
+const PERMISSION_RETRY_INTERVAL: Duration = Duration::from_secs(600);
 
 async fn run_analysis_loop(
     rx: &mut Receiver<PendingCapture>,
@@ -565,6 +556,8 @@ struct WorkerState {
     capture_idle: bool,
     /// True while screen capture is failing, so the failure logs once.
     capture_failed: bool,
+    capture_awaiting_permission: bool,
+    next_permission_try: Option<Instant>,
     last_capture: Option<CapturedImage>,
     running_flag: Arc<AtomicBool>,
     analysis_tx: Sender<PendingCapture>,
@@ -606,6 +599,8 @@ impl WorkerState {
             capture_blocked: false,
             capture_idle: false,
             capture_failed: false,
+            capture_awaiting_permission: false,
+            next_permission_try: None,
             last_capture: None,
             running_flag,
             analysis_tx,
@@ -948,29 +943,22 @@ impl WorkerState {
             log::debug!("vizier: dropped {dropped} sensitive fs-event path(s) before send");
         }
 
-        // Nothing observed this tick: no focus, no windows, no file or network
-        // deltas. This is the steady state on Windows and non-Hyprland Linux,
-        // where vizier has no desktop observer and the baseline honestly
-        // reports no windows. Shipping it would only tell Memory "nothing"
-        // every tick, so skip the POST — but only once the server already
-        // holds an empty state (`vizier_should_skip_send`): the first empty
-        // tick after a non-empty one is sent so the previous fs events /
-        // windows are cleared rather than left "current" indefinitely. The
-        // baseline (`vizier_previous`) is deliberately left alone on a skip:
-        // the server still holds the last state we actually sent, so the next
-        // non-empty tick diffs against that.
+        // No focused window this tick, and the server already holds that state
+        // (`vizier_should_skip_send`). This is the steady state on Windows and
+        // non-Hyprland Linux, where vizier has no desktop observer. The baseline
+        // (`vizier_previous`) is deliberately left alone on a skip: the server
+        // still holds the last state we actually sent, so the next tick with
+        // focus diffs against that.
         if vizier_should_skip_send(self.vizier_previous.as_ref(), &current) {
             let skipped = VIZIER_EMPTY_SKIPPED.fetch_add(1, Ordering::Relaxed) + 1;
             if !VIZIER_EMPTY_WARNED.swap(true, Ordering::Relaxed) {
                 log::warn!(
-                    "vizier: empty observation (no focus/windows/fs/net); skipping send — \
-                     expected on Windows and non-Hyprland Linux, where there is no desktop \
-                     observer and the activity lane ships only file/network deltas"
+                    "vizier: no focused window; skipping send — expected on Windows and \
+                     non-Hyprland Linux, where there is no desktop observer"
                 );
             } else {
                 log::debug!(
-                    "vizier: empty observation (no focus/windows/fs/net); skipping send \
-                     ({skipped} skipped since launch)"
+                    "vizier: no focused window; skipping send ({skipped} skipped since launch)"
                 );
             }
             return Ok(());
@@ -1127,6 +1115,28 @@ impl WorkerState {
             return Ok(false);
         }
 
+        // GNOME on Wayland with no stored yes: a background helper is refused
+        // every tick, so leave asking to the setup assistant. A rare try stays,
+        // because the store can only be read through our guess at how the portal
+        // names us, and a frame settles that for good.
+        if crate::permissions::screen_capture_awaits_permission() {
+            if !self.capture_awaiting_permission {
+                log::warn!(
+                    "screen capture is waiting for GNOME's permission; \
+                     open Setup Assistant from the tray to allow it"
+                );
+                self.capture_awaiting_permission = true;
+                self.next_permission_try = Some(Instant::now() + PERMISSION_RETRY_INTERVAL);
+            }
+            if self
+                .next_permission_try
+                .is_some_and(|at| Instant::now() < at)
+            {
+                return Ok(false);
+            }
+            self.next_permission_try = Some(Instant::now() + PERMISSION_RETRY_INTERVAL);
+        }
+
         let captured = tokio::task::spawn_blocking(capture_isolated)
             .await
             .unwrap_or_else(|err| {
@@ -1134,10 +1144,12 @@ impl WorkerState {
             });
         let capture = match captured {
             Ok(capture) => {
-                if self.capture_failed {
+                if self.capture_failed || self.capture_awaiting_permission {
                     log::info!("screen capture recovered; resuming frames");
                     self.capture_failed = false;
+                    self.capture_awaiting_permission = false;
                 }
+                crate::permissions::note_screen_capture_worked();
                 capture
             }
             Err(failure) => {
@@ -1374,11 +1386,9 @@ mod sensitive_scrub_tests {
 
 #[cfg(test)]
 mod vizier_empty_observation_tests {
-    use vizier::observation::{
-        Bounds, ConnInfo, DisplayInfo, FSEvent, Observation, Point, TerminalCtx, WindowInfo,
-    };
+    use vizier::observation::{Bounds, FSEvent, Observation, Point, WindowInfo};
 
-    use super::{vizier_empty_ticks_skipped, vizier_observation_is_empty, vizier_should_skip_send};
+    use super::{vizier_empty_ticks_skipped, vizier_should_skip_send};
 
     /// An observation with only the fields the baseline observer always
     /// fills — timestamps, a zero cursor, no focus/windows/fs/net.
@@ -1416,86 +1426,16 @@ mod vizier_empty_observation_tests {
         }
     }
 
-    /// The Windows / non-Hyprland-Linux steady state: nothing observed, so the
-    /// tick must be skipped rather than POSTed as an all-empty snapshot.
+    /// A tick with no focused window has nothing a person can read or search,
+    /// so file and network deltas alone don't ship it. That is every tick on
+    /// Windows and non-Hyprland Linux. The transition out of focus still ships
+    /// once so the server clears its "current" state, and only then does the
+    /// lane go quiet.
     #[test]
-    fn observation_with_no_focus_windows_fs_or_net_is_empty() {
-        assert!(vizier_observation_is_empty(&bare()));
-    }
-
-    /// Placeholder fields alone (zero-sized display, the observing process's
-    /// own cwd/shell) must not rescue an otherwise empty observation — they
-    /// are identical every tick and carry no activity signal.
-    #[test]
-    fn placeholder_display_and_terminal_ctx_do_not_make_it_non_empty() {
-        let mut observation = bare();
-        observation.displays = vec![DisplayInfo {
-            id: 0,
-            bounds: Bounds {
-                x: 0,
-                y: 0,
-                w: 0,
-                h: 0,
-            },
-            is_primary: true,
-            scale_factor: 1.0,
-        }];
-        observation.terminal_ctx = Some(TerminalCtx {
-            cwd: "/".to_string(),
-            shell: "/bin/zsh".to_string(),
-        });
-        assert!(vizier_observation_is_empty(&observation));
-    }
-
-    /// Each real signal on its own is enough to ship the tick: a focused
-    /// window, a window list, a filesystem delta, or a network connection.
-    #[test]
-    fn any_real_signal_makes_the_observation_non_empty() {
-        let mut with_focus = bare();
-        with_focus.focus = Some(window());
-        assert!(!vizier_observation_is_empty(&with_focus));
-
-        let mut with_windows = bare();
-        with_windows.windows = vec![window()];
-        assert!(!vizier_observation_is_empty(&with_windows));
-
-        let mut with_fs = bare();
-        with_fs.fs_events = vec![FSEvent {
-            path: "/home/x/notes.md".to_string(),
-            kind: "Modify".to_string(),
-            ts: 1.0,
-            file_activity: None,
-        }];
-        assert!(!vizier_observation_is_empty(&with_fs));
-
-        let mut with_net = bare();
-        with_net.net_connections = vec![ConnInfo {
-            proto: "tcp".to_string(),
-            local_port: 50000,
-            remote_addr: "203.0.113.1".to_string(),
-            remote_port: 443,
-            pid: 42,
-            app: "browser".to_string(),
-            state: "ESTABLISHED".to_string(),
-            connection_count: None,
-            remote_host_count: None,
-        }];
-        assert!(!vizier_observation_is_empty(&with_net));
-    }
-
-    /// The skip must not swallow the transition *into* emptiness: after a
-    /// tick that shipped fs events (or windows), the next empty tick is sent
-    /// once so the server clears them, and only the tick after that is
-    /// skipped. Without a baseline (first tick, or after a failed POST reset
-    /// it) an empty tick is skipped straight away — the Windows steady state.
-    #[test]
-    fn empty_tick_after_a_non_empty_baseline_is_sent_once_then_skipped() {
+    fn a_tick_with_no_focus_is_skipped_once_the_server_holds_no_focus() {
         let empty = bare();
-
-        // No baseline yet: nothing to clear, skip.
-        assert!(vizier_should_skip_send(None, &empty));
-
-        // Baseline carried a file delta: ship this empty tick to clear it.
+        let mut with_focus = bare();
+        with_focus.focus = Some(window());
         let mut with_fs = bare();
         with_fs.fs_events = vec![FSEvent {
             path: "/home/x/notes.md".to_string(),
@@ -1503,20 +1443,22 @@ mod vizier_empty_observation_tests {
             ts: 1.0,
             file_activity: None,
         }];
-        assert!(!vizier_should_skip_send(Some(&with_fs), &empty));
 
-        // Baseline carried a focused window (macOS, everything just closed):
-        // ship the all-closed transition.
-        let mut with_focus = bare();
-        with_focus.focus = Some(window());
+        // No baseline yet and nothing readable: skip, deltas or not.
+        assert!(vizier_should_skip_send(None, &empty));
+        assert!(vizier_should_skip_send(None, &with_fs));
+
+        // Focus just went away (macOS, everything closed): ship it once.
         assert!(!vizier_should_skip_send(Some(&with_focus), &empty));
+        assert!(!vizier_should_skip_send(Some(&with_focus), &with_fs));
 
-        // Once the server holds an empty state, later empty ticks are skipped.
+        // The server holds no focus now: later focus-free ticks are skipped.
         assert!(vizier_should_skip_send(Some(&empty), &empty));
+        assert!(vizier_should_skip_send(Some(&empty), &with_fs));
 
-        // A non-empty current tick is never skipped, whatever the baseline.
-        assert!(!vizier_should_skip_send(None, &with_fs));
-        assert!(!vizier_should_skip_send(Some(&empty), &with_fs));
+        // A focused window always ships, whatever the baseline.
+        assert!(!vizier_should_skip_send(None, &with_focus));
+        assert!(!vizier_should_skip_send(Some(&empty), &with_focus));
         assert!(!vizier_should_skip_send(Some(&with_fs), &with_focus));
     }
 

@@ -1,7 +1,5 @@
 # Building & releasing Companion Capture with GitHub Actions
 
-> **Private & Confidential — Property of Lifescope Inc. Do not distribute.**
-
 This is the runbook for producing Companion Capture builds — the same GitHub-Actions
 model CI-Hub uses (per-OS runners, code signing + notarization, environment
 channels, a `latest.json` manifest, and provenance attestation). If you just

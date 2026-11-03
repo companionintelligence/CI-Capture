@@ -1,7 +1,5 @@
 # CLAUDE.md — Companion Capture
 
-> **Private & Confidential — Property of Lifescope Inc. Do not distribute.**
-
 ## Platform role
 
 **Companion Capture** (repo `CI-Capture`) sits in the **Capture** layer of the Companion Intelligence platform.
@@ -54,7 +52,3 @@ This repo forks the screenpipe capture engine. Keep that lineage in mind when me
 ## Multi-agent safety
 
 Multiple AI agents work these repos in parallel. Never use `git reset --hard`, `git clean -f`, or any destructive git command without explicit confirmation from the user.
-
-## Confidentiality
-
-Private & Confidential — Property of Lifescope Inc. Do not distribute.

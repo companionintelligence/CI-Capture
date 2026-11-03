@@ -7,7 +7,7 @@
   <img src="docs/assets/banner.svg" alt="CI-Capture — Companion Desktop Capture" width="820">
 </p>
 
-[![release](https://img.shields.io/github/v/release/companionintelligence/CI-Capture?style=flat-square&color=0a6358&label=release)](https://github.com/companionintelligence/CI-Capture/releases/latest)
+[![release](https://img.shields.io/github/v/release/companionintelligence/CI-Capture?include_prereleases&style=flat-square&color=0a6358&label=release)](https://github.com/companionintelligence/CI-Capture/releases)
 [![platform](https://img.shields.io/badge/platform-macOS%20%C2%B7%20Windows%20%C2%B7%20Linux-0a6358?style=flat-square)](https://github.com/companionintelligence/CI-Capture)
 [![License](https://img.shields.io/badge/license-PolyForm%20NC%201.0-0a6358?style=flat-square)](LICENSE.md)
 [![Discord](https://img.shields.io/badge/chat-Discord-5865F2?style=flat-square&logo=discord&logoColor=white)](https://discord.com/invite/yQp9hwpzAa)
@@ -15,9 +15,9 @@
 <p align="center"><a href="https://ci.computer/download">Website</a> · <a href="#documentation">Documentation</a> · <a href="#install">Get started</a> · <a href="https://docs.ci.computer/docs/reference/open-source-systems">Systems map</a></p>
 
 <p align="center">
-  <a href="https://github.com/companionintelligence/CI-Capture/releases/latest"><img src="https://img.shields.io/badge/macOS%20installer-macOS%20installer-0a6358?style=for-the-badge&logo=apple&logoColor=white" alt="macOS installer" height="30"></a>
-  <a href="https://github.com/companionintelligence/CI-Capture/releases/latest"><img src="https://img.shields.io/badge/Windows%20installer-Windows%20installer-0a6358?style=for-the-badge&logo=windows&logoColor=white" alt="Windows installer" height="30"></a>
-  <a href="https://github.com/companionintelligence/CI-Capture/releases/latest"><img src="https://img.shields.io/badge/Linux%20packages-Linux%20packages-0a6358?style=for-the-badge&logo=linux&logoColor=white" alt="Linux packages" height="30"></a>
+  <a href="https://github.com/companionintelligence/CI-Capture/releases"><img src="https://img.shields.io/badge/macOS%20installer-macOS%20installer-0a6358?style=for-the-badge&logo=apple&logoColor=white" alt="macOS installer" height="30"></a>
+  <a href="https://github.com/companionintelligence/CI-Capture/releases"><img src="https://img.shields.io/badge/Windows%20installer-Windows%20installer-0a6358?style=for-the-badge&logo=windows&logoColor=white" alt="Windows installer" height="30"></a>
+  <a href="https://github.com/companionintelligence/CI-Capture/releases"><img src="https://img.shields.io/badge/Linux%20packages-Linux%20packages-0a6358?style=for-the-badge&logo=linux&logoColor=white" alt="Linux packages" height="30"></a>
 </p>
 
 
@@ -27,7 +27,6 @@
   <a href="https://github.com/companionintelligence/CI-Capture/actions/workflows/ci.yml"><img src="https://github.com/companionintelligence/CI-Capture/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
 
   <img src="https://img.shields.io/badge/Rust-edition%202024-0F717A?logo=rust&logoColor=white" alt="Rust edition 2024">
-  <img src="https://img.shields.io/badge/tests-217%20passing-35A05C" alt="217 tests passing">
 
 </p>
 
@@ -123,7 +122,7 @@ Run the installer (**per‑user**, no admin needed). SmartScreen may warn about 
 Debian/Ubuntu: `sudo apt install ./ci-Capture_*_amd64.deb`. Arch: build/install with the release `PKGBUILD`, or install the generated pacman archive with `sudo pacman -U ./CI-Capture_*.tar.gz`. Any distro: `chmod +x CI-Capture_*.AppImage && ./CI-Capture_*.AppImage`. Needs an **X11** session and an AppIndicator/StatusNotifier tray host (GNOME needs the *AppIndicator* extension). The `.deb` pulls in GTK 3, `libayatana-appindicator3`, `libxdo`, and xcb.
 </details>
 
-> **Known limitations off macOS:** the Activity lane, Wayland screenshots, and the Device-activity / iMessage lanes are stubbed or macOS-only today, and Linux has no idle detection. Lock detection, idle-skip (macOS/Windows), start-at-login and the single-instance guard now work on all three — see [`docs/plan/07-cross-platform.md`](docs/plan/07-cross-platform.md) for the per-OS table and plan.
+> **Known limitations off macOS:** the Activity lane and the Device-activity / iMessage lanes are stubbed or macOS-only today, Wayland screenshots work on GNOME once you allow them in the setup assistant, and Linux has no idle detection. Lock detection, idle-skip (macOS/Windows), start-at-login and the single-instance guard now work on all three — see [`docs/plan/07-cross-platform.md`](docs/plan/07-cross-platform.md) for the per-OS table and plan.
 >
 > Prefer building from source? See [Build](#build).
 
@@ -223,7 +222,7 @@ cargo build                            # debug
 cargo build --release                  # optimized
 cargo run                              # launch the tray Capture
 cargo test                             # unit + e2e suite
-cargo test --features rich-extractors  # + HTML/EML/EPUB extractors (212 tests)
+cargo test --features rich-extractors  # + HTML/EML/EPUB extractors
 ```
 
 Every push and PR is built and tested on **macOS, Linux, and Windows** by [`.github/workflows/ci.yml`](.github/workflows/ci.yml).

@@ -437,10 +437,13 @@ pub async fn ingest_vizier_event(
             occurred_at: wire_ts_utc(event.observed_at),
             ended_at: None,
             observed_at: Some(wire_ts_utc(event.observed_at)),
+            // Memory falls back to `kind` for a missing title, which is how a
+            // row ends up reading "vizier_patch" on the timeline.
             title: event
                 .focus_title
                 .clone()
-                .or_else(|| event.focus_app.clone()),
+                .or_else(|| event.focus_app.clone())
+                .or_else(|| Some("No window in focus".to_string())),
             description: event.focus_app.clone(),
             payload,
             capture_tick_id: event.capture_tick_id.map(|id| id.to_string()),

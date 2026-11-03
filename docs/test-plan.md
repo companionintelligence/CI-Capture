@@ -2,8 +2,6 @@
 
 # Companion Capture — Test plan & coverage map
 
-> **Private & Confidential — Property of Lifescope Inc. Do not distribute.**
-
 **Scope.** What is covered by automated tests today, what can only be covered by
 a human driving a signed build, and what is covered by nothing. Written against
 the tree as of `0.2.0-alpha.1` ([`Cargo.toml:3`](../Cargo.toml)). For how the
@@ -388,10 +386,10 @@ but were not verified on a live machine — take **Show Config Location**
 |---|---|---|---|---|
 | Installer format | `.dmg` (arm64 + x86_64) | `.exe` (NSIS, per-user) | `.deb`, `.AppImage`, pacman | [`release.yml:124`](../.github/workflows/release.yml). NSIS is `currentUser` so no elevation ([`Cargo.toml`](../Cargo.toml) `[…packager.nsis]`) |
 | Code signing | Developer ID + notarization ([`release.yml:243-429`](../.github/workflows/release.yml)) | Azure Artifact Signing ([`:431-462`](../.github/workflows/release.yml)) | packages themselves unsigned; a **detached GPG `.asc`** is attached per artifact when `LINUX_GPG_PRIVATE_KEY` is set ([`:615`](../.github/workflows/release.yml)) | Secrets shared with CI-Hub ([`DESKTOP-RELEASE-SECRETS.md`](DESKTOP-RELEASE-SECRETS.md)) |
-| Permission model | **TCC** — Screen Recording gate is real | none | none | `permissions_relevant()` is literally `cfg!(target_os = "macos")` ([`permissions.rs:179-181`](../src/permissions.rs)) |
+| Permission model | **TCC** — Screen Recording gate is real | none | **GNOME on Wayland:** the portal's stored answer. Elsewhere none | `permissions_relevant()` ([`permissions.rs`](../src/permissions.rs)) |
 | `PermissionStatus` off macOS | `Granted`/`Denied` from CoreGraphics | **`NotRequired`** | **`NotRequired`** | Non-macOS arms are stubs ([`permissions.rs:143-157`](../src/permissions.rs)); pinned by `non_macos_requires_nothing` |
 | Onboarding step count | **4** | **3** (Permission skipped) | **3** (Permission skipped) | `Step::next`/`prev` jump the step ([`onboarding_ui.rs:73-96`](../src/onboarding_ui.rs)) — but the **chip is still drawn** (§3.1 step 5) |
-| Done-screen permission row | shown | **absent** | **absent** | Gated on `permissions_relevant()` ([`onboarding_ui.rs:767`](../src/onboarding_ui.rs)) |
+| Done-screen permission row | shown | **absent** | shown on GNOME on Wayland, otherwise **absent** | Gated on `permissions_relevant()` ([`onboarding_ui.rs:767`](../src/onboarding_ui.rs)) |
 | Lock / screensaver suppression | **yes** — `CGSSessionScreenIsLocked` | **yes** — `org.freedesktop.ScreenSaver.GetActive` | **yes** — `OpenInputDesktop` | All three via [`lock_detect.rs`](../src/lock_detect.rs). No bus / no screensaver service on Linux reads as *unlocked*, deliberately — see step 25 |
 | Idle-skip for the screenshot lane | **yes** — `HIDIdleTime` | **no** — `idle_ms` is `None` | **yes** — `GetLastInputInfo` | `is_idle_past_interval` treats "no signal" as *not idle*, so Linux never gates ([`worker.rs`](../src/worker.rs)) |
 | Start at login | **yes** — LaunchAgent plist | **yes** — XDG autostart | **yes** — HKCU `Run` | `auto-launch` via `main::sync_autostart`; on by default after onboarding |

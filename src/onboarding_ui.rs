@@ -139,7 +139,10 @@ pub fn run_onboarding_ui() -> Result<()> {
             .with_title(rust_i18n::t!("onboarding.window.title").to_string())
             .with_inner_size([840.0, 680.0])
             .with_min_inner_size([720.0, 600.0])
-            .with_active(true),
+            .with_active(true)
+            // GNOME only lets the focused app raise its screenshot dialog, and
+            // matches a window to an app by this id and the desktop file's name.
+            .with_app_id("companion-capture"),
         ..Default::default()
     };
     crate::helper_window::configure_helper_window(&mut native_options);
@@ -684,10 +687,21 @@ impl OnboardingApp {
         });
     }
 
-    // ── step 3 (macOS only): the one permission that matters ────────────────
+    // ── step 3 (macOS, GNOME on Wayland): the one permission that matters ───
 
     fn permissions(&mut self, ui: &mut egui::Ui) {
-        theme::subtitle(ui, &rust_i18n::t!("onboarding.permissions.subtitle"));
+        // On GNOME the question and its answer are the desktop's, so the macOS
+        // wording about System Settings and blank frames doesn't apply.
+        let gnome = permissions::uses_desktop_portal();
+        let waiting = permissions::permission_prompt_open();
+        theme::subtitle(
+            ui,
+            &if gnome {
+                rust_i18n::t!("onboarding.permissions.gnome_subtitle")
+            } else {
+                rust_i18n::t!("onboarding.permissions.subtitle")
+            },
+        );
         ui.add_space(16.0);
 
         let sr = self.perms.screen_recording;
@@ -709,9 +723,11 @@ impl OnboardingApp {
                 ui.vertical(|ui| {
                     ui.spacing_mut().item_spacing.y = 3.0;
                     ui.label(
-                        egui::RichText::new(
-                            rust_i18n::t!("onboarding.permissions.screen_recording").to_string(),
-                        )
+                        egui::RichText::new(if gnome {
+                            rust_i18n::t!("onboarding.permissions.gnome_name").to_string()
+                        } else {
+                            rust_i18n::t!("onboarding.permissions.screen_recording").to_string()
+                        })
                         .font(theme::semibold(tokens::text::BODY))
                         .color(theme::TEXT()),
                     );
@@ -719,6 +735,8 @@ impl OnboardingApp {
                         ui,
                         &if granted {
                             rust_i18n::t!("onboarding.permissions.granted_detail")
+                        } else if gnome {
+                            rust_i18n::t!("onboarding.permissions.gnome_missing_detail")
                         } else {
                             rust_i18n::t!("onboarding.permissions.missing_detail")
                         },
@@ -726,16 +744,23 @@ impl OnboardingApp {
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if !granted {
-                        if theme::primary_button(
-                            ui,
-                            &rust_i18n::t!("onboarding.permissions.allow_button"),
-                        )
-                        .clicked()
+                        // While GNOME's dialog is up, a second ask would only be
+                        // refused, so the button stays out of the way.
+                        if !waiting
+                            && theme::primary_button(
+                                ui,
+                                &rust_i18n::t!("onboarding.permissions.allow_button"),
+                            )
+                            .clicked()
                         {
                             // Triggers the OS prompt on first call; afterwards
-                            // macOS only honours the Settings pane.
+                            // macOS only honours the Settings pane. GNOME has no
+                            // pane to open: its dialog comes up on its own.
                             permissions::request_screen_recording();
-                            let _ = crate::open_url(permissions::screen_recording_settings_url());
+                            let pane = permissions::screen_recording_settings_url();
+                            if !pane.is_empty() {
+                                let _ = crate::open_url(pane);
+                            }
                         }
                     } else {
                         theme::status_badge(
@@ -758,6 +783,10 @@ impl OnboardingApp {
                 .font(theme::body(tokens::text::LABEL))
                 .color(theme::GREEN()),
             );
+        } else if waiting {
+            theme::caption(ui, &rust_i18n::t!("onboarding.permissions.gnome_waiting"));
+        } else if gnome {
+            theme::caption(ui, &rust_i18n::t!("onboarding.permissions.gnome_how_to"));
         } else {
             theme::caption(ui, &rust_i18n::t!("onboarding.permissions.how_to"));
         }
@@ -793,9 +822,15 @@ impl OnboardingApp {
                 self.summary_row(
                     ui,
                     sr.is_ok(),
-                    &rust_i18n::t!("onboarding.finish.screen_recording_title"),
+                    &if permissions::uses_desktop_portal() {
+                        rust_i18n::t!("onboarding.finish.gnome_title")
+                    } else {
+                        rust_i18n::t!("onboarding.finish.screen_recording_title")
+                    },
                     &if sr.is_ok() {
                         rust_i18n::t!("onboarding.finish.screen_recording_ok")
+                    } else if permissions::uses_desktop_portal() {
+                        rust_i18n::t!("onboarding.finish.gnome_missing")
                     } else {
                         rust_i18n::t!("onboarding.finish.screen_recording_missing")
                     },
@@ -1033,10 +1068,10 @@ mod tests {
     use crate::permissions;
 
     /// The header draws one chip per visible step. On macOS Screen Recording
-    /// gates capture, so the Permission step — and its chip — is real; on
-    /// Windows and Linux the wizard skips the step and must not draw a chip
-    /// for it. This pins the visible list to `permissions_relevant()`, the
-    /// same predicate `next`/`prev` skip on.
+    /// gates capture and on GNOME on Wayland the screenshot portal does, so the
+    /// Permission step — and its chip — is real there; elsewhere the wizard
+    /// skips the step and must not draw a chip for it. This pins the visible
+    /// list to `permissions_relevant()`, the same predicate `next`/`prev` skip on.
     #[test]
     fn visible_steps_include_permissions_only_where_the_os_gates_capture() {
         let visible: Vec<Step> = Step::visible().collect();
@@ -1044,7 +1079,7 @@ mod tests {
             visible.contains(&Step::Permissions),
             permissions::permissions_relevant()
         );
-        if cfg!(target_os = "macos") {
+        if permissions::permissions_relevant() {
             assert_eq!(visible, Step::ALL.to_vec());
         } else {
             assert_eq!(visible, vec![Step::Welcome, Step::Connect, Step::Finish]);
