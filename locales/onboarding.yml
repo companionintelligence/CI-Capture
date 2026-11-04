@@ -242,6 +242,30 @@ onboarding.permissions.how_to:
   en: Flip the switch next to Companion Capture in System Settings — this page notices on its own, no need to come back and click anything.
   es: Activa el interruptor junto a Companion Capture en Ajustes del Sistema. Esta página se dará cuenta sola, no hace falta volver ni hacer clic en nada.
 
+onboarding.permissions.gnome_subtitle:
+  en: GNOME asks once before an app can take screenshots.
+  es: GNOME pregunta una vez antes de que una app pueda hacer capturas de pantalla.
+
+onboarding.permissions.gnome_name:
+  en: Screenshots
+  es: Capturas de pantalla
+
+onboarding.permissions.gnome_granted_detail:
+  en: Granted. Screenshots will be captured.
+  es: Concedido, se harán capturas de pantalla.
+
+onboarding.permissions.gnome_missing_detail:
+  en: Without this, no screenshots are taken. File capture keeps working.
+  es: Sin esto no se hacen capturas de pantalla. La captura de archivos sigue funcionando.
+
+onboarding.permissions.gnome_how_to:
+  en: Press Allow here, then Allow in the box GNOME opens. Keep this window in front, since GNOME only asks for the app you're using. If you pressed Deny before, turn on Screenshots in Settings > Apps > Companion Capture. This page notices on its own.
+  es: Pulsa Permitir aquí y luego Permitir en el cuadro que abre GNOME. Mantén esta ventana al frente, porque GNOME solo pregunta por la app que estás usando. Si antes pulsaste Denegar, activa Capturas de pantalla en Configuración > Aplicaciones > Companion Capture. Esta página se dará cuenta sola.
+
+onboarding.permissions.gnome_waiting:
+  en: Waiting for your answer in GNOME's box. If none opened, click this window and press Allow again in a moment.
+  es: Esperando tu respuesta en el cuadro de GNOME. Si no se abrió ninguno, haz clic en esta ventana y vuelve a pulsar Permitir en un momento.
+
 # ── step 4: done ──────────────────────────────────────────────────────────
 
 onboarding.finish.subtitle:
@@ -259,6 +283,18 @@ onboarding.finish.not_connected:
 onboarding.finish.screen_recording_title:
   en: Screen Recording allowed
   es: Grabación de pantalla permitida
+
+onboarding.finish.gnome_title:
+  en: Screenshots allowed
+  es: Capturas de pantalla permitidas
+
+onboarding.finish.gnome_ok:
+  en: Screenshots are being captured.
+  es: Se están haciendo capturas de pantalla.
+
+onboarding.finish.gnome_missing:
+  en: No screenshots until you allow them. Tray > Setup Assistant brings this back.
+  es: No habrá capturas de pantalla hasta que las permitas. Bandeja > Asistente de configuración vuelve a abrir esto.
 
 onboarding.finish.screen_recording_ok:
   en: Screens and activity are being captured.

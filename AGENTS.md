@@ -35,7 +35,3 @@ This repo forks the screenpipe capture engine. Keep that lineage in mind when me
 - Never `git reset --hard` or `git clean -f` without user confirmation.
 - Commit messages: imperative mood, ≤ 72 chars.
 - Reference CI-Engineering issues in PRs (e.g. `Closes companionintelligence/CI-Engineering#32`).
-
-## Confidentiality
-
-Private & Confidential — Property of Lifescope Inc. Do not distribute.

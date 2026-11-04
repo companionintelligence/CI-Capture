@@ -1,7 +1,5 @@
 # Siri & Apple Intelligence — feasibility and test plan
 
-> **Private & Confidential — Property of Lifescope Inc. Do not distribute.**
-
 **Scope.** What it would take for Companion Capture to be addressable by Siri
 on macOS, what is reachable today, and how each stage is tested. Written against
 the WWDC26 App Intents surface.

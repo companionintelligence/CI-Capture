@@ -15,8 +15,11 @@
 //! no grant at all. Treating a missing AX grant as a problem previously pinned
 //! the tray to "⚠︎ Permissions needed" forever on a perfectly working install.
 //!
-//! Only macOS gates screen/AX capture behind TCC; on Windows and Linux these
-//! report [`PermissionStatus::NotRequired`] so the wizard can skip the step.
+//! macOS gates screen/AX capture behind TCC. GNOME on Wayland gates screenshots
+//! behind the desktop portal, which remembers one answer per app, so the
+//! screenshot lane follows the same path there (see `gnome` below). Everywhere
+//! else these report [`PermissionStatus::NotRequired`] so the wizard can skip
+//! the step.
 
 use std::fmt;
 
@@ -202,19 +205,28 @@ mod imp {
     }
 }
 
-// ── non-macOS: nothing gates screen/AX capture behind a grant ───────────────
+// ── non-macOS: only GNOME on Wayland gates anything ─────────────────────────
 
 #[cfg(not(target_os = "macos"))]
 mod imp {
     use super::PermissionStatus;
 
     pub fn screen_recording_status() -> PermissionStatus {
+        #[cfg(target_os = "linux")]
+        if super::gnome::is_gated() {
+            return super::gnome::status();
+        }
         PermissionStatus::NotRequired
     }
     pub fn accessibility_status() -> PermissionStatus {
         PermissionStatus::NotRequired
     }
     pub fn request_screen_recording() -> PermissionStatus {
+        #[cfg(target_os = "linux")]
+        if super::gnome::is_gated() {
+            super::gnome::ask();
+            return super::gnome::status();
+        }
         PermissionStatus::NotRequired
     }
     pub const SCREEN_RECORDING_PANE: &str = "";
@@ -227,6 +239,253 @@ mod imp {
     }
 }
 
+// ── GNOME on Wayland ────────────────────────────────────────────────────────
+
+/// GNOME on Wayland takes a screenshot for an ordinary app only through
+/// `org.freedesktop.portal.Screenshot`, which asks the person once and stores the
+/// answer per app in the portal's permission store. Three things about that
+/// decide how the lane has to behave (`js/ui/accessDialog.js` in gnome-shell):
+///
+/// - An app with an identity may only raise the dialog while it is the focused
+///   app. A tray app in the background is refused on the spot, so the portal
+///   fails and the capture helper falls through to libwayshot's refusal, tick
+///   after tick, with nothing on screen. The ask has to come from a window the
+///   person is looking at, which is the setup assistant's Permission step.
+/// - Only one dialog shows at a time. It outlives the helper that raised it, so
+///   killing a helper doesn't take the question away.
+/// - An answer applies from then on with no further prompt. Deny is remembered
+///   the same way.
+#[cfg(target_os = "linux")]
+mod gnome {
+    use std::collections::HashMap;
+    use std::sync::OnceLock;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
+
+    use super::PermissionStatus;
+
+    /// The store is read on the setup window's and the tray's threads, so a hung
+    /// service has to read as "can't tell" instead of freezing them.
+    const STORE_TIMEOUT: Duration = Duration::from_secs(2);
+
+    /// True while the last helper in this process handed back a frame: the only
+    /// proof that needs no knowledge of how the portal identified us. A failed
+    /// helper clears it, so a grant taken back in Settings is noticed.
+    pub static PROVEN: AtomicBool = AtomicBool::new(false);
+    /// True while the helper raised by [`ask`] is still waiting on the dialog. The
+    /// `screenshots` crate stops waiting after 60 seconds, the dialog doesn't.
+    pub static ASKING: AtomicBool = AtomicBool::new(false);
+
+    pub fn is_gated() -> bool {
+        let var = |name| std::env::var(name).unwrap_or_default();
+        gated_by(
+            &var("XDG_SESSION_TYPE"),
+            &var("WAYLAND_DISPLAY"),
+            &var("XDG_CURRENT_DESKTOP"),
+        )
+    }
+
+    pub fn gated_by(session_type: &str, wayland_display: &str, current_desktop: &str) -> bool {
+        (session_type == "wayland" || !wayland_display.is_empty())
+            && current_desktop
+                .split(':')
+                .any(|desktop| desktop.eq_ignore_ascii_case("gnome"))
+    }
+
+    /// Reads the stored answer. No prompt, so this is safe to poll. A store that
+    /// can't be read says nothing either way and must not stop capture.
+    pub fn status() -> PermissionStatus {
+        if PROVEN.load(Ordering::Relaxed) {
+            return PermissionStatus::Granted;
+        }
+        match stored_answers() {
+            Ok(answers) => status_from(&answers, &own_app_id()),
+            Err(err) => {
+                log::debug!("portal permission store unavailable: {err}");
+                PermissionStatus::NotRequired
+            }
+        }
+    }
+
+    pub fn status_from(answers: &HashMap<String, Vec<String>>, app_id: &str) -> PermissionStatus {
+        match answers.get(app_id).and_then(|answer| answer.first()) {
+            Some(answer) if answer == "yes" => PermissionStatus::Granted,
+            _ => PermissionStatus::Denied,
+        }
+    }
+
+    /// One connection per process, kept once it works. The store is read once a
+    /// second while the setup window is open.
+    fn store_connection() -> zbus::Result<&'static zbus::blocking::Connection> {
+        static CONNECTION: OnceLock<zbus::blocking::Connection> = OnceLock::new();
+        if let Some(connection) = CONNECTION.get() {
+            return Ok(connection);
+        }
+        let connection = zbus::blocking::connection::Builder::session()?
+            .method_timeout(STORE_TIMEOUT)
+            .build()?;
+        Ok(CONNECTION.get_or_init(|| connection))
+    }
+
+    fn stored_answers() -> zbus::Result<HashMap<String, Vec<String>>> {
+        let proxy = zbus::blocking::Proxy::new(
+            store_connection()?,
+            "org.freedesktop.impl.portal.PermissionStore",
+            "/org/freedesktop/impl/portal/PermissionStore",
+            "org.freedesktop.impl.portal.PermissionStore",
+        )?;
+        let reply = proxy.call_method("Lookup", &("screenshot", "screenshot"));
+        match reply {
+            Ok(message) => {
+                let (answers, _data): (HashMap<String, Vec<String>>, zbus::zvariant::OwnedValue) =
+                    message.body().deserialize()?;
+                Ok(answers)
+            }
+            // The table doesn't exist until the first answer on this machine.
+            Err(zbus::Error::MethodError(name, _, _))
+                if name.as_str() == "org.freedesktop.portal.Error.NotFound" =>
+            {
+                Ok(HashMap::new())
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    /// The id the portal files this process under, read the way it does: from the
+    /// systemd unit the desktop started us in. Empty means an unsandboxed process
+    /// it can't name, such as one started from a terminal.
+    fn own_app_id() -> String {
+        std::fs::read_to_string("/proc/self/cgroup")
+            .ok()
+            .and_then(|cgroup| {
+                let unit = cgroup.lines().last()?.rsplit('/').next()?.to_string();
+                app_id_from_unit(&unit)
+            })
+            .unwrap_or_default()
+    }
+
+    /// `app[-<launcher>]-<id>-<random>.scope` and `app[-<launcher>]-<id>[@<random>].service`
+    /// (systemd.io/DESKTOP_ENVIRONMENTS), or `snap.<name>.<app>-<random>.scope`.
+    pub fn app_id_from_unit(unit: &str) -> Option<String> {
+        if let Some(rest) = unit.strip_prefix("snap.") {
+            return Some(format!("snap.{}", rest.split('.').next()?));
+        }
+        let rest = unit.strip_prefix("app-")?;
+        let body = if let Some(scope) = rest.strip_suffix(".scope") {
+            scope.rsplit_once('-')?.0
+        } else {
+            rest.strip_suffix(".service")?.split('@').next()?
+        };
+        let id = match body.split_once('-') {
+            Some((launcher, id))
+                if !id.is_empty() && launcher.chars().all(char::is_alphanumeric) =>
+            {
+                id
+            }
+            _ => body,
+        };
+        Some(unescape_unit(id))
+    }
+
+    /// systemd writes `-` inside a name as `\x2d`.
+    fn unescape_unit(name: &str) -> String {
+        let mut out = Vec::with_capacity(name.len());
+        let bytes = name.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() {
+            let escaped = (bytes[i] == b'\\' && bytes.get(i + 1) == Some(&b'x'))
+                .then(|| name.get(i + 2..i + 4))
+                .flatten()
+                .and_then(|hex| u8::from_str_radix(hex, 16).ok());
+            match escaped {
+                Some(byte) => {
+                    out.push(byte);
+                    i += 4;
+                }
+                None => {
+                    out.push(bytes[i]);
+                    i += 1;
+                }
+            }
+        }
+        String::from_utf8_lossy(&out).into_owned()
+    }
+
+    /// Raises the dialog, by taking one frame through the portal, on a thread so
+    /// the setup window keeps drawing. Call it from a click: see the module note
+    /// on focus.
+    pub fn ask() {
+        if ASKING.swap(true, Ordering::Relaxed) {
+            return;
+        }
+        std::thread::spawn(|| {
+            let result =
+                crate::capture::capture_isolated_within(crate::capture::PERMISSION_PROMPT_TIMEOUT);
+            match result {
+                Ok(_) => PROVEN.store(true, Ordering::Relaxed),
+                Err(failure) => log::info!("permission check took no frame: {failure}"),
+            }
+            ASKING.store(false, Ordering::Relaxed);
+        });
+    }
+}
+
+/// The screenshot lane should wait for a person on this desktop instead of
+/// running a helper every tick: GNOME on Wayland with no stored yes yet.
+pub fn screen_capture_awaits_permission() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        gnome::is_gated() && gnome::status() == PermissionStatus::Denied
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        false
+    }
+}
+
+/// How the last helper went. A frame means capture works here whatever the store
+/// says, and that proof lasts only until a helper fails.
+pub fn note_screen_capture_result(worked: bool) {
+    #[cfg(target_os = "linux")]
+    gnome::PROVEN.store(worked, std::sync::atomic::Ordering::Relaxed);
+    #[cfg(not(target_os = "linux"))]
+    let _ = worked;
+}
+
+/// Whether to show screen capture as allowed. On GNOME a store that can't be read
+/// isn't an answer, so the person keeps the Allow button, whose frame settles it.
+pub fn screen_capture_confirmed(status: PermissionStatus) -> bool {
+    if uses_desktop_portal() {
+        status == PermissionStatus::Granted
+    } else {
+        status.is_ok()
+    }
+}
+
+/// The setup window's ask is still waiting on the desktop's dialog.
+pub fn permission_prompt_open() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        gnome::ASKING.load(std::sync::atomic::Ordering::Relaxed)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        false
+    }
+}
+
+/// True where the permission text has to talk about GNOME instead of macOS.
+pub fn uses_desktop_portal() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        gnome::is_gated()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        false
+    }
+}
+
 pub fn screen_recording_status() -> PermissionStatus {
     imp::screen_recording_status()
 }
@@ -234,8 +493,9 @@ pub fn accessibility_status() -> PermissionStatus {
     imp::accessibility_status()
 }
 
-/// Ask the OS to prompt for Screen Recording (macOS); returns the resulting
-/// status. No-op returning `NotRequired` off macOS.
+/// Ask the OS to prompt for Screen Recording (macOS) or screenshots (GNOME on
+/// Wayland, where the answer arrives later); returns the status as of now.
+/// No-op returning `NotRequired` elsewhere.
 pub fn request_screen_recording() -> PermissionStatus {
     imp::request_screen_recording()
 }
@@ -271,7 +531,7 @@ pub fn full_disk_access_settings_url() -> &'static str {
 /// Whether this OS gates capture behind permissions at all (drives whether the
 /// onboarding wizard shows the permissions step).
 pub fn permissions_relevant() -> bool {
-    cfg!(target_os = "macos")
+    cfg!(target_os = "macos") || uses_desktop_portal()
 }
 
 #[cfg(test)]
@@ -396,6 +656,10 @@ mod tests {
     #[cfg(not(target_os = "macos"))]
     #[test]
     fn non_macos_requires_nothing() {
+        // A developer's own GNOME desktop is the one place this is gated.
+        if uses_desktop_portal() {
+            return;
+        }
         assert!(!permissions_relevant());
         let p = status();
         assert_eq!(p.screen_recording, PermissionStatus::NotRequired);
@@ -417,5 +681,77 @@ mod tests {
         // Mac at all), unlike the other two — just check it doesn't panic and
         // returns something.
         let _ = full_disk_access_status();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn only_gnome_on_wayland_goes_through_the_portal() {
+        use super::gnome::gated_by;
+        assert!(gated_by("wayland", "wayland-0", "ubuntu:GNOME"));
+        assert!(gated_by("wayland", "", "GNOME"));
+        assert!(gated_by("", "wayland-0", "gnome"));
+        assert!(!gated_by("x11", "", "ubuntu:GNOME"));
+        assert!(!gated_by("wayland", "wayland-0", "KDE"));
+        assert!(!gated_by("wayland", "wayland-0", "Hyprland"));
+        assert!(!gated_by("", "", ""));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_app_id_is_read_from_the_unit_the_way_the_portal_reads_it() {
+        use super::gnome::app_id_from_unit;
+        let id = |unit| app_id_from_unit(unit);
+        assert_eq!(
+            id(r"app-gnome-companion\x2dcapture-4242.scope").as_deref(),
+            Some("companion-capture")
+        );
+        assert_eq!(
+            id(r"app-gnome-org.gnome.Evolution\x2dalarm\x2dnotify-2437.scope").as_deref(),
+            Some("org.gnome.Evolution-alarm-notify")
+        );
+        assert_eq!(
+            id("app-companion\\x2dcapture-4242.scope").as_deref(),
+            Some("companion-capture")
+        );
+        assert_eq!(
+            id("app-gnome-companion\\x2dcapture@abc123.service").as_deref(),
+            Some("companion-capture")
+        );
+        // A login start has to come out as the desktop file's name, or GNOME
+        // refuses the dialog and the stored answer doesn't apply.
+        assert_eq!(
+            id(r"app-companion\x2dcapture@autostart.service").as_deref(),
+            Some(crate::config::DESKTOP_ID)
+        );
+        assert_eq!(
+            id(r"app-Companion\x20Capture@autostart.service").as_deref(),
+            Some("Companion Capture")
+        );
+        assert_eq!(
+            id("snap.code.code-efd21498-e69f-48cd-b36b-f20c955893ff.scope").as_deref(),
+            Some("snap.code")
+        );
+        // A terminal's scope isn't an app: the portal files that under "".
+        assert_eq!(id("vte-spawn-58b0e4a1.scope"), None);
+        assert_eq!(id("session-2.scope"), None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn only_a_stored_yes_for_this_app_counts_as_granted() {
+        use super::gnome::status_from;
+        use std::collections::HashMap;
+        let store = HashMap::from([
+            ("companion-capture".to_string(), vec!["yes".to_string()]),
+            ("other".to_string(), vec!["no".to_string()]),
+        ]);
+        assert_eq!(
+            status_from(&store, "companion-capture"),
+            PermissionStatus::Granted
+        );
+        assert_eq!(status_from(&store, "other"), PermissionStatus::Denied);
+        // Never answered. Someone else's yes doesn't carry over.
+        assert_eq!(status_from(&store, ""), PermissionStatus::Denied);
+        assert_eq!(status_from(&HashMap::new(), "x"), PermissionStatus::Denied);
     }
 }

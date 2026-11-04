@@ -110,6 +110,13 @@ pub const CAPTURE_HELPER_FLAG: &str = "--capture-helper";
 /// How long the parent waits for one helper before killing it.
 const HELPER_TIMEOUT: Duration = Duration::from_secs(15);
 
+/// The limit on a helper when a person just asked for the desktop's permission
+/// dialog. The `screenshots` crate stops waiting on the portal after 60 seconds,
+/// so this only has to outlast that. The dialog stays up and its answer is stored
+/// whenever it comes.
+#[cfg(target_os = "linux")]
+pub const PERMISSION_PROMPT_TIMEOUT: Duration = Duration::from_secs(120);
+
 /// Starts the stderr line a helper writes when it panics.
 const HELPER_PANIC_PREFIX: &str = "capture-helper panic: ";
 
@@ -233,6 +240,11 @@ pub fn classify_helper_failure(status: &str, stderr: &str) -> HelperFailure {
 /// cannot stop, so that call now only ends the helper. A helper that hangs is
 /// killed after `HELPER_TIMEOUT`.
 pub fn capture_isolated() -> Result<CapturedImage, HelperFailure> {
+    capture_isolated_within(HELPER_TIMEOUT)
+}
+
+/// [`capture_isolated`] with the time limit chosen by the caller.
+pub fn capture_isolated_within(timeout: Duration) -> Result<CapturedImage, HelperFailure> {
     let exe = std::env::current_exe()
         .map_err(|err| HelperFailure::Gap(format!("finding the capture helper: {err}")))?;
     let mut child = Command::new(exe)
@@ -261,7 +273,7 @@ pub fn capture_isolated() -> Result<CapturedImage, HelperFailure> {
         let _ = stderr.read_to_end(&mut buf);
         buf
     });
-    let status = wait_for_helper(&mut child);
+    let status = wait_for_helper(&mut child, timeout);
     let frame = frame_reader.join().unwrap_or_default();
     let stderr = String::from_utf8_lossy(&stderr_reader.join().unwrap_or_default()).into_owned();
     let status = status.map_err(HelperFailure::Gap)?;
@@ -271,9 +283,9 @@ pub fn capture_isolated() -> Result<CapturedImage, HelperFailure> {
     decode_helper_frame(frame).map_err(HelperFailure::Gap)
 }
 
-/// Waits for the helper to exit. Past `HELPER_TIMEOUT` it is killed and reaped.
-fn wait_for_helper(child: &mut Child) -> Result<ExitStatus, String> {
-    let deadline = Instant::now() + HELPER_TIMEOUT;
+/// Waits for the helper to exit. Past `timeout` it is killed and reaped.
+fn wait_for_helper(child: &mut Child, timeout: Duration) -> Result<ExitStatus, String> {
+    let deadline = Instant::now() + timeout;
     loop {
         match child.try_wait() {
             Ok(Some(status)) => return Ok(status),
@@ -283,7 +295,7 @@ fn wait_for_helper(child: &mut Child) -> Result<ExitStatus, String> {
                 let _ = child.wait();
                 return Err(format!(
                     "capture helper timed out after {}s",
-                    HELPER_TIMEOUT.as_secs()
+                    timeout.as_secs()
                 ));
             }
             Err(err) => {

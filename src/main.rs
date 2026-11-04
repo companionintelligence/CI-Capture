@@ -1265,9 +1265,21 @@ fn bring_pid_to_front(pid: u32) -> bool {
 /// `~/Library/LaunchAgents/`) works identically whether the target is a dev
 /// binary or a packaged release, so one code path covers both, and testing
 /// this doesn't require a signed bundle.
+///
+/// On Linux the entry's file name becomes the systemd unit the session starts us
+/// in (`app-<name>@autostart.service`), and from that the app id the screenshot
+/// portal files us under. Named after the product, a login start would be
+/// "Companion Capture": the stored answer for `companion-capture` wouldn't apply
+/// and GNOME would refuse a new dialog, since the focused app is
+/// `companion-capture.desktop`.
 fn build_auto_launch(app_path: &str) -> auto_launch::Result<auto_launch::AutoLaunch> {
+    let app_name = if cfg!(target_os = "linux") {
+        config::DESKTOP_ID
+    } else {
+        config::APP_NAME
+    };
     auto_launch::AutoLaunchBuilder::new()
-        .set_app_name(config::APP_NAME)
+        .set_app_name(app_name)
         .set_app_path(app_path)
         .set_args(&[] as &[&str])
         .set_macos_launch_mode(auto_launch::MacOSLaunchMode::LaunchAgent)
